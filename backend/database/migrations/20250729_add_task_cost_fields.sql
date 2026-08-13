@@ -1,0 +1,12 @@
+-- 2025-07-29 为 tasks 表添加成本相关字段
+-- 用于统计任务执行的 token 消耗和成本计算
+
+ALTER TABLE tasks
+ADD COLUMN IF NOT EXISTS input_tokens INT DEFAULT 0 COMMENT '输入token消耗',
+ADD COLUMN IF NOT EXISTS output_tokens INT DEFAULT 0 COMMENT '输出token消耗',
+ADD COLUMN IF NOT EXISTS token_cost DECIMAL(10,6) DEFAULT 0 COMMENT '每1K token价格(元)',
+ADD COLUMN IF NOT EXISTS actual_cost DECIMAL(10,4) DEFAULT 0 COMMENT '实际执行成本(元)',
+ADD COLUMN IF NOT EXISTS manual_hours DECIMAL(8,2) DEFAULT 0 COMMENT '预估人工执行工时(小时)',
+ADD COLUMN IF NOT EXISTS labor_cost DECIMAL(10,4) DEFAULT 0 COMMENT '每小时人力成本(元)',
+ADD COLUMN IF NOT EXISTS estimated_cost DECIMAL(10,4) DEFAULT 0 COMMENT '预估人工执行成本(元)',
+ADD COLUMN IF NOT EXISTS saved_cost DECIMAL(10,4) DEFAULT 0 COMMENT '节省成本(元)';

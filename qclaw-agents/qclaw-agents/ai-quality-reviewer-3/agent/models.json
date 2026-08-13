@@ -1,0 +1,20 @@
+{
+  "providers": {
+    "qclaw": {
+      "baseUrl": "http://127.0.0.1:19000/proxy/llm",
+      "apiKey": "__QCLAW_AUTH_GATEWAY_MANAGED__",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "modelroute",
+          "name": "modelroute",
+          "input": [
+            "text",
+            "image"
+          ],
+          "reasoning": true
+        }
+      ]
+    }
+  }
+}

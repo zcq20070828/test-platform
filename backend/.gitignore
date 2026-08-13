@@ -1,0 +1,9 @@
+node_modules/
+.env
+*.log
+server.js.bak*
+output/
+test-results/
+chroma_db/
+vector/vector_data/
+server.dist.mjs
