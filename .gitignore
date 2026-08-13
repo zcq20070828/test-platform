@@ -22,3 +22,6 @@ runtime/data/test-runs/
 # 系统/编辑器
 .DS_Store
 .Trash/
+
+# 本地运行时数据（tasks/users/评估/db/克隆仓库），不进版本控制
+runtime/
