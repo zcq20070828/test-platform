@@ -130,7 +130,7 @@ node server.js  →  http://localhost:3002   （读取 backend/.env：PORT=3002,
 /api/health    →  {"status":"ok","agents":18,"tasks":389}
 ```
 - 启动无 `~/.qclaw` 残留读取错误；18 个注册 agent 正常加载。
-- ⚠️ **本地 MariaDB（3306）当前无 `test_platform` 库 / `appuser` 账号**：连接池采用 `database/db.js` 默认值（localhost/appuser/apppwd123/test_platform）。需先建库建用户（`mysql < database/*.sql` 或执行 migrations）才能打通 DB 相关功能。`/api/health` 不查库故不受影响。
+- ✅ **本地 MariaDB（3306）实测可用**：`test_platform` 库已存在且含 42 张表（users 5 行、tasks 389 行等），`appuser`/`apppwd123` 具 `GRANT ALL PRIVILEGES ON *.*`（含 GRANT OPTION）。`database/db.js` 默认值（localhost/appuser/apppwd123/test_platform）直接连通，启动无 DB 错误；`/api/health` 的 `tasks:389` 与库内 389 行一致，证明 DB 已打通。早前「库缺失」为 `mysql -u root` 被拒导致的误判（已更正）。
 - ⚠️ 带入少量 QClaw 运行时产物（各 agent 目录下 `.openclaw/workspace-state.json`），无害；后续可加 `.openclaw/` 到 .gitignore。
 
 ### 9.5 版本控制
@@ -142,5 +142,5 @@ node server.js  →  http://localhost:3002   （读取 backend/.env：PORT=3002,
 ### 9.6 待你定
 
 1. 是否在 dev 验收后合并 `feature/2026-09-16-sync-workspace` → main 并 push？
-2. 是否建立/导入本地 `test_platform` 库（执行 `database/` 迁移）以打通 DB 功能？
+2. ~~本地 `test_platform` 库~~：已实测存在并连通（无需新建），DB 功能可用。
 3. 生产服务器 42.194.137.114 仍为旧状态，是否需将本次变更**增量**同步上去（红线：需你明确授权）？
