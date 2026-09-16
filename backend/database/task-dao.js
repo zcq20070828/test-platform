@@ -11,17 +11,18 @@ import { query, getConnection } from './db.js';
 async function createTask(task) {
   const sql = `
     INSERT INTO tasks (
-      id, type, status, input, agent_id, priority, user_id,
+      id, type, source, status, input, agent_id, priority, user_id,
       result, error, require_review, review_passed, created_at, updated_at,
       input_tokens, output_tokens, token_cost, actual_cost,
       manual_hours, labor_cost, estimated_cost, saved_cost
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const params = [
     task.id,
     task.type || 'general',
+    task.source || 'step',
     task.status || 'pending',
     task.input || '',
     task.agentId || task.agent || 'unknown',
@@ -100,6 +101,10 @@ async function updateTask(taskId, updates) {
     fields.push('artifacts = ?');
     params.push(JSON.stringify(updates.artifacts));
   }
+  if (updates.chat_history !== undefined) {
+    fields.push('chat_history = ?');
+    params.push(typeof updates.chat_history === 'string' ? updates.chat_history : JSON.stringify(updates.chat_history));
+  }
   // 成本相关字段
   if (updates.inputTokens !== undefined) {
     fields.push('input_tokens = ?');
@@ -157,7 +162,10 @@ async function deleteTask(taskId) {
  * 获取任务列表
  */
 async function getTasks(filters = {}) {
-  let sql = 'SELECT * FROM tasks WHERE 1=1';
+  let sql = `SELECT t.*, COALESCE(NULLIF(u.name,''), '测试用户') AS username
+             FROM tasks t
+             LEFT JOIN users u ON t.user_id = u.id COLLATE utf8mb4_unicode_ci
+             WHERE 1=1`;
   const params = [];
   
   if (filters.userId) {
@@ -180,9 +188,41 @@ async function getTasks(filters = {}) {
     sql += ' ORDER BY created_at DESC LIMIT ?';
     params.push(filters.limit);
   }
-  
+
+  // debug log removed
   const rows = await query(sql, params);
-  return rows.map(formatTask);
+  const tasks = rows.map(formatTask);
+  
+  // 为每个任务查询审核结果（用于前端显示评分）
+  if (tasks.length > 0) {
+    const taskIds = tasks.map(t => t.id);
+    const reviewSql = `SELECT task_id, reviewer_id, reviewer_name, score, veto, passed, output 
+                       FROM task_review_results 
+                       WHERE task_id IN (${taskIds.map(() => '?').join(',')}) 
+                       ORDER BY created_at ASC`;
+    const reviewRows = await query(reviewSql, taskIds);
+    
+    // 按 taskId 分组
+    const reviewMap = new Map();
+    for (const r of reviewRows) {
+      if (!reviewMap.has(r.task_id)) reviewMap.set(r.task_id, []);
+      reviewMap.get(r.task_id).push({
+        reviewerId: r.reviewer_id,
+        reviewerName: r.reviewer_name,
+        score: r.score,
+        veto: r.veto === 1,
+        passed: r.passed === 1,
+        output: r.output
+      });
+    }
+    
+    // 注入到 task 对象
+    for (const t of tasks) {
+      t.reviewResults = reviewMap.get(t.id) || [];
+    }
+  }
+  
+  return tasks;
 }
 
 /**
@@ -228,12 +268,14 @@ function formatTask(row) {
     agent: row.agent_id, // 兼容旧字段名
     priority: row.priority,
     userId: row.user_id,
+    username: row.username || null,
     result: row.result,
     error: row.error,
     requireReview: row.require_review === 1,
     reviewPassed: row.review_passed,
     workflowId: row.workflow_id,
     workflowStep: row.workflow_step,
+    source: row.source || 'step',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
@@ -251,13 +293,33 @@ function formatTask(row) {
 
 /**
  * 创建任务输出文件记录
+ * @param {string} taskId
+ * @param {string} filePath 落盘相对路径
+ * @param {{versionSource?: 'agent'|'user_revision'}?} opts 版本来源
+ *   返回 { version, displayVersion, versionSource } 供调用方持久化/展示
  */
-async function createTaskOutputFile(taskId, filePath) {
+async function createTaskOutputFile(taskId, filePath, opts = {}) {
+  const versionSource = opts.versionSource || 'agent';
+  // 计算该任务内的版本序号与展示版本号
+  const existing = await query(
+    'SELECT version, version_source FROM task_output_files WHERE task_id = ?',
+    [taskId]
+  );
+  const agentCount = existing.filter(r => r.version_source === 'agent').length;
+  const version = existing.length + 1;
+  let displayVersion;
+  if (versionSource === 'user_revision') {
+    // 用户人工修订版:插在最近一个 agent 版本之后,显示为 v{N}.5
+    displayVersion = `v${Math.max(agentCount, 1)}.5`;
+  } else {
+    displayVersion = `v${agentCount + 1}`;
+  }
   const sql = `
-    INSERT INTO task_output_files (task_id, file_path, created_at)
-    VALUES (?, ?, NOW())
+    INSERT INTO task_output_files (task_id, file_path, version, version_source, display_version, created_at)
+    VALUES (?, ?, ?, ?, ?, NOW())
   `;
-  await query(sql, [taskId, filePath]);
+  await query(sql, [taskId, filePath, version, versionSource, displayVersion]);
+  return { version, displayVersion, versionSource };
 }
 
 /**
@@ -270,6 +332,9 @@ async function getTaskOutputFiles(taskId) {
     id: row.id,
     taskId: row.task_id,
     filePath: row.file_path,
+    version: row.version,
+    versionSource: row.version_source,
+    displayVersion: row.display_version,
     createdAt: row.created_at,
   }));
 }

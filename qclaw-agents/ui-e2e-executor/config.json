@@ -1,0 +1,130 @@
+{
+  "_comment": "===========================================================",
+  "_instructions": [
+    "【使用前必读】",
+    "1. 将本文件重命名为 config.json（去掉 .example 后缀）",
+    "2. 填写所有 TODO 标记的配置项",
+    "3. page_selectors 中的选择器需要根据实际登录页 HTML 结构调整",
+    "4. 所有敏感信息（密码、Token 等）不要提交到代码仓库"
+  ],
+
+  "base_url": "https://your-app.example.com",
+  "environment": "staging",
+
+  "valid_account": {
+    "username": "test_user_001",
+    "email":    "test_user_001@example.com",
+    "password": "TestPassword123!"
+  },
+
+  "invalid_accounts": {
+    "wrong_username": "nonexistent_user_abc123",
+    "wrong_password": "WrongPassword999!",
+    "wrong_email":    "fake@test.com",
+    "empty_password": "",
+    "empty_username": ""
+  },
+
+  "captcha": {
+    "_note": "验证码配置",
+    "valid_captcha": "ABCD1234",
+    "wrong_captcha": "WRONG",
+    "empty_captcha": "",
+    "auto_solve_callback": null,
+    "_auto_solve_note": "可选：填写 JS 函数路径或模块名，用于自动识别验证码",
+    "_example": "my_captcha_solver.solve_from_element"
+  },
+
+  "page_selectors": {
+    "_instructions": "根据实际登录页 HTML 调整以下选择器，支持 CSS 选择器和 XPath",
+
+    "login_path":          "/login",
+
+    "username_input":      "#username",
+    "password_input":      "#password",
+    "captcha_input":       "#captcha",
+    "login_button":       "button[type='submit']",
+    "remember_me_checkbox": "#remember-me",
+    "forgot_password_link": "a[href*='forgot']",
+
+    "captcha_image":       "#captcha-img",
+    "captcha_refresh_button": "#captcha-refresh",
+    "login_form":           "#login-form",
+
+    "logout_button":       "a[href*='logout'], button[href*='logout']",
+    "user_info_display":   ".user-name, [data-testid='user-name']",
+
+    "error_messages": [
+      ".error-tip",
+      ".form-error",
+      "[data-testid='error-message']",
+      ".alert-danger"
+    ],
+
+    "toast_selectors": [
+      ".toast-message",
+      ".el-message",
+      "[role='alert']"
+    ],
+
+    "csrf_token_input":    "input[name='csrf_token']"
+  },
+
+  "expected_after_login": [
+    "/home",
+    "/dashboard",
+    "/user-center",
+    "/index"
+  ],
+
+  "expected_cookie_security": {
+    "_note": "Session/Token Cookie 的安全属性（生产环境 HTTPS 下应全为 true）",
+    "HttpOnly": true,
+    "Secure":   true,
+    "sameSite": "Strict"
+  },
+
+  "brute_force": {
+    "max_attempts":     5,
+    "lockout_duration_minutes": 30,
+    "ip_request_limit": 20
+  },
+
+  "performance": {
+    "login_response_threshold_sec": 2.0,
+    "page_load_threshold_sec":      3.0
+  },
+
+  "mock_server_error": {
+    "enabled":    false,
+    "login_path": "**/api/auth/login**",
+    "status":     500
+  },
+
+  "browser": {
+    "browser_type": "chromium",
+    "headless":    true,
+    "viewport": {
+      "width":  1920,
+      "height": 1080
+    },
+    "slow_mo": 0,
+    "_supported_browsers": ["chromium", "firefox", "webkit"]
+  },
+
+  "reporting": {
+    "screenshot_on_failure": true,
+    "video_on_failure":      false,
+    "trace_on_failure":      false,
+    "report_dir":            "reports"
+  },
+
+  "credentials_env": {
+    "_note": "支持从环境变量读取敏感配置（优先级高于文件中的明文配置）",
+    "env_vars": {
+      "TEST_PASSWORD":  "TEST_PASSWORD",
+      "TEST_USERNAME":  "TEST_USERNAME",
+      "BASE_URL":       "BASE_URL"
+    }
+  }
+}

@@ -18,6 +18,8 @@ const DB_CONFIG = {
   queueLimit: 0,
   enableKeepAlive: true,
   keepAliveInitialDelay: 0,
+  timezone: '+08:00',  // 告诉 mysql2 服务器返回的时间按东八区解释
+  dateStrings: true    // 日期以字符串返回,避免被转成 JS Date 后经 res.json 又被序列化为 UTC(慢8小时)
 };
 
 // 创建连接池

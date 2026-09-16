@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "skills": {
+    "security-sentinel-skill": {
+      "name": "Anti-Injection-Skill",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=security-sentinel-skill",
+      "source": "community",
+      "version": "2.0.3",
+      "installedAt": "2026-06-08T03:37:06Z"
+    },
+    "security-audit-toolkit": {
+      "name": "Security Audit Toolkit",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=security-audit-toolkit",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-08-03T03:13:16Z"
+    },
+    "security-vuln-scanner": {
+      "name": "Security Vulnerability Scanner",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=security-vuln-scanner",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-08-03T03:13:26Z"
+    },
+    "security-scanner": {
+      "name": "Security Scanner",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=security-scanner",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-08-03T03:13:27Z"
+    },
+    "security-operator": {
+      "name": "Security Operator",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=security-operator",
+      "source": "community",
+      "version": "2.2.0",
+      "installedAt": "2026-08-03T03:13:28Z"
+    },
+    "security-sentinel": {
+      "name": "Security Sentinel",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=security-sentinel",
+      "source": "community",
+      "version": "1.0.1",
+      "installedAt": "2026-08-03T03:13:41Z"
+    },
+    "pentest-workbench": {
+      "name": "Pentest Workbench",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=pentest-workbench",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-08-03T03:28:16Z"
+    },
+    "openclaw-vps-hardening": {
+      "name": "OpenClaw VPS Server Hardening",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=openclaw-vps-hardening",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-08-03T03:28:26Z"
+    },
+    "security-review": {
+      "name": "Security Review",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=security-review",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-08-03T03:28:27Z"
+    }
+  }
+}

@@ -6,6 +6,19 @@ import { existsSync, statSync, readFileSync, readdirSync, promises as fs } from 
 import path from 'node:path';
 import os from 'node:os';
 
+// 导入后端全局工具注册表（动态 import，避免 ESM/CJS 混用）
+let globalToolRegistry = null
+async function getToolRegistry() {
+  if (!globalToolRegistry) {
+    try {
+      globalToolRegistry = await import('./tool-registry.js')
+    } catch (e) {
+      console.warn('[TestFramework] 无法加载 tool-registry:', e.message)
+    }
+  }
+  return globalToolRegistry
+}
+
 // =============================================================================
 // 框架二进制检测
 // =============================================================================
@@ -18,11 +31,12 @@ const FRAMEWORK_BINARIES = {
 };
 
 /**
- * 检查某个框架二进制是否可用
+ * 检查某个框架二进制是否可用（优先使用后端全局安装）
  * @param {string} framework
  * @returns {boolean}
  */
 export function isFrameworkInstalled(framework) {
+  // 后端全局工具注册表是异步加载的，框架检测仅依赖 PATH
   const meta = FRAMEWORK_BINARIES[framework];
   if (!meta) return false;
   if (!meta.bin) return true; // api/custom 视为可用
@@ -450,9 +464,19 @@ export async function executeTests({ testPath, framework, options, onLog, signal
   }
   log('info', `检测到测试框架: ${framework}`);
 
-  // 2) 检查安装
+  // 2) 检查安装（未安装则自动安装到后端全局）
   if (!isFrameworkInstalled(framework)) {
-    return { success: false, total: 0, passed: 0, failed: 0, skipped: 0, duration: 0, failures: [], framework, error: `框架 ${framework} 未安装` };
+    log('warn', `框架 ${framework} 未安装，尝试自动安装...`);
+    const registry = await getToolRegistry();
+    if (registry) {
+      const result = await registry.installToolBackend(framework, log);
+      if (!result.success) {
+        return { success: false, total: 0, passed: 0, failed: 0, skipped: 0, duration: 0, failures: [], framework, error: `框架 ${framework} 安装失败: ${result.error}` };
+      }
+      log('success', `框架 ${framework} 安装成功: ${result.version}`);
+    } else {
+      return { success: false, total: 0, passed: 0, failed: 0, skipped: 0, duration: 0, failures: [], framework, error: `框架 ${framework} 未安装，且 tool-registry 不可用` };
+    }
   }
 
   // 3) 构造命令

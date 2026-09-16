@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>计算器示例 - 测试目标应用</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .calculator {
+            background: #fff;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 30px;
+            width: 100%;
+            max-width: 400px;
+        }
+        
+        .display {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            min-height: 100px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            align-items: flex-end;
+        }
+        
+        .expression {
+            color: #6c757d;
+            font-size: 16px;
+            margin-bottom: 10px;
+            min-height: 20px;
+        }
+        
+        .result {
+            font-size: 48px;
+            font-weight: bold;
+            color: #212529;
+            word-break: break-all;
+        }
+        
+        .buttons {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+        }
+        
+        button {
+            height: 65px;
+            border: none;
+            border-radius: 15px;
+            font-size: 24px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        .digit {
+            background: #e9ecef;
+            color: #212529;
+        }
+        
+        .operator {
+            background: #667eea;
+            color: white;
+        }
+        
+        .function {
+            background: #f8f9fa;
+            color: #6c757d;
+            font-size: 20px;
+        }
+        
+        .equals {
+            background: #28a745;
+            color: white;
+            grid-column: span 2;
+        }
+        
+        .clear {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .title {
+            text-align: center;
+            color: #fff;
+            margin-bottom: 20px;
+            font-size: 28px;
+            font-weight: bold;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+        }
+        
+        .info {
+            text-align: center;
+            color: #fff;
+            margin-top: 20px;
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        
+        @media (max-width: 500px) {
+            .calculator {
+                padding: 20px;
+            }
+            
+            button {
+                height: 55px;
+                font-size: 20px;
+            }
+            
+            .result {
+                font-size: 36px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div>
+        <h1 class="title">计算器测试示例</h1>
+        
+        <div class="calculator">
+            <div class="display">
+                <div class="expression" data-testid="calculator-expression"></div>
+                <div class="result" data-testid="calculator-display">0</div>
+            </div>
+            
+            <div class="buttons">
+                <button class="function" data-testid="button-all-clear" onclick="allClear()">AC</button>
+                <button class="function" data-testid="button-clear" onclick="clear()">C</button>
+                <button class="function" data-testid="button-backspace" onclick="backspace()">⌫</button>
+                <button class="operator" data-testid="operator-divide" onclick="inputOperator('÷')">÷</button>
+                
+                <button class="digit" data-testid="digit-7" onclick="inputDigit('7')">7</button>
+                <button class="digit" data-testid="digit-8" onclick="inputDigit('8')">8</button>
+                <button class="digit" data-testid="digit-9" onclick="inputDigit('9')">9</button>
+                <button class="operator" data-testid="operator-multiply" onclick="inputOperator('×')">×</button>
+                
+                <button class="digit" data-testid="digit-4" onclick="inputDigit('4')">4</button>
+                <button class="digit" data-testid="digit-5" onclick="inputDigit('5')">5</button>
+                <button class="digit" data-testid="digit-6" onclick="inputDigit('6')">6</button>
+                <button class="operator" data-testid="operator-minus" onclick="inputOperator('-')">−</button>
+                
+                <button class="digit" data-testid="digit-1" onclick="inputDigit('1')">1</button>
+                <button class="digit" data-testid="digit-2" onclick="inputDigit('2')">2</button>
+                <button class="digit" data-testid="digit-3" onclick="inputDigit('3')">3</button>
+                <button class="operator" data-testid="operator-plus" onclick="inputOperator('+')">+</button>
+                
+                <button class="function" data-testid="button-negate" onclick="toggleSign()">±</button>
+                <button class="digit" data-testid="digit-0" onclick="inputDigit('0')">0</button>
+                <button class="digit" data-testid="button-decimal" onclick="inputDecimal()">.</button>
+                <button class="function" data-testid="button-left-paren" onclick="inputParen('(')">(</button>
+                <button class="function" data-testid="button-right-paren" onclick="inputParen(')')">)</button>
+                <button class="equals" data-testid="operator-equals" onclick="calculate()">=</button>
+            </div>
+        </div>
+        
+        <p class="info">此页面为测试示例,用于验证自动化测试脚本</p>
+    </div>
+
+    <script>
+        let currentValue = '0';
+        let expression = '';
+        let shouldResetDisplay = false;
+        
+        function updateDisplay() {
+            document.querySelector('[data-testid="calculator-display"]').textContent = currentValue;
+            document.querySelector('[data-testid="calculator-expression"]').textContent = expression;
+        }
+        
+        function inputDigit(digit) {
+            if (shouldResetDisplay) {
+                currentValue = digit;
+                shouldResetDisplay = false;
+            } else if (currentValue === '0') {
+                currentValue = digit;
+            } else if (currentValue.length < 15) {
+                currentValue += digit;
+            }
+            updateDisplay();
+        }
+        
+        function inputDecimal() {
+            if (shouldResetDisplay) {
+                currentValue = '0.';
+                shouldResetDisplay = false;
+            } else if (!currentValue.includes('.')) {
+                currentValue += '.';
+            }
+            updateDisplay();
+        }
+        
+        function inputOperator(op) {
+            expression += currentValue + op;
+            shouldResetDisplay = true;
+            updateDisplay();
+        }
+        
+        function inputParen(paren) {
+            expression += paren;
+            updateDisplay();
+        }
+        
+        function toggleSign() {
+            if (currentValue !== '0') {
+                if (currentValue.startsWith('-')) {
+                    currentValue = currentValue.substring(1);
+                } else {
+                    currentValue = '-' + currentValue;
+                }
+            }
+            updateDisplay();
+        }
+        
+        function backspace() {
+            if (currentValue.length > 1) {
+                currentValue = currentValue.slice(0, -1);
+            } else {
+                currentValue = '0';
+            }
+            updateDisplay();
+        }
+        
+        function clear() {
+            currentValue = '0';
+            shouldResetDisplay = false;
+            updateDisplay();
+        }
+        
+        function allClear() {
+            currentValue = '0';
+            expression = '';
+            shouldResetDisplay = false;
+            updateDisplay();
+        }
+        
+        function calculate() {
+            try {
+                let evalExpr = expression + currentValue;
+                
+                // 替换运算符为JavaScript可识别的
+                evalExpr = evalExpr
+                    .replace(/×/g, '*')
+                    .replace(/÷/g, '/')
+                    .replace(/−/g, '-');
+                
+                // 验证括号匹配
+                const leftCount = (evalExpr.match(/\(/g) || []).length;
+                const rightCount = (evalExpr.match(/\)/g) || []).length;
+                
+                if (leftCount !== rightCount) {
+                    currentValue = 'Error';
+                    expression = '';
+                    updateDisplay();
+                    return;
+                }
+                
+                // 计算结果
+                let result = eval(evalExpr);
+                
+                // 处理浮点精度
+                if (typeof result === 'number' && !Number.isInteger(result)) {
+                    result = parseFloat(result.toPrecision(12));
+                }
+                
+                // 检查溢出
+                if (!isFinite(result)) {
+                    currentValue = 'Error';
+                } else {
+                    currentValue = result.toString();
+                }
+                
+                expression = '';
+                shouldResetDisplay = true;
+                updateDisplay();
+            } catch (error) {
+                currentValue = 'Error';
+                expression = '';
+                updateDisplay();
+            }
+        }
+        
+        // 键盘支持
+        document.addEventListener('keydown', (event) => {
+            const key = event.key;
+            
+            if (key >= '0' && key <= '9') {
+                inputDigit(key);
+            } else if (key === '.') {
+                inputDecimal();
+            } else if (key === '+') {
+                inputOperator('+');
+            } else if (key === '-') {
+                inputOperator('-');
+            } else if (key === '*') {
+                inputOperator('×');
+            } else if (key === '/') {
+                event.preventDefault();
+                inputOperator('÷');
+            } else if (key === 'Enter' || key === '=') {
+                event.preventDefault();
+                calculate();
+            } else if (key === 'Backspace') {
+                backspace();
+            } else if (key === 'Escape') {
+                allClear();
+            } else if (key === '(') {
+                inputParen('(');
+            } else if (key === ')') {
+                inputParen(')');
+            }
+        });
+    </script>
+</body>
+</html>

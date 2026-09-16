@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Calculator E2E Test</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { 
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    display: flex; justify-content: center; align-items: center; 
+    min-height: 100vh; background: #f0f2f5;
+  }
+  .calc {
+    background: #fff; border-radius: 16px; box-shadow: 0 8px 32px rgba(0,0,0,0.12);
+    padding: 24px; width: 340px;
+  }
+  .display {
+    background: #1a1a2e; color: #fff; padding: 16px 20px; border-radius: 12px;
+    font-size: 28px; font-weight: 600; text-align: right; margin-bottom: 16px;
+    min-height: 60px; overflow: hidden;
+  }
+  .formula { font-size: 14px; color: #8892b0; margin-bottom: 4px; min-height: 20px; }
+  .result { font-size: 32px; font-family: 'Courier New', monospace; }
+  .error-msg { font-size: 18px; color: #ff6b6b; }
+  .buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  button {
+    padding: 16px 8px; font-size: 20px; border: none; border-radius: 10px;
+    cursor: pointer; transition: all 0.15s; font-weight: 500;
+  }
+  button:hover { opacity: 0.85; transform: scale(0.97); }
+  button:active { transform: scale(0.93); }
+  .num { background: #f0f2f5; color: #1a1a2e; }
+  .op { background: #4361ee; color: #fff; }
+  .eq { background: #f72585; color: #fff; }
+  .clear { background: #e63946; color: #fff; grid-column: span 2; }
+  .zero { grid-column: span 2; }
+  .err-state { background: #ffe8e8; }
+
+  #testResults {
+    margin-top: 20px; padding: 16px; background: #f8f9fa; border-radius: 10px;
+    font-size: 13px; font-family: 'Courier New', monospace; max-height: 300px;
+    overflow-y: auto; border: 1px solid #dee2e6;
+  }
+  .log-pass { color: #2d6a4f; }
+  .log-fail { color: #e63946; }
+  .log-info { color: #4361ee; }
+</style>
+</head>
+<body>
+<div class="calc" id="calculator" role="application" aria-label="Calculator">
+  <div class="display" id="display" role="textbox" aria-label="Calculator Display">
+    <div class="formula" id="formula"></div>
+    <div class="result" id="result">0</div>
+  </div>
+  <div class="buttons" role="group" aria-label="Calculator buttons">
+    <button class="clear" id="btnClear" data-action="clear" role="button" aria-label="Clear">AC</button>
+    <button class="op" data-action="operator" data-value="/" role="button" aria-label="Divide">÷</button>
+    <button class="num" data-action="digit" data-value="7" role="button" aria-label="Seven">7</button>
+    <button class="num" data-action="digit" data-value="8" role="button" aria-label="Eight">8</button>
+    <button class="num" data-action="digit" data-value="9" role="button" aria-label="Nine">9</button>
+    <button class="op" data-action="operator" data-value="*" role="button" aria-label="Multiply">×</button>
+    <button class="num" data-action="digit" data-value="4" role="button" aria-label="Four">4</button>
+    <button class="num" data-action="digit" data-value="5" role="button" aria-label="Five">5</button>
+    <button class="num" data-action="digit" data-value="6" role="button" aria-label="Six">6</button>
+    <button class="op" data-action="operator" data-value="-" role="button" aria-label="Subtract">−</button>
+    <button class="num" data-action="digit" data-value="1" role="button" aria-label="One">1</button>
+    <button class="num" data-action="digit" data-value="2" role="button" aria-label="Two">2</button>
+    <button class="num" data-action="digit" data-value="3" role="button" aria-label="Three">3</button>
+    <button class="op" data-action="operator" data-value="+" role="button" aria-label="Add">+</button>
+    <button class="num zero" data-action="digit" data-value="0" role="button" aria-label="Zero">0</button>
+    <button class="num" data-action="digit" data-value="." role="button" aria-label="Decimal point">.</button>
+    <button class="eq" data-action="equals" role="button" aria-label="Equals">=</button>
+  </div>
+</div>
+<div id="testResults" role="log" aria-label="Test execution log">
+  <div class="log-info">[System] Calculator loaded — ready for E2E testing</div>
+</div>
+
+<script>
+  (function() {
+    const formulaEl = document.getElementById('formula');
+    const resultEl = document.getElementById('result');
+    const displayEl = document.getElementById('display');
+    const logEl = document.getElementById('testResults');
+
+    let currentInput = '0';
+    let previousValue = null;
+    let currentOperator = null;
+    let shouldResetInput = false;
+    let hasError = false;
+
+    function log(msg, type = 'info') {
+      const d = new Date();
+      const ts = d.toLocaleTimeString();
+      const div = document.createElement('div');
+      div.className = `log-${type}`;
+      div.textContent = `[${ts}] ${msg}`;
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function updateDisplay() {
+      if (hasError) {
+        formulaEl.textContent = previousValue !== null ? `${formatNumber(previousValue)} ${getOpSymbol(currentOperator)}` : '';
+        resultEl.textContent = 'Error';
+        resultEl.style.fontSize = '18px';
+        resultEl.style.color = '#ff6b6b';
+        return;
+      }
+      resultEl.style.fontSize = '32px';
+      resultEl.style.color = '#fff';
+      formulaEl.textContent = previousValue !== null ? `${formatNumber(previousValue)} ${getOpSymbol(currentOperator)}` : '';
+      resultEl.textContent = currentInput;
+      displayEl.classList.remove('err-state');
+    }
+
+    function getOpSymbol(op) {
+      switch(op) {
+        case '+': return '+';
+        case '-': return '−';
+        case '*': return '×';
+        case '/': return '÷';
+        default: return '';
+      }
+    }
+
+    function formatNumber(n) {
+      if (n === null || n === undefined) return '0';
+      const num = typeof n === 'number' ? n : parseFloat(n);
+      if (isNaN(num)) return '0';
+      return String(num);
+    }
+
+    function calculate(a, op, b) {
+      const x = parseFloat(a);
+      const y = parseFloat(b);
+      if (isNaN(x) || isNaN(y)) return NaN;
+      log(`Calc: ${x} ${op} ${y}`, 'info');
+      switch(op) {
+        case '+': return x + y;
+        case '-': return x - y;
+        case '*': return x * y;
+        case '/':
+          if (y === 0) {
+            log('Division by zero detected!', 'fail');
+            return NaN; // Trigger error
+          }
+          return x / y;
+        default: return NaN;
+      }
+    }
+
+    function handleDigit(digit) {
+      if (hasError) return;
+      if (shouldResetInput) {
+        currentInput = digit === '.' ? '0.' : digit;
+        shouldResetInput = false;
+      } else {
+        if (digit === '.') {
+          if (currentInput.includes('.')) return;
+          currentInput += '.';
+        } else {
+          if (currentInput === '0') {
+            currentInput = digit;
+          } else {
+            currentInput += digit;
+          }
+        }
+      }
+      updateDisplay();
+    }
+
+    function handleOperator(op) {
+      if (hasError) return;
+      const current = parseFloat(currentInput);
+      if (isNaN(current)) return;
+
+      if (previousValue !== null && currentOperator !== null && !shouldResetInput) {
+        // Chain calculation
+        const result = calculate(previousValue, currentOperator, current);
+        if (isNaN(result)) {
+          setError();
+          return;
+        }
+        previousValue = result;
+        currentInput = formatNumber(result);
+        log(`Chain result: ${result}`, 'info');
+      } else {
+        previousValue = current;
+      }
+      currentOperator = op;
+      shouldResetInput = true;
+      updateDisplay();
+    }
+
+    function handleEquals() {
+      if (hasError || previousValue === null || currentOperator === null) return;
+      const current = parseFloat(currentInput);
+      if (isNaN(current)) return;
+      const result = calculate(previousValue, currentOperator, current);
+      if (isNaN(result)) {
+        setError();
+        return;
+      }
+      log(`Result: ${previousValue} ${currentOperator} ${current} = ${result}`, 'info');
+      currentInput = formatNumber(result);
+      previousValue = null;
+      currentOperator = null;
+      shouldResetInput = true;
+      updateDisplay();
+    }
+
+    function handleClear() {
+      currentInput = '0';
+      previousValue = null;
+      currentOperator = null;
+      shouldResetInput = false;
+      hasError = false;
+      resultEl.style.color = '#fff';
+      resultEl.style.fontSize = '32px';
+      displayEl.classList.remove('err-state');
+      log('Cleared', 'info');
+      updateDisplay();
+    }
+
+    function setError() {
+      hasError = true;
+      displayEl.classList.add('err-state');
+      updateDisplay();
+    }
+
+    // Event delegation
+    document.querySelector('.buttons').addEventListener('click', function(e) {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      const action = btn.dataset.action;
+      const value = btn.dataset.value;
+
+      switch(action) {
+        case 'digit':
+          handleDigit(value);
+          log(`Input: ${value}`, 'info');
+          break;
+        case 'operator':
+          handleOperator(value);
+          log(`Operator: ${getOpSymbol(value)}`, 'info');
+          break;
+        case 'equals':
+          handleEquals();
+          log('Equals pressed', 'info');
+          break;
+        case 'clear':
+          handleClear();
+          break;
+      }
+    });
+
+    log('Calculator initialized — ready for testing', 'info');
+    window.__calculator = {
+      handleDigit, handleOperator, handleEquals, handleClear,
+      setError, getState: () => ({ currentInput, previousValue, currentOperator, shouldResetInput, hasError })
+    };
+  })();
+</script>
+</body>
+</html>

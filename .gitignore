@@ -1,8 +1,10 @@
 # 依赖与构建产物
 node_modules/
 */node_modules/
+**/node_modules/
 dist/
 */dist/
+**/dist/
 
 # 本地环境配置（含数据库密码，勿提交）
 .env

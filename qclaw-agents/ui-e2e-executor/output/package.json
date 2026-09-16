@@ -1,0 +1,26 @@
+{
+  "name": "app-registration-e2e",
+  "version": "1.0.0",
+  "description": "APP用户注册功能 — Playwright E2E 自动化测试套件",
+  "scripts": {
+    "test:api": "npx playwright test --config=playwright.config.ts --project=api",
+    "test:ui": "npx playwright test --config=playwright.config.ts --project=ui",
+    "test:security": "npx playwright test --config=playwright.config.ts --project=security",
+    "test:performance": "npx playwright test --config=playwright.config.ts --project=performance",
+    "test:regression": "npx playwright test --config=playwright.config.ts --project=regression",
+    "test:all": "npx playwright test --config=playwright.config.ts",
+    "test:all:headed": "npx playwright test --config=playwright.config.ts --headed",
+    "report": "npx playwright show-report",
+    "mock-server": "tsx mock/mock-server.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "typescript": "^5.5.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "cors": "^2.8.5"
+  }
+}

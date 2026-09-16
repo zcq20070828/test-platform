@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - 用户名边界测试</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .login-container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 420px;
+            padding: 40px;
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+        .logo h1 {
+            font-size: 28px;
+            color: #333;
+            font-weight: 600;
+        }
+        .form-group {
+            margin-bottom: 24px;
+        }
+        .form-label {
+            display: block;
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        .form-input {
+            width: 100%;
+            padding: 14px 16px;
+            font-size: 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+            outline: none;
+        }
+        .form-input:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        .form-input.error {
+            border-color: #ff4757;
+        }
+        .form-input.warning {
+            border-color: #ffa502;
+        }
+        .form-input.valid {
+            border-color: #2ed573;
+        }
+        .char-counter {
+            font-size: 12px;
+            text-align: right;
+            margin-top: 6px;
+            color: #999;
+            transition: color 0.2s;
+        }
+        .char-counter.warning {
+            color: #ffa502;
+        }
+        .char-counter.error {
+            color: #ff4757;
+        }
+        .char-counter.valid {
+            color: #2ed573;
+        }
+        .error-message {
+            font-size: 13px;
+            color: #ff4757;
+            margin-top: 6px;
+            display: none;
+        }
+        .error-message.visible {
+            display: block;
+        }
+        .submit-btn {
+            width: 100%;
+            padding: 16px;
+            font-size: 16px;
+            font-weight: 600;
+            color: white;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+        }
+        .submit-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .char-info {
+            font-size: 12px;
+            color: #999;
+            margin-top: 4px;
+        }
+        /* Toast notification */
+        .toast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-100px);
+            background: #ff4757;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 1000;
+            transition: transform 0.3s ease;
+            max-width: 90%;
+        }
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+        }
+        .toast.success {
+            background: #2ed573;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container" data-testid="login-container">
+        <div class="logo">
+            <h1>用户登录</h1>
+        </div>
+        <form id="loginForm" data-testid="login-form" novalidate>
+            <div class="form-group">
+                <label class="form-label" for="username">用户名 / 账号</label>
+                <input 
+                    type="text" 
+                    id="username" 
+                    name="username" 
+                    class="form-input"
+                    data-testid="account-input"
+                    maxlength="20"
+                    placeholder="请输入用户名（最多20个字符）"
+                    autocomplete="username"
+                >
+                <div class="char-counter" data-testid="char-counter">
+                    <span data-testid="char-count">0</span> / 20
+                </div>
+                <div class="char-info">支持中文、英文、数字、下划线</div>
+                <div class="error-message" data-testid="account-error" id="usernameError">
+                    用户名不能超过20个字符
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label" for="password">密码</label>
+                <input 
+                    type="password" 
+                    id="password" 
+                    name="password" 
+                    class="form-input"
+                    data-testid="password-input"
+                    placeholder="请输入密码"
+                    autocomplete="current-password"
+                >
+                <div class="error-message" data-testid="password-error" id="passwordError"></div>
+            </div>
+            
+            <button type="submit" class="submit-btn" data-testid="login-button" id="loginBtn">
+                登录
+            </button>
+        </form>
+    </div>
+    
+    <div class="toast" data-testid="toast" id="toast"></div>
+
+    <script>
+        const usernameInput = document.getElementById('username');
+        const passwordInput = document.getElementById('password');
+        const loginBtn = document.getElementById('loginBtn');
+        const charCounter = document.querySelector('[data-testid="char-counter"]');
+        const charCount = document.querySelector('[data-testid="char-count"]');
+        const usernameError = document.getElementById('usernameError');
+        const passwordError = document.getElementById('passwordError');
+        const toast = document.getElementById('toast');
+        const loginForm = document.getElementById('loginForm');
+        
+        const MAX_LENGTH = 20;
+        const WARNING_THRESHOLD = 18;
+        
+        // 用户名验证规则
+        const USERNAME_RULES = {
+            minLength: 3,
+            maxLength: 20,
+            pattern: /^[\u4e00-\u9fa5a-zA-Z0-9_]+$/,
+            chineseCharWeight: 1 // 中文按1个字符计算
+        };
+        
+        // 更新字符计数器
+        function updateCharCounter(length) {
+            charCount.textContent = length;
+            
+            // 移除所有状态类
+            charCounter.classList.remove('warning', 'error', 'valid');
+            usernameInput.classList.remove('warning', 'error', 'valid');
+            
+            if (length > MAX_LENGTH) {
+                // 超出限制：红色错误状态
+                charCounter.classList.add('error');
+                usernameInput.classList.add('error');
+            } else if (length === MAX_LENGTH) {
+                // 恰好达到限制：绿色有效状态
+                charCounter.classList.add('valid');
+                usernameInput.classList.add('valid');
+            } else if (length >= WARNING_THRESHOLD) {
+                // 接近限制(18-19字符)：黄色警告状态
+                charCounter.classList.add('warning');
+                usernameInput.classList.add('warning');
+            } else if (length > 0) {
+                // 正常输入(1-17字符)：绿色有效状态
+                charCounter.classList.add('valid');
+                usernameInput.classList.add('valid');
+            }
+        }
+        
+        // 实时验证用户名
+        function validateUsernameRealtime(value) {
+            const length = value.length;
+            
+            // 前端实时校验：显示字符计数
+            updateCharCounter(length);
+            
+            // 如果超过最大长度，截断并显示错误
+            if (length > MAX_LENGTH) {
+                usernameInput.value = value.substring(0, MAX_LENGTH);
+                usernameError.textContent = '用户名不能超过20个字符';
+                usernameError.classList.add('visible');
+                return false;
+            }
+            
+            // 如果达到警告阈值(18-19字符)，显示剩余字符数提示
+            if (length >= WARNING_THRESHOLD && length < MAX_LENGTH) {
+                usernameError.textContent = `还可以输入 ${MAX_LENGTH - length} 个字符`;
+                usernameError.classList.add('visible');
+            } else if (length === MAX_LENGTH) {
+                // 恰好达到限制：无错误提示
+                usernameError.classList.remove('visible');
+            } else {
+                usernameError.classList.remove('visible');
+            }
+            
+            return true;
+        }
+        
+        // 提交时完整验证
+        function validateUsernameSubmit(value) {
+            const errors = [];
+            
+            if (!value || value.trim() === '') {
+                errors.push('请输入用户名');
+                return { valid: false, errors };
+            }
+            
+            if (value.length < USERNAME_RULES.minLength) {
+                errors.push(`用户名至少需要${USERNAME_RULES.minLength}个字符`);
+            }
+            
+            if (value.length > USERNAME_RULES.maxLength) {
+                errors.push('用户名不能超过20个字符');
+            }
+            
+            if (!USERNAME_RULES.pattern.test(value)) {
+                errors.push('用户名只能包含中文、英文、数字、下划线');
+            }
+            
+            return {
+                valid: errors.length === 0,
+                errors
+            };
+        }
+        
+        // 显示Toast
+        function showToast(message, type = 'error') {
+            toast.textContent = message;
+            toast.className = 'toast' + (type === 'success' ? ' success' : '');
+            toast.classList.add('show');
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+        
+        // 模拟后端验证
+        function backendValidate(username, password) {
+            return new Promise((resolve, reject) => {
+                setTimeout(() => {
+                    // 模拟后端验证规则
+                    const backendErrors = [];
+                    
+                    // 后端校验：用户名长度
+                    if (username.length > 20) {
+                        backendErrors.push('用户名长度不能超过20个字符');
+                    }
+                    
+                    // 后端校验：用户名格式
+                    if (!/^[\u4e00-\u9fa5a-zA-Z0-9_]+$/.test(username)) {
+                        backendErrors.push('用户名格式不正确');
+                    }
+                    
+                    // 后端校验：密码
+                    if (!password) {
+                        backendErrors.push('请输入密码');
+                    }
+                    
+                    if (backendErrors.length > 0) {
+                        reject({ errors: backendErrors, field: 'username' });
+                    } else {
+                        resolve({ success: true, message: '登录成功' });
+                    }
+                }, 500);
+            });
+        }
+        
+        // 前端输入事件
+        usernameInput.addEventListener('input', (e) => {
+            validateUsernameRealtime(e.target.value);
+        });
+        
+        // 粘贴事件处理
+        usernameInput.addEventListener('paste', (e) => {
+            e.preventDefault();
+            const pastedText = (e.clipboardData || window.clipboardData).getData('text');
+            const currentLength = usernameInput.value.length;
+            const remainingLength = MAX_LENGTH - currentLength;
+            
+            if (pastedText.length > remainingLength) {
+                // 允许粘贴，但触发错误提示
+                const allowedText = pastedText.substring(0, remainingLength);
+                usernameInput.value += allowedText;
+                showToast('粘贴内容过长，已截断超出部分');
+                validateUsernameRealtime(usernameInput.value);
+            } else {
+                usernameInput.value += pastedText;
+                validateUsernameRealtime(usernameInput.value);
+            }
+        });
+        
+        // 登录表单提交
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const username = usernameInput.value;
+            const password = passwordInput.value;
+            
+            // 清除之前的错误
+            usernameError.classList.remove('visible');
+            passwordError.textContent = '';
+            passwordError.classList.remove('visible');
+            
+            // 前端验证
+            const frontendValidation = validateUsernameSubmit(username);
+            
+            if (!frontendValidation.valid) {
+                usernameError.textContent = frontendValidation.errors[0];
+                usernameError.classList.add('visible');
+                return;
+            }
+            
+            // 禁用按钮，显示加载状态
+            loginBtn.disabled = true;
+            loginBtn.textContent = '登录中...';
+            
+            try {
+                // 调用后端验证
+                const result = await backendValidate(username, password);
+                showToast(result.message, 'success');
+                
+                // 模拟登录成功跳转
+                setTimeout(() => {
+                    window.location.href = '/dashboard';
+                }, 1000);
+            } catch (error) {
+                if (error.field === 'username') {
+                    usernameError.textContent = error.errors[0];
+                    usernameError.classList.add('visible');
+                } else if (error.field === 'password') {
+                    passwordError.textContent = error.errors[0];
+                    passwordError.classList.add('visible');
+                } else {
+                    showToast('登录失败：' + error.errors.join(', '));
+                }
+            } finally {
+                loginBtn.disabled = false;
+                loginBtn.textContent = '登录';
+            }
+        });
+        
+        // 初始化
+        updateCharCounter(0);
+    </script>
+</body>
+</html>

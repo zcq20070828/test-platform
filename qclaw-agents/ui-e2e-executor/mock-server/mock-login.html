@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - 用户管理系统</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .login-container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 420px;
+            padding: 40px;
+        }
+        .logo { text-align: center; margin-bottom: 32px; }
+        .logo h1 { font-size: 28px; color: #333; font-weight: 600; }
+        .form-group { margin-bottom: 24px; }
+        .form-label { display: block; font-size: 14px; color: #666; margin-bottom: 8px; font-weight: 500; }
+        .form-input {
+            width: 100%; padding: 14px 16px; font-size: 16px;
+            border: 2px solid #e0e0e0; border-radius: 8px;
+            transition: all 0.3s ease; outline: none;
+        }
+        .form-input:focus { border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,0.1); }
+        .submit-btn {
+            width: 100%; padding: 16px; font-size: 16px; font-weight: 600;
+            color: white; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none; border-radius: 8px; cursor: pointer;
+            transition: all 0.3s;
+        }
+        .submit-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(102,126,234,0.4); }
+        .submit-btn:disabled { background: #ccc; cursor: not-allowed; transform: none; box-shadow: none; }
+        .error-message {
+            font-size: 13px; color: #ff4757; margin-top: 8px;
+            display: none; padding: 8px 12px; background: #fff5f5;
+            border-radius: 6px; border: 1px solid #ffd7d7;
+        }
+        .error-message.visible { display: block; }
+        .loading-spinner { display: none; text-align: center; margin: 10px 0; }
+        .loading-spinner.visible { display: block; }
+        .loading-spinner::after {
+            content: ''; display: inline-block; width: 20px; height: 20px;
+            border: 3px solid #f0f0f0; border-top-color: #667eea;
+            border-radius: 50%; animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .toast {
+            position: fixed; top: 20px; left: 50%;
+            transform: translateX(-50%) translateY(-100px);
+            color: white; padding: 12px 24px; border-radius: 8px;
+            font-size: 14px; z-index: 1000;
+            transition: transform 0.3s ease; max-width: 90%;
+        }
+        .toast.show { transform: translateX(-50%) translateY(0); }
+        .toast.success { background: #2ed573; }
+        .toast.error { background: #ff4757; }
+    </style>
+</head>
+<body>
+    <div class="login-container" data-testid="login-container">
+        <div class="logo">
+            <h1 data-testid="page-title">用户登录</h1>
+        </div>
+        <form id="loginForm" data-testid="login-form">
+            <div class="form-group">
+                <label class="form-label" for="username">用户名</label>
+                <input type="text" id="username" name="username" class="form-input"
+                       data-testid="account-input" placeholder="请输入用户名"
+                       autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="password">密码</label>
+                <input type="password" id="password" name="password" class="form-input"
+                       data-testid="password-input" placeholder="请输入密码"
+                       autocomplete="current-password">
+            </div>
+            <div class="form-group">
+                <div class="error-message" data-testid="global-error" id="globalError"></div>
+            </div>
+            <button type="submit" class="submit-btn" data-testid="login-button" id="loginBtn">登 录</button>
+        </form>
+        <div class="loading-spinner" id="loadingSpinner"></div>
+    </div>
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // ============================================================
+        // 模拟后端用户数据库
+        // ============================================================
+        const MOCK_USERS = {
+            'admin': { password: 'Test@123', name: '管理员' },
+            'testuser': { password: 'Test@123', name: '测试用户' },
+            'zhangsan': { password: 'Pass@123', name: '张三' },
+        };
+
+        // 记录登录失败次数（简单的内存计数器）
+        let loginAttempts = {};
+
+        const usernameInput = document.getElementById('username');
+        const passwordInput = document.getElementById('password');
+        const loginBtn = document.getElementById('loginBtn');
+        const globalError = document.getElementById('globalError');
+        const toast = document.getElementById('toast');
+        const loginForm = document.getElementById('loginForm');
+        const loadingSpinner = document.getElementById('loadingSpinner');
+
+        function showToast(message, type = 'error') {
+            toast.textContent = message;
+            toast.className = 'toast ' + type;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }
+
+        function showError(message) {
+            globalError.textContent = message;
+            globalError.classList.add('visible');
+        }
+
+        function hideError() {
+            globalError.textContent = '';
+            globalError.classList.remove('visible');
+        }
+
+        function setLoading(loading) {
+            loginBtn.disabled = loading;
+            loginBtn.textContent = loading ? '登录中...' : '登 录';
+            loadingSpinner.classList.toggle('visible', loading);
+        }
+
+        // ============================================================
+        // 模拟后端登录API
+        // ============================================================
+        function mockLoginAPI(username, password) {
+            return new Promise((resolve) => {
+                // 模拟网络延迟
+                setTimeout(() => {
+                    // 检查用户名是否为空
+                    if (!username || !username.trim()) {
+                        resolve({ success: false, error: '请输入用户名' });
+                        return;
+                    }
+
+                    // 检查密码是否为空
+                    if (!password) {
+                        resolve({ success: false, error: '请输入密码' });
+                        return;
+                    }
+
+                    // 检查账号是否存在
+                    const user = MOCK_USERS[username.trim()];
+                    if (!user) {
+                        // 场景3: 账号不存在
+                        resolve({ success: false, error: '账号不存在' });
+                        return;
+                    }
+
+                    // 检查密码是否正确
+                    if (user.password !== password) {
+                        // 记录失败次数
+                        loginAttempts[username] = (loginAttempts[username] || 0) + 1;
+                        // 场景2: 密码错误
+                        const remaining = 5 - loginAttempts[username];
+                        let msg = '密码错误';
+                        if (remaining > 0 && remaining <= 3) {
+                            msg += `，您还有 ${remaining} 次尝试机会`;
+                        }
+                        resolve({ success: false, error: msg });
+                        return;
+                    }
+
+                    // 场景1: 登录成功
+                    resolve({ success: true, user: user, redirect: '/home' });
+                }, 800);
+            });
+        }
+
+        // ============================================================
+        // 登录表单提交
+        // ============================================================
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideError();
+
+            const username = usernameInput.value.trim();
+            const password = passwordInput.value;
+
+            setLoading(true);
+
+            try {
+                const result = await mockLoginAPI(username, password);
+
+                if (result.success) {
+                    showToast('登录成功！欢迎回来！', 'success');
+                    // 模拟登录成功跳转 - 保存用户信息到 localStorage
+                    localStorage.setItem('isLoggedIn', 'true');
+                    localStorage.setItem('username', username);
+                    localStorage.setItem('displayName', result.user.name);
+                    // 跳转到首页
+                    setTimeout(() => {
+                        window.location.href = '/mock-home.html';
+                    }, 1000);
+                } else {
+                    showError(result.error);
+                }
+            } catch (err) {
+                showError('系统异常，请稍后重试');
+            } finally {
+                setLoading(false);
+            }
+        });
+    </script>
+</body>
+</html>

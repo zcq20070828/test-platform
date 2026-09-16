@@ -1,0 +1,70 @@
+# ============================================
+# 登录功能自动化测试 - 环境配置模板
+# ============================================
+# 说明：请将此文件复制为 config.local.yaml，填入实际测试环境信息
+# 敏感信息建议通过环境变量传入，不要提交到版本控制
+
+# --- 被测系统 URL ---
+login_url: "https://your-app.com/login"            # 登录页面 URL
+home_url: "https://your-app.com/dashboard"         # 登录成功后跳转的目标页
+password_reset_url: "https://your-app.com/reset"   # 忘记密码页面 URL
+
+# --- 测试账号 ---
+accounts:
+  # 正常账号（已注册、已激活、状态正常）
+  normal:
+    username: "testuser01"
+    email: "testuser01@example.com"
+    password: "Test@Pass123"
+
+  # 其他状态账号
+  locked:
+    username: "locked_user"
+    password: "Locked@Pass123"
+
+  disabled:
+    username: "disabled_user"
+    password: "Disabled@Pass123"
+
+  unactivated:
+    email: "unactivated@example.com"
+    password: "Unact@Pass123"
+
+  deleted:
+    username: "deleted_user"
+    password: "Deleted@Pass123"
+
+# --- 图形验证码 ---
+captcha:
+  mode: "manual"        # manual | mock | ocr
+  mock_code: "0000"     # mock 模式下验证码固定值
+  ocr_timeout: 30       # OCR 最大等待秒数
+
+# --- 浏览器设置 ---
+browser:
+  headless: false       # 是否无头模式
+  slow_mo: 100          # 操作间延迟（毫秒），调试时建议 200-500
+  viewport:
+    width: 1280
+    height: 800
+  default_timeout: 15000  # 默认元素等待超时（毫秒）
+
+# --- 测试数据 ---
+test_data:
+  boundary:
+    username_max_length: 255
+    password_min_length: 6
+    password_max_length: 128
+  lockout:
+    max_attempts: 5       # 连续错误次数阈值
+    lockout_minutes: 30   # 锁定分钟数
+  session:
+    timeout_minutes: 30   # Session 超时时间
+    remember_days: 7      # "记住我"有效期
+
+# --- 性能基线 ---
+performance:
+  page_load_timeout: 3.0        # 页面首次加载最大秒数
+  login_response_timeout: 2.0   # 登录请求响应最大秒数
+  error_response_timeout: 1.0   # 错误响应最大秒数
+  captcha_refresh_timeout: 1.0  # 验证码刷新最大秒数

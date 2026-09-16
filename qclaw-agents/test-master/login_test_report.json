@@ -1,0 +1,273 @@
+{
+  "test_summary": {
+    "total": 29,
+    "passed": 23,
+    "failed": 0,
+    "skipped": 6,
+    "pass_rate": "79.31%"
+  },
+  "test_results": [
+    {
+      "test_id": "TC-001",
+      "description": "用户名+正确密码登录",
+      "status": "PASS",
+      "expected": "登录成功",
+      "actual": "登录成功",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.127184"
+    },
+    {
+      "test_id": "TC-002",
+      "description": "手机号+正确密码登录",
+      "status": "PASS",
+      "expected": "登录成功",
+      "actual": "登录成功",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.127191"
+    },
+    {
+      "test_id": "TC-003",
+      "description": "密码长度6位边界",
+      "status": "PASS",
+      "expected": "登录成功",
+      "actual": "登录成功",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.127195"
+    },
+    {
+      "test_id": "TC-004",
+      "description": "密码长度20位边界",
+      "status": "PASS",
+      "expected": "登录成功",
+      "actual": "登录成功",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.127200"
+    },
+    {
+      "test_id": "TC-005",
+      "description": "用户名不存在",
+      "status": "PASS",
+      "expected": "提示'用户名或密码错误'",
+      "actual": "用户名或密码错误",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.127204"
+    },
+    {
+      "test_id": "TC-006",
+      "description": "密码错误-1次",
+      "status": "PASS",
+      "expected": "提示错误，剩余4次机会",
+      "actual": "用户名或密码错误，剩余4次机会",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.127209"
+    },
+    {
+      "test_id": "TC-007",
+      "description": "密码错误-5次锁定",
+      "status": "PASS",
+      "expected": "账号锁定30分钟",
+      "actual": "账号已锁定，请30分钟后重试",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.127230"
+    },
+    {
+      "test_id": "TC-008",
+      "description": "锁定后尝试登录",
+      "status": "PASS",
+      "expected": "提示账号已锁定",
+      "actual": "账号已锁定，请30分钟后重试",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.127234"
+    },
+    {
+      "test_id": "TC-009",
+      "description": "密码长度5位",
+      "status": "SKIP",
+      "expected": "提示密码长度需为6-20位",
+      "actual": "需前端配合测试",
+      "notes": "前端验证",
+      "timestamp": "2026-07-02T11:46:55.127236"
+    },
+    {
+      "test_id": "TC-010",
+      "description": "密码长度21位",
+      "status": "SKIP",
+      "expected": "提示密码长度需为6-20位",
+      "actual": "需前端配合测试",
+      "notes": "前端验证",
+      "timestamp": "2026-07-02T11:46:55.127238"
+    },
+    {
+      "test_id": "TC-011",
+      "description": "密码纯数字",
+      "status": "SKIP",
+      "expected": "提示必须包含数字和字母",
+      "actual": "需前端配合测试",
+      "notes": "前端验证",
+      "timestamp": "2026-07-02T11:46:55.127239"
+    },
+    {
+      "test_id": "TC-012",
+      "description": "密码纯字母",
+      "status": "SKIP",
+      "expected": "提示必须包含数字和字母",
+      "actual": "需前端配合测试",
+      "notes": "前端验证",
+      "timestamp": "2026-07-02T11:46:55.127241"
+    },
+    {
+      "test_id": "TC-013",
+      "description": "30分钟后解锁登录",
+      "status": "PASS",
+      "expected": "登录成功",
+      "actual": "登录成功",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.127245"
+    },
+    {
+      "test_id": "TC-014",
+      "description": "密码传输加密验证",
+      "status": "PASS",
+      "expected": "密码不以明文传输",
+      "actual": "模拟测试：密码已通过SHA256加密",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.127247"
+    },
+    {
+      "test_id": "TC-101",
+      "description": "手机号+正确验证码",
+      "status": "PASS",
+      "expected": "登录成功",
+      "actual": "登录成功",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128839"
+    },
+    {
+      "test_id": "TC-102",
+      "description": "验证码4分59秒内有效",
+      "status": "PASS",
+      "expected": "登录成功",
+      "actual": "登录成功",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128853"
+    },
+    {
+      "test_id": "TC-103",
+      "description": "手机号格式10位",
+      "status": "PASS",
+      "expected": "提示手机号格式不正确",
+      "actual": "手机号格式不正确",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128857"
+    },
+    {
+      "test_id": "TC-104",
+      "description": "手机号格式12位",
+      "status": "PASS",
+      "expected": "提示手机号格式不正确",
+      "actual": "手机号格式不正确",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128859"
+    },
+    {
+      "test_id": "TC-105",
+      "description": "手机号含字母",
+      "status": "PASS",
+      "expected": "提示手机号格式不正确",
+      "actual": "手机号格式不正确",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128861"
+    },
+    {
+      "test_id": "TC-106",
+      "description": "验证码错误",
+      "status": "PASS",
+      "expected": "提示验证码错误",
+      "actual": "验证码错误",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128869"
+    },
+    {
+      "test_id": "TC-107",
+      "description": "验证码过期",
+      "status": "PASS",
+      "expected": "提示验证码已过期",
+      "actual": "验证码已过期",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128875"
+    },
+    {
+      "test_id": "TC-108",
+      "description": "验证码5分钟整过期",
+      "status": "PASS",
+      "expected": "提示验证码已过期",
+      "actual": "验证码已过期",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128883"
+    },
+    {
+      "test_id": "TC-109",
+      "description": "验证码含字母",
+      "status": "SKIP",
+      "expected": "提示验证码必须为6位数字",
+      "actual": "需前端配合测试",
+      "notes": "前端验证",
+      "timestamp": "2026-07-02T11:46:55.128885"
+    },
+    {
+      "test_id": "TC-110",
+      "description": "验证码发送10次内",
+      "status": "PASS",
+      "expected": "前10次发送成功",
+      "actual": "10次均成功",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128918"
+    },
+    {
+      "test_id": "TC-111",
+      "description": "验证码发送第11次",
+      "status": "PASS",
+      "expected": "提示今日发送次数已达上限",
+      "actual": "今日发送次数已达上限",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128921"
+    },
+    {
+      "test_id": "TC-112",
+      "description": "跨日计数重置",
+      "status": "SKIP",
+      "expected": "次日可继续发送",
+      "actual": "需时间穿越测试",
+      "notes": "需要修改系统时间",
+      "timestamp": "2026-07-02T11:46:55.128925"
+    },
+    {
+      "test_id": "TC-201",
+      "description": "记录登录日志",
+      "status": "PASS",
+      "expected": "日志记录IP、时间、设备",
+      "actual": "日志内容: {\"username\": \"13800138003\", \"ip\": \"192.168.1.1\", \"time\": \"2026-07-02T11:46:55.128868\", \"device\": \"Chrome/Windows\", \"success\": false}",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128946"
+    },
+    {
+      "test_id": "TC-202",
+      "description": "失败日志记录",
+      "status": "PASS",
+      "expected": "失败也记录日志",
+      "actual": "失败日志条数: 7",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128949"
+    },
+    {
+      "test_id": "TC-203",
+      "description": "错误提示友好性",
+      "status": "PASS",
+      "expected": "提示信息友好，不暴露系统细节",
+      "actual": "提示信息符合要求",
+      "notes": "",
+      "timestamp": "2026-07-02T11:46:55.128969"
+    }
+  ],
+  "generated_time": "2026-07-02T11:46:55.128975"
+}
