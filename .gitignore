@@ -5,6 +5,7 @@ node_modules/
 dist/
 */dist/
 **/dist/
+frontend/.vite/
 
 # 本地环境配置（含数据库密码，勿提交）
 .env
