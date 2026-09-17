@@ -1,6 +1,6 @@
 /**
  * 用户行为日志 DAO
- * 表：user_action_logs(id, user_id, action, resource_type, resource_id, metadata, duration_ms, ip_address, user_agent, created_at)
+ * 表：user_action_logs(id, user_id, username, action, resource_type, resource_id, metadata, duration_ms, ip_address, user_agent, created_at)
  */
 import { query } from './db.js';
 
@@ -10,9 +10,10 @@ const JOIN_SUFFIX = ' COLLATE utf8mb4_unicode_ci';
  * 记录用户行为
  */
 export async function logAction(data) {
-  const sql = `INSERT INTO user_action_logs (user_id, action, resource_type, resource_id, metadata, duration_ms, ip_address, user_agent) VALUES (?,?,?,?,?,?,?,?)`;
+  const sql = `INSERT INTO user_action_logs (user_id, username, action, resource_type, resource_id, metadata, duration_ms, ip_address, user_agent) VALUES (?,?,?,?,?,?,?,?,?)`;
   const params = [
     data.userId || 'anonymous',
+    data.username || null,
     data.action || 'unknown',
     data.resourceType || null,
     data.resourceId || null,
@@ -48,7 +49,13 @@ export async function listActions(filters = {}) {
   const offset = (safePage - 1) * safeSize;
 
   const dataSql = `
-    SELECT ual.*, COALESCE(NULLIF(u.name,''), ual.user_id) AS display_name
+    SELECT ual.*,
+      CASE
+        WHEN ual.user_id = 'anonymous' THEN '访客'
+        WHEN NULLIF(ual.username, '') IS NOT NULL THEN ual.username
+        WHEN u.name IS NOT NULL AND NULLIF(u.name, '') IS NOT NULL THEN u.name
+        ELSE ual.user_id
+      END AS display_name
     FROM user_action_logs ual
     LEFT JOIN users u ON ual.user_id = u.id${JOIN_SUFFIX}
     ${whereClause}
@@ -92,7 +99,11 @@ export async function getActionStats(filters = {}) {
 
   const byUserSql = `
     SELECT ual.user_id,
-      COALESCE(NULLIF(u.name,''), ual.user_id) AS display_name,
+      CASE
+        WHEN ual.user_id = 'anonymous' THEN '访客'
+        WHEN u.name IS NOT NULL AND NULLIF(u.name, '') IS NOT NULL THEN u.name
+        ELSE ual.user_id
+      END AS display_name,
       COUNT(*) as count
     FROM user_action_logs ual
     LEFT JOIN users u ON ual.user_id = u.id${JOIN_SUFFIX}

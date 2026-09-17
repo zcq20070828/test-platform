@@ -1,0 +1,29 @@
+{
+  "name": "calculator-ui-tests",
+  "version": "1.0.0",
+  "description": "计算器功能UI自动化测试套件",
+  "main": "index.js",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:debug": "playwright test --debug",
+    "test:ui": "playwright test --ui",
+    "test:report": "playwright show-report",
+    "test:equivalence": "playwright test tests/equivalence-class.spec.js",
+    "test:boundary": "playwright test tests/boundary-value.spec.js",
+    "test:priority": "playwright test tests/priority.spec.js",
+    "test:operations": "playwright test tests/operations.spec.js",
+    "test:exceptions": "playwright test tests/exceptions.spec.js"
+  },
+  "keywords": [
+    "calculator",
+    "playwright",
+    "e2e",
+    "testing"
+  ],
+  "author": "Test Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "^1.40.0"
+  }
+}

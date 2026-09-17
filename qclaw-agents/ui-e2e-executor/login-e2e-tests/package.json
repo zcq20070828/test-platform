@@ -1,0 +1,51 @@
+{
+  "name": "login-e2e-tests",
+  "version": "1.0.0",
+  "description": "用户登录功能 UI/E2E 自动化测试框架",
+  "keywords": [
+    "playwright",
+    "e2e",
+    "ui-testing",
+    "login",
+    "automation"
+  ],
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:headed": "playwright test --headed",
+    "test:debug": "playwright test --debug",
+    "test:smoke": "playwright test tests/smoke",
+    "test:functional": "playwright test tests/functional",
+    "test:security": "playwright test tests/security",
+    "test:e2e": "playwright test tests/e2e",
+    "test:parallel": "playwright test --workers=4",
+    "test:serial": "playwright test --workers=1",
+    "test:report": "playwright show-report",
+    "test:coverage": "playwright test --coverage",
+    "test:chromium": "playwright test --project=chromium-desktop",
+    "test:mobile": "playwright test --project=iphone-14",
+    "test:api": "playwright test tests/api",
+    "open:report": "npx playwright show-report reports/html",
+    "open:allure": "allure serve reports/allure-results",
+    "clean:reports": "rm -rf reports/*",
+    "clean:cache": "rm -rf test-results/ .playwright/ playwright-report/",
+    "lint": "eslint src/**/*.ts --fix",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0",
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^7.13.0",
+    "@typescript-eslint/parser": "^7.13.0",
+    "allure-commandline": "^2.30.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,12 @@
+# Data Masking Skill - Python 依赖
+
+# 核心依赖
+python-docx>=0.8.11
+opencv-python>=4.5.0
+numpy>=1.21.0
+
+# 图片 OCR（可选，用于图片脱敏）
+easyocr>=1.7.0
+
+# 其他
+Pillow>=9.0.0

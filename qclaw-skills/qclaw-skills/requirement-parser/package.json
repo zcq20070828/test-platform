@@ -1,8 +1,0 @@
-{
-  "name": "requirement-parser",
-  "version": "1.0.0",
-  "description": "需求解析器：将各类格式的需求文档解析为结构化输出",
-  "type": "module",
-  "main": "backend/parser-core.js",
-  "private": true
-}

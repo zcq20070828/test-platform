@@ -10,11 +10,16 @@ import bcrypt from 'bcrypt';
  * 创建用户
  */
 async function createUser(user) {
+  // 强制校验：username 不得为空
+  if (!user.username || !String(user.username).trim()) {
+    throw new Error('username 不能为空');
+  }
+
   const sql = `
     INSERT INTO users (id, username, password_hash, name, role, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `;
-  
+
   await query(sql, [
     user.id,
     user.username,
@@ -24,7 +29,7 @@ async function createUser(user) {
     new Date(),
     new Date(),
   ]);
-  
+
   return user.id;
 }
 

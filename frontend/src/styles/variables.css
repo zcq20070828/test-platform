@@ -1,0 +1,182 @@
+/* 测试中台 - CSS 变量定义（macOS 浅色规范） */
+
+:root {
+  /* ===== 品牌与交互色 ===== */
+  --primary: #007AFF;
+  --primary-dark: #0062CC;
+  --primary-light: #4DA2FF;
+  --secondary: #5856D6;
+  --accent: #FF9500;
+
+  /* ===== 语义色 ===== */
+  --success: #34C759;
+  --warning: #FF9500;
+  --danger: #FF3B30;
+  --error: #FF3B30;
+  --info: #86868B;
+
+  /* ===== 背景与表面 ===== */
+  --bg: #F5F5F7;
+  --bg-page: #F5F5F7;
+  --surface: #FFFFFF;
+  --surface-translucent: rgba(255, 255, 255, 0.84);
+  --surface-hover: #FAFAFC;
+  --sidebar-bg: rgba(246, 246, 248, 0.72);
+
+  /* ===== 文字 ===== */
+  --text: #1D1D1F;
+  --text-secondary: #6E6E73;
+  --text-muted: #86868B;
+  --text-inverse: #FFFFFF;
+
+  /* ===== 边框与分隔线 ===== */
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.12);
+  --divider: rgba(0, 0, 0, 0.06);
+
+  /* ===== 阴影（极轻） ===== */
+  --shadow-card: 0 10px 32px rgba(0, 0, 0, 0.04);
+  --shadow-card-hover: 0 14px 40px rgba(0, 0, 0, 0.07);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.12);
+
+  /* ===== 圆角 ===== */
+  --radius-card: 16px;
+  --radius-md: 11px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+
+  /* ===== 局部光晕（极淡） ===== */
+  --glow-blue: radial-gradient(120% 80% at 0% 0%, rgba(0, 122, 255, 0.06), transparent 60%);
+  --glow-green: radial-gradient(120% 80% at 100% 0%, rgba(52, 199, 89, 0.05), transparent 60%);
+  /* 登录页光斑（兼容旧引用） */
+  --glow-primary: radial-gradient(circle at 50% 50%, rgba(0, 122, 255, 0.16), transparent 70%);
+  --glow-secondary: radial-gradient(circle at 50% 50%, rgba(52, 199, 89, 0.12), transparent 70%);
+
+  /* ===== 过渡 ===== */
+  --transition: 160ms cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* ============================================================
+     Element Plus 主题覆盖（浅色 macOS）
+     ============================================================ */
+  --el-color-primary: #007AFF;
+  --el-color-primary-light-3: #4DA2FF;
+  --el-color-primary-light-5: #80BDFF;
+  --el-color-primary-light-7: #B3D8FF;
+  --el-color-primary-light-8: #CCE5FF;
+  --el-color-primary-light-9: #E6F2FF;
+  --el-color-primary-dark-2: #0062CC;
+
+  --el-color-success: #34C759;
+  --el-color-success-light-9: #EAF9EF;
+  --el-color-success-light-3: #6FD98C;
+  --el-color-success-dark-2: #29A049;
+
+  --el-color-warning: #FF9500;
+  --el-color-warning-light-9: #FFF4E5;
+  --el-color-warning-light-3: #FFB84D;
+  --el-color-warning-dark-2: #CC7700;
+
+  --el-color-danger: #FF3B30;
+  --el-color-error: #FF3B30;
+  --el-color-danger-light-9: #FFE9E7;
+  --el-color-danger-light-3: #FF7A72;
+  --el-color-danger-dark-2: #CC2F26;
+
+  --el-color-info: #86868B;
+  --el-color-info-light-9: #F2F2F4;
+  --el-color-info-light-3: #A9A9AE;
+  --el-color-info-dark-2: #6B6B70;
+
+  /* 背景 */
+  --el-bg-color: #FFFFFF;
+  --el-bg-color-page: #F5F5F7;
+  --el-bg-color-overlay: #FFFFFF;
+
+  /* 填充（hover/active 等） */
+  --el-fill-color: #F2F2F4;
+  --el-fill-color-light: #F7F7F9;
+  --el-fill-color-lighter: #FAFAFC;
+  --el-fill-color-blank: #FFFFFF;
+  --el-fill-color-dark: #E8E8ED;
+  --el-fill-color-darker: #D9D9DE;
+
+  /* 文字 */
+  --el-text-color-primary: #1D1D1F;
+  --el-text-color-regular: #1D1D1F;
+  --el-text-color-secondary: #6E6E73;
+  --el-text-color-placeholder: #86868B;
+  --el-text-color-disabled: #C7C7CC;
+
+  /* 边框 */
+  --el-border-color: rgba(0, 0, 0, 0.08);
+  --el-border-color-light: rgba(0, 0, 0, 0.06);
+  --el-border-color-lighter: rgba(0, 0, 0, 0.04);
+  --el-border-color-extra-light: rgba(0, 0, 0, 0.03);
+  --el-border-color-dark: rgba(0, 0, 0, 0.12);
+  --el-border-color-darker: rgba(0, 0, 0, 0.2);
+
+  /* 菜单（侧边栏） */
+  --el-menu-bg-color: transparent;
+  --el-menu-text-color: var(--text-secondary);
+  --el-menu-active-color: var(--primary);
+  --el-menu-hover-bg-color: var(--el-fill-color-light);
+  --el-menu-border-color: transparent;
+
+  /* 圆角 */
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 16px;
+
+  /* 字号 */
+  --el-font-size-extra-large: 20px;
+  --el-font-size-large: 16px;
+  --el-font-size-medium: 14px;
+  --el-font-size-base: 13px;
+  --el-font-size-small: 12px;
+  --el-font-size-extra-small: 11px;
+
+  /* 字体族 */
+  --el-font-family: -apple-system, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+
+  /* 阴影 */
+  --el-box-shadow: 0 10px 32px rgba(0, 0, 0, 0.04);
+  --el-box-shadow-light: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --el-box-shadow-lighter: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --el-box-shadow-dark: 0 12px 32px rgba(0, 0, 0, 0.12);
+}
+
+/* 字体族全局默认 */
+html, body, #app {
+  font-family: -apple-system, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* 全局过渡（悬停/聚焦，约 160ms） */
+* {
+  transition: background-color var(--transition), border-color var(--transition),
+    box-shadow var(--transition), color var(--transition);
+}
+
+/* 滚动条（浅色细腻） */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.16);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.28);
+  background-clip: content-box;
+}

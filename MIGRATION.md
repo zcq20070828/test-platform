@@ -90,3 +90,57 @@ node server.js                            # 或 npm run dev（默认 3888）
 # 前端：cd ../frontend && npm install && npm run dev（5173）/ build
 # 数据库：本地 MariaDB test_platform（已就绪）；生产见 deploy/
 ```
+
+---
+
+## 九、2026-09-16 同步（从 QClaw 真实 dev 源 `~/.qclaw/workspace`）
+
+> 触发：用户指出「dev 环境最新版本不是 8/27」。查证后确认真实 **dev 源是 `~/.qclaw/workspace/`**（git 仓库，今日 18:30 仍含未提交改动），而非桌面导出快照（8/17–8/27 衍生品）。
+> 决策（用户确认）：**连未提交改动一起同步**；**保留 test-platform 分层，内容归位**；**不碰生产服务器 42.194.137.114**。
+
+### 9.1 同步范围与结果
+
+| 项 | 同步前 | 同步后 | 来源 |
+|---|---|---|---|
+| `backend/server.js` | 11343 行 | **14354 行**（+今日未提交改动） | rsync `~/.qclaw/workspace/backend/` |
+| `qclaw-agents/` | 15 目录 | **19 目录** | 新增 compatibility-coordinator / performance-tester / report-generator / security-sentinel |
+| 注册 agent（AGENTS 表） | 15 | **18**（report-generator 目录存在但未注册） | server.js 注册表 |
+| `qclaw-skills/` | 28 | **38** | 合并 workspace/skills 安全类（security-sentinel / security-vuln-scanner 等） |
+| `frontend/dist/` | 8/13 构建 | **8/26 构建（87 文件）** | rsync workspace/frontend/dist/ |
+| `qclaw-knowledge-base/` | 162 文件 | **保留不变** | workspace 无此目录，沿用 test-platform |
+| `database/` | 现有 | **保留不变** | workspace 无 database 目录 |
+
+### 9.2 路径解耦（重做）
+
+新 server.js 含 **116 处 `~/.qclaw` 硬编码**，全部重写为常量驱动：
+`PLATFORM_ROOT / RUNTIME_ROOT / SKILLS_DIR / AGENTS_DIR / KB_ROOT / DATA_ROOT / GIT_CLONES_DIR / TEST_RUNS_DIR`。
+**残留 2 处**（openclaw.json / sessions，QClaw 兼容保留，非硬编码路径）。`node --check` 通过，实测启动干净、无 `~/.qclaw` 残留读取。
+
+### 9.3 同步中暴露并修复的问题
+
+1. **后端 node_modules 不完整**：rsync 带入 workspace 的残缺 node_modules，缺 `helmet` / `express-rate-limit` / `playwright`。已 `npm install` 补齐（playwright 跳过浏览器下载）。
+2. **解耦引入语法错误**：decouple 脚本在 L2378 多写一个 `)`，已修正 `path.join(AGENTS_DIR, agentId, 'SOUL.md'))` → 单 `)`。
+3. **嵌套 .git 导致 submodule 报错**：`performance-tester` / `compatibility-coordinator` 自带 `.git`（workspace 内为独立仓库），`git add` 报「does not have a commit checked out」。已删除这两个嵌套 `.git` 元数据（文件保留）。
+4. **.gitignore 加固**：原仅忽略 `node_modules/`、`*/node_modules/`，新增 `**/node_modules/`、`**/dist/` 排除深层嵌套依赖。
+
+### 9.4 运行验证（2026-09-16 实测）
+
+```text
+node server.js  →  http://localhost:3002   （读取 backend/.env：PORT=3002, NODE_ENV=production）
+/api/health    →  {"status":"ok","agents":18,"tasks":389}
+```
+- 启动无 `~/.qclaw` 残留读取错误；18 个注册 agent 正常加载。
+- ✅ **本地 MariaDB（3306）实测可用**：`test_platform` 库已存在且含 42 张表（users 5 行、tasks 389 行等），`appuser`/`apppwd123` 具 `GRANT ALL PRIVILEGES ON *.*`（含 GRANT OPTION）。`database/db.js` 默认值（localhost/appuser/apppwd123/test_platform）直接连通，启动无 DB 错误；`/api/health` 的 `tasks:389` 与库内 389 行一致，证明 DB 已打通。早前「库缺失」为 `mysql -u root` 被拒导致的误判（已更正）。
+- ⚠️ 带入少量 QClaw 运行时产物（各 agent 目录下 `.openclaw/workspace-state.json`），无害；后续可加 `.openclaw/` 到 .gitignore。
+
+### 9.5 版本控制
+
+- 分支：`feature/2026-09-16-sync-workspace`（独立于 main）。
+- 提交 `107ee5a`「同步 QClaw workspace 最新状态」：**856 文件变更，+178441 / −2077**，工作树干净。
+- **未合并 main、未 push、未部署**（按红线，待你在 dev 验收后授权）。
+
+### 9.6 待你定
+
+1. 是否在 dev 验收后合并 `feature/2026-09-16-sync-workspace` → main 并 push？
+2. ~~本地 `test_platform` 库~~：已实测存在并连通（无需新建），DB 功能可用。
+3. 生产服务器 42.194.137.114 仍为旧状态，是否需将本次变更**增量**同步上去（红线：需你明确授权）？

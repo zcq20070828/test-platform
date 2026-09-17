@@ -55,13 +55,16 @@ export async function getWorkflow(id) {
 }
 
 export async function getWorkflows(filters = {}) {
-  let sql = 'SELECT * FROM workflows WHERE 1=1';
+  let sql = `SELECT w.*, COALESCE(NULLIF(u.name,''), '测试用户') AS username
+             FROM workflows w
+             LEFT JOIN users u ON w.user_id = u.id COLLATE utf8mb4_unicode_ci
+             WHERE 1=1`;
   const params = [];
 
-  if (filters.userId)   { sql += ' AND user_id = ?';        params.push(filters.userId); }
-  if (filters.status)   { sql += ' AND status = ?';         params.push(filters.status); }
-  if (filters.limit)    { sql += ' ORDER BY started_at DESC LIMIT ?'; params.push(filters.limit); }
-  else                   { sql += ' ORDER BY started_at DESC'; }
+  if (filters.userId)   { sql += ' AND w.user_id = ?';        params.push(filters.userId); }
+  if (filters.status)   { sql += ' AND w.status = ?';         params.push(filters.status); }
+  if (filters.limit)    { sql += ' ORDER BY w.started_at DESC LIMIT ?'; params.push(filters.limit); }
+  else                   { sql += ' ORDER BY w.started_at DESC'; }
 
   const rows = await query(sql, params);
   return rows.map(formatWorkflow);
@@ -77,6 +80,7 @@ function formatWorkflow(row) {
   return {
     id:              row.id,
     userId:          row.user_id,
+    username:        row.username || null, // 用户名
     input:           row.input,
     status:          row.status,
     steps:           parseJsonField(row.steps, []),
@@ -86,9 +90,20 @@ function formatWorkflow(row) {
     manualHours:     row.manual_hours !== null ? Number(row.manual_hours) : null,
     mode:            row.mode,
     scenario:        row.scenario,
-    startedAt:       row.started_at ? row.started_at.toISOString() : null,
-    completedAt:     row.completed_at ? row.completed_at.toISOString() : null,
+    startedAt:       row.started_at ? toDate(row.started_at)?.toISOString() : null,
+    completedAt:     row.completed_at ? toDate(row.completed_at)?.toISOString() : null,
   };
+}
+
+/** 安全转换日期:支持 Date/字符串/数字/Date 对象 */
+function toDate(val) {
+  if (!val) return null;
+  if (val instanceof Date) return val;
+  if (typeof val === 'string' || typeof val === 'number') {
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
 }
 
 /** 安全解析 JSON 字段:mysql2 已自动解析的 array/object 直接返回,字符串才 parse */

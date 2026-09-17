@@ -1,0 +1,506 @@
+{
+  "reportInfo": {
+    "reportId": "RPT-2025-0621-001",
+    "reportType": "系统测试报告",
+    "projectName": "XX项目",
+    "version": "v2.0",
+    "testPhase": "系统测试",
+    "testPeriod": {
+      "startDate": "2025-06-01",
+      "endDate": "2025-06-20",
+      "duration": 20
+    },
+    "reportDate": "2025-06-21",
+    "preparedBy": "测试组",
+    "reviewedBy": null,
+    "aiAgent": "test-reporter",
+    "knowledgeBase": ["general", "project-test"]
+  },
+
+  "一、执行概况": {
+    "summary": {
+      "totalTestCases": 326,
+      "executedTestCases": 316,
+      "executionRate": "96.9%",
+      "passedTestCases": 298,
+      "failedTestCases": 12,
+      "blockedTestCases": 6,
+      "notExecutedCases": 10,
+      "passRate": "94.3%",
+      "blockRate": "1.8%"
+    },
+    "duration": {
+      "totalDays": 20,
+      "workingDays": 14,
+      "startTime": "2025-06-01 09:00",
+      "endTime": "2025-06-20 18:00",
+      "totalHours": 160
+    },
+    "testCoverage": {
+      "requirementCoverageRate": "100%",
+      "requirementPoints": 42,
+      "coveredPoints": 42,
+      "modulesCovered": 5,
+      "apisCovered": 86
+    },
+    "testTypes": {
+      "functional": {"cases": 296, "executed": 288, "passed": 275, "passRate": "95.5%"},
+      "interface": {"cases": 22, "executed": 19, "passed": 18, "passRate": "94.7%"},
+      "security": {"cases": 8, "executed": 5, "passed": 5, "passRate": "100%"},
+      "performance": {"cases": 0, "executed": 0, "passed": 0, "passRate": "N/A"}
+    }
+  },
+
+  "二、测试用例执行明细": {
+    "moduleExecution": [
+      {
+        "module": "用户管理",
+        "totalCases": 68,
+        "executed": 67,
+        "passed": 65,
+        "failed": 2,
+        "blocked": 0,
+        "notExecuted": 1,
+        "executionRate": "98.5%",
+        "passRate": "97.0%",
+        "responseTeam": "测试组A"
+      },
+      {
+        "module": "订单管理",
+        "totalCases": 82,
+        "executed": 80,
+        "passed": 74,
+        "failed": 4,
+        "blocked": 2,
+        "notExecuted": 2,
+        "executionRate": "97.6%",
+        "passRate": "92.5%",
+        "responseTeam": "测试组B"
+      },
+      {
+        "module": "支付模块",
+        "totalCases": 56,
+        "executed": 56,
+        "passed": 53,
+        "failed": 2,
+        "blocked": 1,
+        "notExecuted": 0,
+        "executionRate": "100%",
+        "passRate": "96.4%",
+        "responseTeam": "测试组C"
+      },
+      {
+        "module": "报表模块",
+        "totalCases": 48,
+        "executed": 48,
+        "passed": 45,
+        "failed": 1,
+        "blocked": 2,
+        "notExecuted": 0,
+        "executionRate": "100%",
+        "passRate": "93.8%",
+        "responseTeam": "测试组D"
+      },
+      {
+        "module": "系统配置",
+        "totalCases": 42,
+        "executed": 41,
+        "passed": 38,
+        "failed": 2,
+        "blocked": 1,
+        "notExecuted": 1,
+        "executionRate": "97.6%",
+        "passRate": "92.7%",
+        "responseTeam": "测试组A"
+      },
+      {
+        "module": "接口测试",
+        "totalCases": 22,
+        "executed": 19,
+        "passed": 18,
+        "failed": 1,
+        "blocked": 0,
+        "notExecuted": 3,
+        "executionRate": "86.4%",
+        "passRate": "94.7%",
+        "responseTeam": "测试组B"
+      },
+      {
+        "module": "安全测试",
+        "totalCases": 8,
+        "executed": 5,
+        "passed": 5,
+        "failed": 0,
+        "blocked": 0,
+        "notExecuted": 3,
+        "executionRate": "62.5%",
+        "passRate": "100%",
+        "responseTeam": "测试组C"
+      }
+    ],
+    "priorityExecution": [
+      {
+        "priority": "P0-冒烟",
+        "totalCases": 32,
+        "executed": 32,
+        "passed": 31,
+        "failed": 1,
+        "blocked": 0,
+        "passRate": "96.9%",
+        "note": "TC-OM-002库存不足创建订单失败（关联BUG-015）"
+      },
+      {
+        "priority": "P1-核心",
+        "totalCases": 128,
+        "executed": 126,
+        "passed": 120,
+        "failed": 4,
+        "blocked": 2,
+        "passRate": "95.2%",
+        "note": "2个P1级缺陷影响"
+      },
+      {
+        "priority": "P2-重要",
+        "totalCases": 106,
+        "executed": 102,
+        "passed": 96,
+        "failed": 5,
+        "blocked": 1,
+        "passRate": "94.1%",
+        "note": ""
+      },
+      {
+        "priority": "P3-一般",
+        "totalCases": 60,
+        "executed": 56,
+        "passed": 51,
+        "failed": 2,
+        "blocked": 3,
+        "passRate": "91.1%",
+        "note": ""
+      }
+    ],
+    "failedTestCases": [
+      {
+        "caseId": "TC-OM-002",
+        "caseTitle": "库存不足时创建订单验证",
+        "module": "订单管理",
+        "priority": "P0",
+        "status": "失败",
+        "defectId": "BUG-015",
+        "executionDate": "2025-06-08",
+        "errorDescription": "库存不足时创建订单未正确提示，页面卡死"
+      },
+      {
+        "caseId": "TC-OM-005",
+        "caseTitle": "批量导入订单功能",
+        "module": "订单管理",
+        "priority": "P1",
+        "status": "失败",
+        "defectId": "BUG-023",
+        "executionDate": "2025-06-16",
+        "errorDescription": "批量导入订单超过500条时系统报500错误"
+      },
+      {
+        "caseId": "TC-PM-003",
+        "caseTitle": "微信支付回调处理",
+        "module": "支付模块",
+        "priority": "P1",
+        "status": "失败",
+        "defectId": "BUG-019",
+        "executionDate": "2025-06-12",
+        "errorDescription": "微信支付回调偶发失败，订单状态不更新"
+      }
+    ]
+  },
+
+  "三、缺陷统计与分类": {
+    "defectOverview": {
+      "totalDefects": 28,
+      "critical": {"P0": 0, "description": "无系统崩溃或数据丢失"},
+      "serious": {"P1": 3, "description": "核心功能异常，影响主流程"},
+      "general": {"P2": 12, "description": "功能存在偏差，有替代方案"},
+      "minor": {"P3": 13, "description": "界面/提示文案等小问题"},
+      "fixed": 19,
+      "pending": 6,
+      "deferred": 3,
+      "closureRate": "67.9%",
+      "fixRate": "82.1%"
+    },
+    "defectByModule": [
+      {
+        "module": "用户管理",
+        "P0": 0, "P1": 0, "P2": 3, "P3": 4,
+        "total": 7,
+        "fixed": 5, "pending": 1, "deferred": 1
+      },
+      {
+        "module": "订单管理",
+        "P0": 0, "P1": 2, "P2": 4, "P3": 2,
+        "total": 8,
+        "fixed": 5, "pending": 2, "deferred": 1
+      },
+      {
+        "module": "支付模块",
+        "P0": 0, "P1": 1, "P2": 2, "P3": 3,
+        "total": 6,
+        "fixed": 4, "pending": 1, "deferred": 1
+      },
+      {
+        "module": "报表模块",
+        "P0": 0, "P1": 0, "P2": 2, "P3": 2,
+        "total": 4,
+        "fixed": 3, "pending": 1, "deferred": 0
+      },
+      {
+        "module": "系统配置",
+        "P0": 0, "P1": 0, "P2": 1, "P3": 2,
+        "total": 3,
+        "fixed": 2, "pending": 1, "deferred": 0
+      }
+    ],
+    "p1Defects": [
+      {
+        "defectId": "BUG-015",
+        "title": "库存不足时创建订单未正确提示，页面卡死",
+        "module": "订单管理",
+        "severity": "P1",
+        "foundDate": "2025-06-08",
+        "status": "已修复",
+        "reproductionRate": "必现",
+        "fixVersion": "v2.0"
+      },
+      {
+        "defectId": "BUG-019",
+        "title": "微信支付回调偶发失败，订单状态不更新",
+        "module": "支付模块",
+        "severity": "P1",
+        "foundDate": "2025-06-12",
+        "status": "待修复",
+        "reproductionRate": "经常",
+        "fixVersion": "v2.0",
+        "note": "需增加重试机制，加强日志监控"
+      },
+      {
+        "defectId": "BUG-023",
+        "title": "批量导入订单超过500条时系统报500错误",
+        "module": "订单管理",
+        "severity": "P1",
+        "foundDate": "2025-06-16",
+        "status": "待修复",
+        "reproductionRate": "必现",
+        "fixVersion": "v2.0",
+        "note": "需优化分批处理逻辑"
+      }
+    ],
+    "defectTrend": [
+      {"period": "06-01 ~ 06-05", "newlyAdded": 8, "fixed": 2, "closed": 1, "remaining": 7, "cumulative": 8, "closureRate": "12.5%"},
+      {"period": "06-06 ~ 06-10", "newlyAdded": 7, "fixed": 5, "closed": 4, "remaining": 10, "cumulative": 15, "closureRate": "33.3%"},
+      {"period": "06-11 ~ 06-15", "newlyAdded": 6, "fixed": 6, "closed": 5, "remaining": 11, "cumulative": 21, "closureRate": "47.6%"},
+      {"period": "06-16 ~ 06-20", "newlyAdded": 7, "fixed": 7, "closed": 9, "remaining": 9, "cumulative": 28, "closureRate": "67.9%"}
+    ],
+    "defectByType": [
+      {"type": "功能缺陷", "count": 12, "percentage": "42.9%"},
+      {"type": "界面缺陷", "count": 8, "percentage": "28.6%"},
+      {"type": "接口缺陷", "count": 4, "percentage": "14.3%"},
+      {"type": "性能问题", "count": 2, "percentage": "7.1%"},
+      {"type": "其他", "count": 2, "percentage": "7.1%"}
+    ]
+  },
+
+  "四、风险评估": {
+    "highRisk": [
+      {
+        "riskId": "RISK-001",
+        "riskName": "BUG-019微信支付回调偶发失败",
+        "severity": "高",
+        "impact": "支付模块核心流程受影响",
+        "probability": "经常",
+        "mitigation": "增加重试机制，加强日志监控",
+        "status": "监控中",
+        "owner": "开发组C"
+      },
+      {
+        "riskId": "RISK-002",
+        "riskName": "BUG-023批量导入500+条报错",
+        "severity": "高",
+        "impact": "订单管理大数据量场景无法使用",
+        "probability": "必现",
+        "mitigation": "优化分批处理逻辑",
+        "status": "修复中",
+        "owner": "开发组B"
+      }
+    ],
+    "mediumRisk": [
+      {
+        "riskId": "RISK-003",
+        "riskName": "安全测试未全部完成",
+        "severity": "中",
+        "impact": "系统安全性无法全面评估",
+        "probability": "确定",
+        "mitigation": "上线前完成剩余安全测试项",
+        "status": "进行中",
+        "owner": "测试组C"
+      }
+    ],
+    "lowRisk": [
+      {
+        "riskId": "RISK-004",
+        "riskName": "3个P2缺陷延期处理",
+        "severity": "低",
+        "impact": "用户体验轻微受影响",
+        "probability": "确定",
+        "mitigation": "v2.1版本优先修复",
+        "status": "已确认",
+        "owner": "开发组A/B/C"
+      }
+    ]
+  },
+
+  "五、测试建议": {
+    "immediacy": [
+      "优先修复2个P1级待修复缺陷（BUG-019、BUG-023），并进行回归验证",
+      "完成剩余3条安全测试项，确保系统安全性",
+      "增加支付回调重试机制，防止偶发失败"
+    ],
+    "shortTerm": [
+      "修复完成后进行全量回归测试，重点验证支付和订单模块",
+      "建立大数据量场景的性能测试用例",
+      "补充接口测试3条未执行用例"
+    ],
+    "mediumTerm": [
+      "v2.1版本优先处理延期缺陷（BUG-005、BUG-010、BUG-018）",
+      "优化错误提示和用户界面体验",
+      "完善自动化测试用例覆盖"
+    ],
+    "processImprovement": [
+      "建议加强开发自测，减少低级缺陷流入测试阶段",
+      "建立缺陷预防机制，在需求评审阶段识别潜在风险",
+      "完善CI/CD流程，增加自动化回归测试"
+    ]
+  },
+
+  "六、测试结论": {
+    "aiAnalysis": {
+      "testCompletion": {
+        "requirementCoverageRate": "100%",
+        "caseExecutionRate": "96.9%",
+        "casePassRate": "94.3%",
+        "p0p1PassRate": "95.6%",
+        "defectFixRate": "82.1%"
+      },
+      "p1Status": {
+        "totalP1": 3,
+        "fixed": 1,
+        "pending": 2,
+        "fixRate": "33.3%"
+      }
+    },
+    "recommendedConclusion": "有条件通过",
+    "recommendedAction": "建议修复P1缺陷后上线",
+    "keyFindings": [
+      "本次测试需求覆盖率达100%，用例执行率96.9%，整体测试覆盖充分",
+      "P0级致命缺陷为0，系统核心功能基本可用",
+      "存在2个P1级待修复缺陷，建议修复并回归验证后再上线",
+      "3个P2缺陷延期至v2.1版本，不影响核心业务流程",
+      "安全测试尚未全部完成，建议上线前补齐剩余安全测试项"
+    ],
+    "humanReviewRequired": true,
+    "finalConclusion": null,
+    "finalReviewer": null,
+    "finalReviewDate": null
+  },
+
+  "七、遗留问题清单": {
+    "pendingDefects": [
+      {
+        "id": 1,
+        "defectId": "BUG-019",
+        "description": "微信支付回调偶发失败，订单状态不更新",
+        "severity": "P1",
+        "owner": "开发组A",
+        "targetVersion": "v2.0",
+        "status": "修复中"
+      },
+      {
+        "id": 2,
+        "defectId": "BUG-023",
+        "description": "批量导入订单超过500条报500错误",
+        "severity": "P1",
+        "owner": "开发组B",
+        "targetVersion": "v2.0",
+        "status": "修复中"
+      },
+      {
+        "id": 3,
+        "defectId": "BUG-005",
+        "description": "用户头像上传偶发裁切失败",
+        "severity": "P2",
+        "owner": "开发组A",
+        "targetVersion": "v2.1",
+        "status": "延期"
+      },
+      {
+        "id": 4,
+        "defectId": "BUG-010",
+        "description": "订单列表排序不稳定",
+        "severity": "P2",
+        "owner": "开发组B",
+        "targetVersion": "v2.1",
+        "status": "延期"
+      },
+      {
+        "id": 5,
+        "defectId": "BUG-018",
+        "description": "导出Excel金额格式不一致",
+        "severity": "P2",
+        "owner": "开发组C",
+        "targetVersion": "v2.1",
+        "status": "延期"
+      }
+    ],
+    "pendingTests": [
+      {
+        "id": 6,
+        "description": "安全测试3项未完成",
+        "type": "测试",
+        "owner": "测试组C",
+        "targetVersion": "上线前",
+        "status": "进行中"
+      },
+      {
+        "id": 7,
+        "description": "接口测试3条用例待环境就绪后执行",
+        "type": "测试",
+        "owner": "测试组B",
+        "targetVersion": "v2.0",
+        "status": "待执行"
+      }
+    ]
+  },
+
+  "八、附录": {
+    "attachments": [
+      {"name": "附录A：完整需求追踪矩阵", "format": "Excel", "file": "测试报告_数据表.xlsx"},
+      {"name": "附录B：完整缺陷清单", "format": "Excel", "file": "测试报告_数据表.xlsx"},
+      {"name": "附录C：测试用例执行明细", "format": "Excel", "file": "测试报告_数据表.xlsx"},
+      {"name": "附录D：性能测试报告", "format": "PDF", "file": "性能测试报告.pdf"},
+      {"name": "附录E：安全测试报告", "format": "PDF", "file": "安全测试报告.pdf"}
+    ],
+    "references": [
+      {"id": 1, "name": "XX项目v2.0需求规格说明书", "version": "v2.0", "source": "产品部"},
+      {"id": 2, "name": "XX项目v2.0接口设计文档", "version": "v2.0", "source": "开发部"},
+      {"id": 3, "name": "测试中台软件功能测试规范", "version": "v1.2", "source": "通用知识库"},
+      {"id": 4, "name": "测试中台测试方法指南-功能篇", "version": "v1.1", "source": "通用知识库"},
+      {"id": 5, "name": "测试中台测试方法指南-接口篇", "version": "v1.0", "source": "通用知识库"}
+    ]
+  },
+
+  "metadata": {
+    "generatedAt": "2025-06-21T18:00:00+08:00",
+    "generatedBy": "test-reporter AI Agent",
+    "version": "1.0",
+    "encoding": "UTF-8",
+    "format": "JSON"
+  }
+}

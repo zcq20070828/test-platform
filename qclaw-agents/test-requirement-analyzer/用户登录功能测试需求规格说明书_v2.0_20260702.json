@@ -1,0 +1,1885 @@
+{
+  "documentInfo": {
+    "documentId": "LOGIN-TEST-REQ-v2.0-20260702",
+    "title": "用户登录功能测试需求规格说明书",
+    "version": "v2.0",
+    "createdDate": "2026-07-02",
+    "createdBy": "测试需求分析Agent",
+    "reviewStatus": "待审核",
+    "changesFromV1": [
+      "新增28项安全测试用例（含详细Payload和步骤）",
+      "补充CAPTCHA验证码测试用例（P0级）",
+      "补充Session Fixation测试用例（P0级）",
+      "补充错误提示信息枚举防护测试用例",
+      "所有测试用例补充详细操作步骤（≥3步）",
+      "CSRF防护测试提升为P0优先级",
+      "会话超时测试提升为P0优先级",
+      "完善预期结果为确定性描述"
+    ]
+  },
+  "section1Overview": {
+    "title": "1. 概述",
+    "content": {
+      "purpose": "本规格说明书定义了用户登录功能的完整测试需求，包括功能测试、安全测试、性能测试等，适用于测试团队进行全面的登录功能验证。",
+      "scope": {
+        "included": [
+          "正常登录流程测试（用户名/手机号/邮箱+密码）",
+          "异常登录流程测试（错误凭证、格式错误、空值等）",
+          "CAPTCHA验证码功能测试（P0）",
+          "记住我功能测试",
+          "多设备登录测试",
+          "退出登录功能测试",
+          "登录状态保持测试",
+          "会话超时测试（P0）",
+          "CSRF防护测试（P0）",
+          "Session Fixation防护测试（P0）",
+          "暴力破解防护测试",
+          "SQL注入防护测试",
+          "XSS攻击防护测试",
+          "OAuth第三方登录安全测试",
+          "敏感信息泄露测试"
+        ],
+        "excluded": [
+          "用户注册功能（独立模块）",
+          "密码找回流程（独立模块）",
+          "用户信息修改功能",
+          "权限管理功能"
+        ]
+      }
+    }
+  },
+  "section2业务流程": {
+    "title": "2. 核心业务流程",
+    "content": {
+      "flow": "用户访问登录页面 → 输入用户名和密码 → (可选)输入验证码 → 提交登录 → 系统验证用户身份 → 返回登录结果 → 成功：创建会话，跳转首页/原请求页面 → 失败：提示错误信息，允许重新登录",
+      "keyRules": [
+        "用户必须提供有效的身份凭证（用户名/手机号/邮箱 + 密码）",
+        "系统需要验证凭证的正确性",
+        "登录成功后创建会话（Session/Token），用于后续请求的身份识别",
+        "登录失败应提供明确的错误提示，但不能泄露敏感信息",
+        "支持验证码机制防止自动化攻击",
+        "连续失败N次后强制显示验证码或锁定账号"
+      ]
+    }
+  },
+  "section3输入输出": {
+    "title": "3. 输入输出项识别",
+    "inputFields": [
+      {
+        "fieldName": "用户名",
+        "dataType": "String",
+        "lengthLimit": "4-50字符",
+        "required": true,
+        "formatRequirement": "字母开头，支持字母、数字、下划线",
+        "alternativeInput": "手机号（11位数字）或邮箱（标准邮箱格式）"
+      },
+      {
+        "fieldName": "密码",
+        "dataType": "String",
+        "lengthLimit": "6-20字符",
+        "required": true,
+        "formatRequirement": "包含字母和数字，区分大小写"
+      },
+      {
+        "fieldName": "验证码",
+        "dataType": "String",
+        "lengthLimit": "4-6字符",
+        "required": "条件必填",
+        "formatRequirement": "字母数字组合，不区分大小写"
+      },
+      {
+        "fieldName": "记住我",
+        "dataType": "Boolean",
+        "required": false,
+        "defaultValue": false
+      },
+      {
+        "fieldName": "设备信息",
+        "dataType": "String",
+        "required": false,
+        "autoCapture": "User-Agent、设备ID、IP地址"
+      }
+    ],
+    "outputFields": [
+      {
+        "fieldName": "HTTP状态码",
+        "dataType": "Number",
+        "successValue": 200,
+        "failureValues": [400, 401, 403, 429]
+      },
+      {
+        "fieldName": "响应消息",
+        "dataType": "String",
+        "successMessage": "登录成功",
+        "failureMessages": ["用户名或密码错误", "验证码错误", "账号已锁定", "账号已禁用"]
+      },
+      {
+        "fieldName": "认证Token",
+        "dataType": "String",
+        "format": "JWT或SessionID",
+        "onSuccess": "返回有效Token",
+        "onFailure": "返回null"
+      },
+      {
+        "fieldName": "用户信息",
+        "dataType": "Object",
+        "fields": ["用户ID", "昵称", "角色", "头像URL"]
+      },
+      {
+        "fieldName": "过期时间",
+        "dataType": "Timestamp",
+        "normalSession": "30分钟",
+        "rememberMeSession": "30天"
+      },
+      {
+        "fieldName": "跳转URL",
+        "dataType": "String",
+        "successTarget": "首页或原始请求页面"
+      }
+    ]
+  },
+  "section4测试用例": {
+    "title": "4. 测试用例规格说明书",
+    "testCases": []
+  },
+  "section4测试用例_P0正向": {
+    "title": "4.1 P0级测试用例 - 正向功能测试",
+    "priority": "P0",
+    "description": "必须测试通过的阻塞性功能",
+    "testCases": [
+      {
+        "tcId": "TC-P0-LOGIN-001",
+        "tcName": "用户名密码正确登录",
+        "testObjective": "验证用户使用正确的用户名和密码能够成功登录",
+        "priority": "P0",
+        "precondition": ["存在已注册用户，用户名testuser01，密码Test1234"],
+        "testSteps": [
+          "步骤1: 打开浏览器，访问登录页面URL",
+          "步骤2: 在用户名输入框中输入testuser01",
+          "步骤3: 在密码输入框中输入Test1234",
+          "步骤4: 点击登录按钮或按下回车键",
+          "步骤5: 等待页面响应，记录HTTP响应码和响应体"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "HTTP响应码为200",
+          "响应消息包含\"登录成功\"或\"success\"",
+          "响应头中包含Set-Cookie或Authorization字段",
+          "页面跳转到首页或指定的目标页面",
+          "响应时间小于2秒"
+        ],
+        "testType": "功能测试"
+      },
+      {
+        "tcId": "TC-P0-LOGIN-002",
+        "tcName": "手机号密码登录",
+        "testObjective": "验证用户使用手机号和密码能够成功登录",
+        "priority": "P0",
+        "precondition": ["存在已绑定手机号的用户，手机号13800138000，密码Test1234"],
+        "testSteps": [
+          "步骤1: 打开浏览器，访问登录页面URL",
+          "步骤2: 切换登录方式为手机号登录（如有切换按钮）",
+          "步骤3: 输入手机号13800138000",
+          "步骤4: 输入密码Test1234",
+          "步骤5: 点击登录按钮提交"
+        ],
+        "testData": {
+          "phone": "13800138000",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "HTTP响应码为200",
+          "登录成功，跳转到首页",
+          "返回有效的认证Token"
+        ],
+        "testType": "功能测试"
+      },
+      {
+        "tcId": "TC-P0-LOGIN-003",
+        "tcName": "邮箱密码登录",
+        "testObjective": "验证用户使用邮箱和密码能够成功登录",
+        "priority": "P0",
+        "precondition": ["存在已绑定邮箱的用户，邮箱test@example.com，密码Test1234"],
+        "testSteps": [
+          "步骤1: 打开浏览器，访问登录页面URL",
+          "步骤2: 切换登录方式为邮箱登录（如有切换按钮）",
+          "步骤3: 输入邮箱地址test@example.com",
+          "步骤4: 输入密码Test1234",
+          "步骤5: 点击登录按钮提交"
+        ],
+        "testData": {
+          "email": "test@example.com",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "HTTP响应码为200",
+          "登录成功，跳转到首页",
+          "返回有效的认证Token"
+        ],
+        "testType": "功能测试"
+      },
+      {
+        "tcId": "TC-P0-LOGIN-004",
+        "tcName": "登录后访问原页面",
+        "testObjective": "验证用户登录后能够正确返回原始请求页面",
+        "priority": "P0",
+        "precondition": ["存在已注册用户testuser01/Test1234"],
+        "testSteps": [
+          "步骤1: 在未登录状态下，直接访问需要认证的页面URL（如/user/profile）",
+          "步骤2: 系统应重定向到登录页面，并记录原始请求URL",
+          "步骤3: 在登录页面输入用户名testuser01和密码Test1234",
+          "步骤4: 点击登录按钮提交",
+          "步骤5: 观察页面跳转是否返回到原始请求的/profile页面"
+        ],
+        "testData": {
+          "originalUrl": "/user/profile",
+          "username": "testuser01",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "登录后页面跳转到/user/profile",
+          "而非默认首页",
+          "用户信息正确显示在页面中"
+        ],
+        "testType": "功能测试"
+      }
+    ]
+  },
+  "section4测试用例_P0验证码": {
+    "title": "4.2 P0级测试用例 - CAPTCHA验证码测试【新增】",
+    "priority": "P0",
+    "description": "验证码功能测试，CAPTCHA为防止暴力破解的核心机制",
+    "testCases": [
+      {
+        "tcId": "TC-P0-CAPTCHA-001",
+        "tcName": "连续失败5次后强制显示验证码",
+        "testObjective": "验证系统在同一账号连续登录失败5次后强制显示验证码",
+        "priority": "P0",
+        "precondition": ["存在已注册用户testuser01/Test1234"],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 使用用户testuser01，连续输入错误密码Test1111进行登录",
+          "步骤3: 每次失败后记录错误提示和验证码显示状态",
+          "步骤4: 第5次失败后刷新登录页面",
+          "步骤5: 验证验证码输入框是否强制显示"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "passwords": ["Test1111", "Test2222", "Test3333", "Test4444", "Test5555"]
+        },
+        "expectedResults": [
+          "前4次登录，验证码输入框为可选择显示（不强制的）",
+          "第5次登录失败后，验证码输入框强制显示且必须填写",
+          "错误提示显示\"请输入验证码\"",
+          "验证码图片正确加载并可刷新"
+        ],
+        "testType": "功能测试"
+      },
+      {
+        "tcId": "TC-P0-CAPTCHA-002",
+        "tcName": "验证码错误后刷新验证码",
+        "testObjective": "验证用户输入错误验证码后能够刷新获取新验证码",
+        "priority": "P0",
+        "precondition": ["存在已注册用户testuser01/Test1234，验证码强制显示中"],
+        "testSteps": [
+          "步骤1: 打开登录页面，输入用户名testuser01和密码Test1234",
+          "步骤2: 输入错误的验证码ABCD1234",
+          "步骤3: 点击登录按钮提交",
+          "步骤4: 记录错误提示后，点击验证码刷新按钮",
+          "步骤5: 获取新的验证码图片内容",
+          "步骤6: 输入正确的验证码后再次提交"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234",
+          "wrongCode": "ABCD1234"
+        },
+        "expectedResults": [
+          "错误验证码提交后返回\"验证码错误\"",
+          "刷新按钮点击后验证码图片更新",
+          "新验证码提交后登录成功"
+        ],
+        "testType": "功能测试"
+      },
+      {
+        "tcId": "TC-P0-CAPTCHA-003",
+        "tcName": "验证码过期后重新获取",
+        "testObjective": "验证验证码超时后需要重新获取",
+        "priority": "P0",
+        "precondition": ["存在已注册用户testuser01/Test1234"],
+        "testSteps": [
+          "步骤1: 打开登录页面，触发验证码显示",
+          "步骤2: 记录验证码显示时间",
+          "步骤3: 等待超过验证码有效期（通常为5分钟）",
+          "步骤4: 输入旧的验证码Test1234（假设与密码相同格式，实际为验证码）",
+          "步骤5: 点击登录按钮提交",
+          "步骤6: 观察是否提示验证码过期"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234",
+          "expiredCode": "旧验证码"
+        },
+        "expectedResults": [
+          "系统提示\"验证码已过期\"或\"验证码超时\"",
+          "必须刷新获取新验证码才能继续登录",
+          "旧验证码被系统拒绝使用"
+        ],
+        "testType": "功能测试"
+      },
+      {
+        "tcId": "TC-P0-CAPTCHA-004",
+        "tcName": "验证码不区分大小写",
+        "testObjective": "验证验证码验证时不区分英文字母大小写",
+        "priority": "P0",
+        "precondition": ["存在已注册用户testuser01/Test1234，验证码显示为AbC123"],
+        "testSteps": [
+          "步骤1: 获取当前显示的验证码内容，记录大小写（如AbC123）",
+          "步骤2: 输入小写形式的验证码abc123",
+          "步骤3: 输入正确用户名和密码，点击登录",
+          "步骤4: 记录登录结果"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234",
+          "codeCase1": "abc123"
+        },
+        "expectedResults": [
+          "验证码abc123与AbC123验证通过",
+          "登录成功"
+        ],
+        "testType": "功能测试"
+      }
+    ]
+  },
+  "section4测试用例_P0安全注入": {
+    "title": "4.3 P0级测试用例 - SQL注入防护测试【新增详细Payload】",
+    "priority": "P0",
+    "description": "SQL注入攻击是OWASP Top 10 A03:2021第一大威胁，必须验证防护有效",
+    "testCases": [
+      {
+        "tcId": "TC-P0-INJECT-001",
+        "tcName": "SQL注入-认证绕过Payload测试",
+        "testObjective": "验证系统能够防护常见的SQL注入认证绕过攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入Payload: ' OR '1'='1",
+          "步骤3: 在密码输入框输入任意值: test1234",
+          "步骤4: 点击登录按钮提交请求",
+          "步骤5: 使用Burp Suite拦截并检查数据库是否执行了注入的SQL",
+          "步骤6: 记录HTTP响应码和响应体内容"
+        ],
+        "testData": {
+          "username": "' OR '1'='1",
+          "password": "test1234"
+        },
+        "expectedResults": [
+          "HTTP响应码为401或200但用户信息为空",
+          "登录不成功，用户无法获得有效会话",
+          "数据库日志不包含'1'='1'的执行记录",
+          "响应消息为\"用户名或密码错误\"而非SQL错误信息",
+          "不出现数据库错误堆栈信息"
+        ],
+        "testType": "安全测试-SQL注入"
+      },
+      {
+        "tcId": "TC-P0-INJECT-002",
+        "tcName": "SQL注入-注释符绕过测试",
+        "testObjective": "验证系统能够防护使用SQL注释符的注入攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入Payload: admin'--",
+          "步骤3: 在密码输入框输入任意值: anything",
+          "步骤4: 点击登录按钮提交请求",
+          "步骤5: 检查响应结果和数据库行为"
+        ],
+        "testData": {
+          "username": "admin'--",
+          "password": "anything"
+        },
+        "expectedResults": [
+          "登录失败，返回\"用户名或密码错误\"",
+          "SQL查询不被注释符截断",
+          "系统不返回管理员权限或任意用户数据"
+        ],
+        "testType": "安全测试-SQL注入"
+      },
+      {
+        "tcId": "TC-P0-INJECT-003",
+        "tcName": "SQL注入-UNION SELECT攻击测试",
+        "testObjective": "验证系统能够防护UNION注入攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入Payload: ' UNION SELECT NULL--",
+          "步骤3: 在密码输入框输入: test",
+          "步骤4: 点击登录按钮提交请求",
+          "步骤5: 检查是否返回数据库结构信息"
+        ],
+        "testData": {
+          "username": "' UNION SELECT NULL--",
+          "password": "test"
+        },
+        "expectedResults": [
+          "登录失败",
+          "不返回UNION查询的附加数据",
+          "不暴露数据库列数或数据类型信息"
+        ],
+        "testType": "安全测试-SQL注入"
+      },
+      {
+        "tcId": "TC-P0-INJECT-004",
+        "tcName": "SQL注入-Blind布尔盲注测试",
+        "testObjective": "验证系统能够防护Blind SQL Injection攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入第一个Payload: test' AND '1'='1",
+          "步骤3: 在密码输入框输入正确密码Test1234",
+          "步骤4: 记录响应时间T1",
+          "步骤5: 输入第二个Payload: test' AND '1'='2",
+          "步骤6: 记录响应时间T2",
+          "步骤7: 比较T1和T2，验证是否存在基于响应时间的盲注可能"
+        ],
+        "testData": {
+          "username1": "testuser01' AND '1'='1",
+          "username2": "testuser01' AND '1'='2",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "两个Payload的响应时间差值小于100ms",
+          "两个请求都返回相同的错误提示",
+          "不存在可预测的时间差异用于盲注判断"
+        ],
+        "testType": "安全测试-SQL注入"
+      },
+      {
+        "tcId": "TC-P0-INJECT-005",
+        "tcName": "SQL注入-时间盲注测试",
+        "testObjective": "验证系统能够防护基于SLEEP()函数的时间盲注攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入Payload: test' AND SLEEP(5)--",
+          "步骤3: 在密码输入框输入: test",
+          "步骤4: 使用Burp Suite记录请求发起时间和响应到达时间",
+          "步骤5: 计算响应延迟时间"
+        ],
+        "testData": {
+          "username": "testuser01' AND SLEEP(5)--",
+          "password": "test"
+        },
+        "expectedResults": [
+          "响应时间小于2秒（不执行SLEEP函数）",
+          "不出现5秒延迟",
+          "登录失败，返回错误提示"
+        ],
+        "testType": "安全测试-SQL注入"
+      },
+      {
+        "tcId": "TC-P0-INJECT-006",
+        "tcName": "SQL注入-堆叠查询攻击测试",
+        "testObjective": "验证系统能够防护堆叠查询注入攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入Payload: test'; DROP TABLE users;--",
+          "步骤3: 在密码输入框输入: test",
+          "步骤4: 点击登录按钮提交",
+          "步骤5: 验证users表是否存在"
+        ],
+        "testData": {
+          "username": "testuser01'; DROP TABLE users;--",
+          "password": "test"
+        },
+        "expectedResults": [
+          "登录失败",
+          "users表仍然存在且可正常查询",
+          "数据库不执行DROP TABLE命令"
+        ],
+        "testType": "安全测试-SQL注入"
+      },
+      {
+        "tcId": "TC-P0-INJECT-007",
+        "tcName": "SQL注入-密码字段注入测试",
+        "testObjective": "验证密码字段也能防护SQL注入攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入正确的用户名: testuser01",
+          "步骤3: 在密码输入框输入Payload: ' OR '1'='1",
+          "步骤4: 点击登录按钮提交",
+          "步骤5: 检查是否发生注入"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "' OR '1'='1"
+        },
+        "expectedResults": [
+          "登录失败，返回\"用户名或密码错误\"",
+          "密码字段的注入Payload被转义或过滤",
+          "不发生认证绕过"
+        ],
+        "testType": "安全测试-SQL注入"
+      }
+    ]
+  },
+  "section4测试用例_P0安全XSS": {
+    "title": "4.4 P0级测试用例 - XSS攻击防护测试【新增详细Payload】",
+    "priority": "P0",
+    "description": "XSS跨站脚本攻击是OWASP Top 10 A03:2021第三大威胁，必须验证输入过滤有效",
+    "testCases": [
+      {
+        "tcId": "TC-P0-XSS-001",
+        "tcName": "XSS-存储型脚本注入测试",
+        "testObjective": "验证用户名输入框能够防护存储型XSS攻击",
+        "priority": "P0",
+        "precondition": ["存在已注册用户testuser01/Test1234"],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入Payload: <script>alert('XSS')</script>",
+          "步骤3: 在密码输入框输入正确密码Test1234",
+          "步骤4: 提交登录请求",
+          "步骤5: 登录成功后查看用户个人资料页面",
+          "步骤6: 检查用户名是否以script标签形式执行"
+        ],
+        "testData": {
+          "username": "<script>alert('XSS')</script>",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "登录失败或用户名被转义存储",
+          "页面显示时<script>标签被转义为&lt;script&gt;",
+          "不弹出alert对话框",
+          "或登录成功但个人资料显示时script标签被转义"
+        ],
+        "testType": "安全测试-XSS"
+      },
+      {
+        "tcId": "TC-P0-XSS-002",
+        "tcName": "XSS-img标签事件注入测试",
+        "testObjective": "验证能够防护img标签onerror事件XSS攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入Payload: <img src=x onerror=alert(1)>",
+          "步骤3: 提交登录请求",
+          "步骤4: 检查页面响应和后续页面显示"
+        ],
+        "testData": {
+          "username": "<img src=x onerror=alert(1)>",
+          "password": "test"
+        },
+        "expectedResults": [
+          "Payload被转义或过滤",
+          "页面不执行alert(1)",
+          "错误提示中不包含未转义的HTML标签"
+        ],
+        "testType": "安全测试-XSS"
+      },
+      {
+        "tcId": "TC-P0-XSS-003",
+        "tcName": "XSS-事件属性注入测试",
+        "testObjective": "验证能够防护各种事件属性XSS攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 分别测试以下Payload的防护效果",
+          "步骤2: Payload1-onload: <svg onload=alert(1)>",
+          "步骤3: Payload2-onclick: <div onclick=alert(1)>click</div>",
+          "步骤4: Payload3-onmouseover: <img src=x onmouseover=alert(1)>",
+          "步骤5: 记录每个Payload的处理结果"
+        ],
+        "testData": {
+          "payload1": "<svg onload=alert(1)>",
+          "payload2": "<div onclick=alert(1)>click</div>",
+          "payload3": "<img src=x onmouseover=alert(1)>",
+          "password": "test"
+        },
+        "expectedResults": [
+          "所有事件属性Payload被转义或过滤",
+          "onload/onclick/onmouseover事件不触发",
+          "响应中不包含可执行的JavaScript"
+        ],
+        "testType": "安全测试-XSS"
+      },
+      {
+        "tcId": "TC-P0-XSS-004",
+        "tcName": "XSS-JavaScript伪协议测试",
+        "testObjective": "验证能够防护javascript:伪协议XSS攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入Payload: javascript:alert(1)",
+          "步骤3: 提交登录请求",
+          "步骤4: 检查响应处理"
+        ],
+        "testData": {
+          "username": "javascript:alert(1)",
+          "password": "test"
+        },
+        "expectedResults": [
+          "Payload被转义或拒绝",
+          "javascript:协议不生效",
+          "不执行alert脚本"
+        ],
+        "testType": "安全测试-XSS"
+      },
+      {
+        "tcId": "TC-P0-XSS-005",
+        "tcName": "XSS-DOM型注入测试",
+        "testObjective": "验证能够防护DOM型XSS攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入Payload: <img src=x onerror='eval(atob(\"YWxlcnQoMSk=\"))'>",
+          "步骤3: 提交登录请求",
+          "步骤4: 登录后检查用户信息展示区域",
+          "步骤5: 使用浏览器开发者工具检查DOM中是否存在恶意代码"
+        ],
+        "testData": {
+          "username": "<img src=x onerror='eval(atob(\"YWxlcnQoMSk=\"))'>",
+          "password": "test"
+        },
+        "expectedResults": [
+          "Payload被转义处理",
+          "eval函数不被调用",
+          "DOM中不包含未转义的恶意代码"
+        ],
+        "testType": "安全测试-XSS"
+      },
+      {
+        "tcId": "TC-P0-XSS-006",
+        "tcName": "XSS-编码绕过测试",
+        "testObjective": "验证能够防护各种编码形式的XSS攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 测试URL编码Payload: %3Cscript%3Ealert(1)%3C/script%3E",
+          "步骤2: 测试Unicode编码Payload: <img src=x onerror=\\u0061lert(1)>",
+          "步骤3: 测试HTML实体编码Payload: &lt;script&gt;alert(1)&lt;/script&gt;",
+          "步骤4: 记录每个编码Payload的处理结果"
+        ],
+        "testData": {
+          "urlEncoded": "%3Cscript%3Ealert(1)%3C/script%3E",
+          "unicodeEncoded": "<img src=x onerror=\\u0061lert(1)>",
+          "htmlEntity": "&lt;script&gt;alert(1)&lt;/script&gt;"
+        },
+        "expectedResults": [
+          "所有编码形式的Payload被正确处理",
+          "不出现编码绕过导致的XSS漏洞",
+          "系统正确解码后再进行安全过滤"
+        ],
+        "testType": "安全测试-XSS"
+      }
+    ]
+  },
+  "section4测试用例_P0安全CSRF": {
+    "title": "4.5 P0级测试用例 - CSRF防护测试【新增】",
+    "priority": "P0",
+    "description": "CSRF跨站请求伪造是OWASP Top 10 A01:2021第一大威胁，必须验证防护机制有效",
+    "testCases": [
+      {
+        "tcId": "TC-P0-CSRF-001",
+        "tcName": "CSRF-Anti-CSRF Token验证测试",
+        "testObjective": "验证登录表单包含并正确验证Anti-CSRF Token",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 正常打开登录页面",
+          "步骤2: 使用开发者工具或Burp Suite查看页面HTML源码",
+          "步骤3: 查找是否存在_csrf或token类型的隐藏表单字段",
+          "步骤4: 记录Anti-CSRF Token的值",
+          "步骤5: 构造恶意HTML页面，包含提取到的Token",
+          "步骤6: 在新页面中提交登录请求（模拟被诱骗的用户）",
+          "步骤7: 验证系统是否正确验证Token"
+        ],
+        "testData": {
+          "maliciousPage": "包含提取Token的恶意HTML"
+        },
+        "expectedResults": [
+          "登录表单包含Anti-CSRF Token（隐藏字段）",
+          "Token为随机不可预测值",
+          "Token验证失败时登录请求被拒绝",
+          "Token使用一次后失效或会话绑定"
+        ],
+        "testType": "安全测试-CSRF"
+      },
+      {
+        "tcId": "TC-P0-CSRF-002",
+        "tcName": "CSRF-同源请求验证测试",
+        "testObjective": "验证系统正确验证请求来源（Referer/Origin头）",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 正常打开登录页面，获取有效的Anti-CSRF Token",
+          "步骤2: 使用Burp Suite拦截登录请求",
+          "步骤3: 修改Referer头为第三方域名（如http://evil.com）",
+          "步骤4: 放行修改后的请求",
+          "步骤5: 记录系统响应"
+        ],
+        "testData": {
+          "referer": "http://evil.com/login"
+        },
+        "expectedResults": [
+          "请求被拒绝",
+          "返回403 Forbidden或错误提示",
+          "不处理登录请求"
+        ],
+        "testType": "安全测试-CSRF"
+      },
+      {
+        "tcId": "TC-P0-CSRF-003",
+        "tcName": "CSRF-第三方登录state参数校验测试",
+        "testObjective": "验证OAuth/SSO登录时state参数正确防止CSRF攻击",
+        "priority": "P0",
+        "precondition": ["系统支持第三方登录（OAuth）"],
+        "testSteps": [
+          "步骤1: 发起第三方登录授权请求",
+          "步骤2: 记录授权回调URL中的state参数值",
+          "步骤3: 修改state参数为攻击者控制的任意值",
+          "步骤4: 使用修改后的URL完成OAuth回调",
+          "步骤5: 记录系统是否正确校验state参数"
+        ],
+        "testData": {
+          "originalState": "原始state值",
+          "modifiedState": "攻击者控制的state值"
+        },
+        "expectedResults": [
+          "state参数被正确验证",
+          "修改state后登录失败",
+          "系统正确识别并拒绝CSRF攻击"
+        ],
+        "testType": "安全测试-CSRF"
+      }
+    ]
+  },
+  "section4测试用例_P0安全会话": {
+    "title": "4.6 P0级测试用例 - 会话安全测试【新增】",
+    "priority": "P0",
+    "description": "会话安全管理是登录安全的核心，必须验证Session Fixation防护和Cookie安全属性",
+    "testCases": [
+      {
+        "tcId": "TC-P0-SESSION-001",
+        "tcName": "Session Fixation防护测试",
+        "testObjective": "验证登录前后Session ID是否发生变化，防止Session Fixation攻击",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开浏览器，访问登录页面",
+          "步骤2: 使用开发者工具记录当前Session Cookie值（登录前）",
+          "步骤3: 在用户名输入框输入testuser01，在密码输入框输入Test1234",
+          "步骤4: 点击登录按钮提交",
+          "步骤5: 登录成功后，使用开发者工具查看新的Session Cookie值",
+          "步骤6: 对比登录前后的Session ID是否相同"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "登录前的Session ID与登录后的Session ID不同",
+          "新Session ID为随机生成值",
+          "旧的未认证Session ID被废弃",
+          "攻击者无法通过预先设置的Session ID劫持用户会话"
+        ],
+        "testType": "安全测试-会话安全"
+      },
+      {
+        "tcId": "TC-P0-SESSION-002",
+        "tcName": "Cookie安全属性-HttpOnly验证",
+        "testObjective": "验证Session Cookie设置了HttpOnly属性，防止JavaScript读取",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 登录成功后，打开浏览器开发者工具",
+          "步骤2: 切换到Application/存储标签页",
+          "步骤3: 查看Cookies列表中的Session Cookie",
+          "步骤4: 检查HttpOnly列的值",
+          "步骤5: 打开Console，输入document.cookie查看是否能读取Session Cookie"
+        ],
+        "testData": {
+          "checkCookie": "Session Cookie名称"
+        },
+        "expectedResults": [
+          "Session Cookie的HttpOnly属性设置为true",
+          "document.cookie无法读取HttpOnly Cookie",
+          "Cookie只能通过HTTP请求传输，无法被JavaScript访问"
+        ],
+        "testType": "安全测试-Cookie安全"
+      },
+      {
+        "tcId": "TC-P0-SESSION-003",
+        "tcName": "Cookie安全属性-Secure验证",
+        "testObjective": "验证Session Cookie设置了Secure属性，仅在HTTPS传输",
+        "priority": "P0",
+        "precondition": ["系统支持HTTPS"],
+        "testSteps": [
+          "步骤1: 通过HTTPS访问登录页面",
+          "步骤2: 完成登录操作",
+          "步骤3: 查看Set-Cookie响应头的Secure属性",
+          "步骤4: 使用HTTP访问验证Cookie是否传输"
+        ],
+        "testData": {
+          "protocol": "HTTPS"
+        },
+        "expectedResults": [
+          "Set-Cookie响应头包含Secure属性",
+          "Cookie仅在HTTPS连接下传输",
+          "HTTP请求不携带该Cookie"
+        ],
+        "testType": "安全测试-Cookie安全"
+      },
+      {
+        "tcId": "TC-P0-SESSION-004",
+        "tcName": "Cookie安全属性-SameSite验证",
+        "testObjective": "验证Session Cookie设置了SameSite属性，防止CSRF",
+        "priority": "P0",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 登录成功后查看Set-Cookie响应头",
+          "步骤2: 检查SameSite属性的值（Strict/Lax/None）",
+          "步骤3: 跨站发起登录请求测试SameSite是否生效"
+        ],
+        "testData": {
+          "checkHeader": "Set-Cookie响应头"
+        },
+        "expectedResults": [
+          "Cookie包含SameSite属性",
+          "SameSite=Strict或SameSite=Lax有效防止跨站请求",
+          "跨站POST请求不携带Cookie"
+        ],
+        "testType": "安全测试-Cookie安全"
+      },
+      {
+        "tcId": "TC-P0-SESSION-005",
+        "tcName": "会话超时自动退出测试",
+        "testObjective": "验证用户登录后无操作超时自动退出",
+        "priority": "P0",
+        "precondition": ["存在已登录用户，Session有效期30分钟"],
+        "testSteps": [
+          "步骤1: 使用正确凭证登录系统",
+          "步骤2: 记录登录成功后的Session创建时间",
+          "步骤3: 等待29分钟（小于超时时间）",
+          "步骤4: 发起一个业务请求（如获取用户信息）",
+          "步骤5: 验证请求成功，Session有效",
+          "步骤6: 继续等待至31分钟（超过超时时间）",
+          "步骤7: 再次发起业务请求",
+          "步骤8: 记录响应结果"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234",
+          "timeoutMinutes": 30
+        },
+        "expectedResults": [
+          "29分钟时请求成功，返回用户数据",
+          "31分钟时请求失败，返回401未授权",
+          "系统提示\"会话已过期，请重新登录\"",
+          "用户需要重新登录才能继续操作"
+        ],
+        "testType": "安全测试-会话管理"
+      }
+    ]
+  },
+  "section4测试用例_P1暴力破解": {
+    "title": "4.7 P1级测试用例 - 暴力破解防护测试【新增详细Payload】",
+    "priority": "P1",
+    "description": "暴力破解是常见攻击手段，必须验证限速和锁定机制有效",
+    "testCases": [
+      {
+        "tcId": "TC-P1-BRUTE-001",
+        "tcName": "暴力破解-账号维度限速测试",
+        "testObjective": "验证系统对同一账号连续失败登录进行限速",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 使用用户名testuser01，连续输入错误密码进行登录",
+          "步骤3: 记录每次请求的响应时间和HTTP状态码",
+          "步骤4: 继续尝试至第10次",
+          "步骤5: 观察响应时间是否逐渐增加",
+          "步骤6: 记录触发的锁定或验证码机制"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "passwords": ["Pass1", "Pass2", "Pass3", "Pass4", "Pass5", "Pass6", "Pass7", "Pass8", "Pass9", "Pass10"]
+        },
+        "expectedResults": [
+          "连续5次失败后显示验证码",
+          "连续10次失败后账号被锁定",
+          "响应时间从第5次开始逐渐增加",
+          "锁定后返回\"账号已锁定\"或\"请稍后再试\""
+        ],
+        "testType": "安全测试-暴力破解"
+      },
+      {
+        "tcId": "TC-P1-BRUTE-002",
+        "tcName": "暴力破解-IP维度限速测试",
+        "testObjective": "验证系统对同一IP的暴力破解行为进行限速",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 使用Burp Suite设置代理",
+          "步骤2: 配置Intruder模块，针对用户名和密码进行暴力破解",
+          "步骤3: 发起100次连续登录请求",
+          "步骤4: 记录IP地址和请求次数",
+          "步骤5: 观察系统是否对IP进行限速或封禁"
+        ],
+        "testData": {
+          "targetUrl": "/api/login",
+          "attackType": "Cluster bomb",
+          "usernames": ["admin", "testuser", "user1"],
+          "passwords": ["123456", "password", "admin123", "Test1234", "qwerty"]
+        },
+        "expectedResults": [
+          "IP维度限速生效",
+          "短时间内大量请求后返回429 Too Many Requests",
+          "IP被临时封禁或验证码强制触发",
+          "封禁信息包含解封时间"
+        ],
+        "testType": "安全测试-暴力破解"
+      },
+      {
+        "tcId": "TC-P1-BRUTE-003",
+        "tcName": "暴力破解-验证码绕过尝试测试",
+        "testObjective": "验证使用验证码后暴力破解是否仍然有效",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 连续5次失败触发验证码",
+          "步骤2: 使用Burp Suite识别验证码",
+          "步骤3: 在Intruder中配置自动识别验证码",
+          "步骤4: 发起多轮暴力破解",
+          "步骤5: 记录破解成功率"
+        ],
+        "testData": {
+          "bypassMethod": "验证码自动识别"
+        },
+        "expectedResults": [
+          "即使验证码正确，自动爆破仍然受到限速",
+          "系统在服务端增加额外防护",
+          "多轮失败后IP被封禁"
+        ],
+        "testType": "安全测试-暴力破解"
+      },
+      {
+        "tcId": "TC-P1-BRUTE-004",
+        "tcName": "暴力破解-锁定时间验证测试",
+        "testObjective": "验证账号锁定后的解锁时间符合预期",
+        "priority": "P1",
+        "precondition": ["存在被锁定的测试账号"],
+        "testSteps": [
+          "步骤1: 记录账号被锁定的时间T1",
+          "步骤2: 记录锁定时长（30分钟）",
+          "步骤3: 在T1+29分钟时尝试登录",
+          "步骤4: 记录结果",
+          "步骤5: 在T1+31分钟时再次尝试登录",
+          "步骤6: 记录结果"
+        ],
+        "testData": {
+          "lockedAccount": "testuser01",
+          "lockDuration": 30
+        },
+        "expectedResults": [
+          "T1+29分钟时仍然锁定，返回锁定提示",
+          "T1+31分钟时账号自动解锁",
+          "解锁后可正常登录"
+        ],
+        "testType": "安全测试-锁定机制"
+      }
+    ]
+  },
+  "section4测试用例_P1错误枚举": {
+    "title": "4.8 P1级测试用例 - 错误提示枚举防护测试【新增】",
+    "priority": "P1",
+    "description": "防止攻击者通过错误提示信息枚举有效用户",
+    "testCases": [
+      {
+        "tcId": "TC-P1-ENUM-001",
+        "tcName": "错误信息枚举-用户名不存在vs密码错误",
+        "testObjective": "验证系统返回统一的错误提示，不泄露用户是否存在",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 输入不存在的用户名notexist999999和任意密码",
+          "步骤2: 记录错误提示",
+          "步骤3: 输入存在的用户名testuser01和错误密码Test1111",
+          "步骤4: 记录错误提示",
+          "步骤5: 对比两个错误提示是否完全相同"
+        ],
+        "testData": {
+          "nonexistentUser": "notexist999999",
+          "existingUser": "testuser01",
+          "wrongPassword": "Test1111"
+        },
+        "expectedResults": [
+          "不存在的用户名返回: \"用户名或密码错误\"",
+          "存在的用户名+错误密码返回: \"用户名或密码错误\"",
+          "两个提示完全一致",
+          "不出现\"用户不存在\"或\"密码错误\"等区分性提示"
+        ],
+        "testType": "安全测试-信息泄露"
+      },
+      {
+        "tcId": "TC-P1-ENUM-002",
+        "tcName": "错误信息枚举-账号状态差异化测试",
+        "testObjective": "验证不同账号状态的错误提示是否统一",
+        "priority": "P1",
+        "precondition": ["存在测试账号：正常账号、禁用账号、锁定账号、过期账号"],
+        "testSteps": [
+          "步骤1: 使用正常账号testuser01/Test1234登录",
+          "步骤2: 使用禁用账号disabled_user/Test1234登录",
+          "步骤3: 使用锁定账号locked_user/Test1234登录",
+          "步骤4: 使用过期账号expired_user/Test1234登录",
+          "步骤5: 对比所有错误提示"
+        ],
+        "testData": {
+          "normalAccount": "testuser01",
+          "disabledAccount": "disabled_user",
+          "lockedAccount": "locked_user",
+          "expiredAccount": "expired_user",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "禁用账号不返回\"账号已禁用\"提示",
+          "锁定账号不返回\"账号已锁定\"提示",
+          "所有非正常状态统一返回认证失败提示",
+          "或在统一提示后通过其他渠道（邮件/短信）通知"
+        ],
+        "testType": "安全测试-信息泄露"
+      },
+      {
+        "tcId": "TC-P1-ENUM-003",
+        "tcName": "错误信息枚举-响应时间差异测试",
+        "testObjective": "验证正确用户名和错误用户名的响应时间一致",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 使用不存在的用户名发起登录请求",
+          "步骤2: 使用存在的用户名+错误密码发起登录请求",
+          "步骤3: 分别记录5次请求的响应时间",
+          "步骤4: 计算平均响应时间",
+          "步骤5: 比较两种情况的响应时间差异"
+        ],
+        "testData": {
+          "nonexistentUser": "notexist999999",
+          "existingUser": "testuser01",
+          "wrongPassword": "Test1111"
+        },
+        "expectedResults": [
+          "存在用户名的响应时间与不存在用户名的响应时间差小于50ms",
+          "不存在可测量的时间差异",
+          "攻击者无法通过响应时间推断用户是否存在"
+        ],
+        "testType": "安全测试-侧信道"
+      }
+    ]
+  },
+  "section4测试用例_P1OAuth": {
+    "title": "4.9 P1级测试用例 - OAuth第三方登录安全测试【新增】",
+    "priority": "P1",
+    "description": "OAuth 2.0登录安全测试，包括redirect_uri和state参数验证",
+    "testCases": [
+      {
+        "tcId": "TC-P1-OAUTH-001",
+        "tcName": "OAuth-redirect_uri精确校验测试",
+        "testObjective": "验证OAuth授权服务器正确校验redirect_uri",
+        "priority": "P1",
+        "precondition": ["系统支持OAuth登录"],
+        "testSteps": [
+          "步骤1: 发起OAuth授权请求，获取原始redirect_uri",
+          "步骤2: 修改redirect_uri为攻击者控制的域名: http://evil.com/callback",
+          "步骤3: 提交修改后的授权请求",
+          "步骤4: 记录OAuth服务器响应"
+        ],
+        "testData": {
+          "originalUri": "https://legitimate-app.com/callback",
+          "maliciousUri": "http://evil.com/callback"
+        },
+        "expectedResults": [
+          "redirect_uri校验失败",
+          "返回错误: \"redirect_uri mismatch\"",
+          "不授权code或token",
+          "不在恶意域名完成授权回调"
+        ],
+        "testType": "安全测试-OAuth"
+      },
+      {
+        "tcId": "TC-P1-OAUTH-002",
+        "tcName": "OAuth-authorization code拦截测试",
+        "testObjective": "验证authorization code无法被截获利用",
+        "priority": "P1",
+        "precondition": ["系统支持OAuth授权码模式"],
+        "testSteps": [
+          "步骤1: 发起OAuth授权请求，记录authorization code",
+          "步骤2: 在授权完成前，尝试使用该code",
+          "步骤3: 等待授权完成后，再次使用同一个code",
+          "步骤4: 记录系统的处理结果"
+        ],
+        "testData": {
+          "authorizationCode": "记录的code值"
+        },
+        "expectedResults": [
+          "授权码为一次性使用",
+          "重复使用同一code会被拒绝",
+          "code具有时效性（通常10分钟）",
+          "code与client_id绑定"
+        ],
+        "testType": "安全测试-OAuth"
+      },
+      {
+        "tcId": "TC-P1-OAUTH-003",
+        "tcName": "OAuth-state参数CSRF防护测试",
+        "testObjective": "验证state参数防止OAuth CSRF攻击",
+        "priority": "P1",
+        "precondition": ["系统支持OAuth登录"],
+        "testSteps": [
+          "步骤1: 发起OAuth授权，获取state参数",
+          "步骤2: 构造恶意URL，替换state为攻击者生成的值",
+          "步骤3: 使用修改后的URL完成OAuth流程",
+          "步骤4: 记录系统是否正确校验state"
+        ],
+        "testData": {
+          "originalState": "原始state值",
+          "attackerState": "attacker-generated-state"
+        },
+        "expectedResults": [
+          "state参数被正确验证",
+          "不匹配的state导致授权失败",
+          "防止攻击者将受害者账户绑定到攻击者账户"
+        ],
+        "testType": "安全测试-OAuth"
+      }
+    ]
+  },
+  "section4测试用例_P1敏感信息": {
+    "title": "4.10 P1级测试用例 - 敏感信息泄露测试【新增】",
+    "priority": "P1",
+    "description": "验证系统不泄露敏感信息到响应、日志或错误提示中",
+    "testCases": [
+      {
+        "tcId": "TC-P1-SENS-001",
+        "tcName": "敏感信息-响应体明文密码检查",
+        "testObjective": "验证登录响应中不包含明文密码",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 使用Burp Suite拦截登录请求",
+          "步骤2: 发送正常登录请求",
+          "步骤3: 检查响应体是否包含password字段",
+          "步骤4: 检查响应体是否包含明文密码值"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "响应体不包含password字段",
+          "响应体不包含明文密码",
+          "不返回用户的密码哈希值"
+        ],
+        "testType": "安全测试-敏感信息"
+      },
+      {
+        "tcId": "TC-P1-SENS-002",
+        "tcName": "敏感信息-错误信息泄露检查",
+        "testObjective": "验证错误响应不泄露系统敏感信息",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 发送各种错误请求（SQL注入、XSS、参数错误等）",
+          "步骤2: 记录所有错误响应",
+          "步骤3: 检查是否包含以下信息：SQL语句、数据库类型、服务器路径、框架版本、内部IP"
+        ],
+        "testData": {
+          "testPayloads": ["' OR '1'='1", "<script>", "../../../etc/passwd", "{{7*7}}"]
+        },
+        "expectedResults": [
+          "不返回SQL错误信息",
+          "不返回堆栈跟踪信息",
+          "不返回内部文件路径",
+          "不返回框架指纹信息"
+        ],
+        "testType": "安全测试-信息泄露"
+      },
+      {
+        "tcId": "TC-P1-SENS-003",
+        "tcName": "敏感信息-日志脱敏检查",
+        "testObjective": "验证日志中密码被脱敏处理",
+        "priority": "P1",
+        "precondition": ["有权限查看系统日志"],
+        "testSteps": [
+          "步骤1: 使用正确凭证登录系统",
+          "步骤2: 记录请求中的密码参数",
+          "步骤3: 查看应用日志或访问日志",
+          "步骤4: 检查密码是否以明文形式记录"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "日志中密码字段显示为***或空",
+          "密码不以任何形式明文记录",
+          "敏感参数被正确脱敏"
+        ],
+        "testType": "安全测试-日志审计"
+      }
+    ]
+  },
+  "section4测试用例_P1P2边界": {
+    "title": "4.11 P1/P2级测试用例 - 边界值和异常输入测试",
+    "priority": "P1",
+    "description": "验证系统正确处理各种边界值和异常输入",
+    "testCases": [
+      {
+        "tcId": "TC-P1-BOUND-001",
+        "tcName": "边界值-用户名最小长度4字符",
+        "testObjective": "验证用户名长度为4时能够正常登录",
+        "priority": "P1",
+        "precondition": ["存在用户名user，密码Test1234"],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入user（4字符）",
+          "步骤3: 在密码输入框输入Test1234",
+          "步骤4: 点击登录按钮提交"
+        ],
+        "testData": {
+          "username": "user",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "登录成功",
+          "返回有效Token",
+          "跳转到首页"
+        ],
+        "testType": "边界值测试"
+      },
+      {
+        "tcId": "TC-P1-BOUND-002",
+        "tcName": "边界值-用户名最小长度-1（3字符应拒绝）",
+        "testObjective": "验证用户名长度小于4时被正确拒绝",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 在用户名输入框输入use（3字符）",
+          "步骤3: 在密码输入框输入Test1234",
+          "步骤4: 点击登录按钮提交"
+        ],
+        "testData": {
+          "username": "use"
+        },
+        "expectedResults": [
+          "登录失败",
+          "提示\"用户名长度必须为4-50个字符\"或类似错误",
+          "不发送请求到服务器"
+        ],
+        "testType": "边界值测试"
+      },
+      {
+        "tcId": "TC-P1-BOUND-003",
+        "tcName": "边界值-用户名最大长度50字符",
+        "testObjective": "验证用户名长度为50时能够正常登录",
+        "priority": "P1",
+        "precondition": ["存在50字符用户名"],
+        "testSteps": [
+          "步骤1: 构造50字符的用户名",
+          "步骤2: 输入到登录表单",
+          "步骤3: 提交登录请求"
+        ],
+        "testData": {
+          "username": "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv"
+        },
+        "expectedResults": [
+          "登录成功（如果用户存在）",
+          "或提示用户名格式错误（根据业务规则）"
+        ],
+        "testType": "边界值测试"
+      },
+      {
+        "tcId": "TC-P1-BOUND-004",
+        "tcName": "边界值-用户名最大长度+1（51字符应拒绝）",
+        "testObjective": "验证用户名长度大于50时被正确拒绝",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 构造51字符的用户名",
+          "步骤2: 输入到登录表单",
+          "步骤3: 提交登录请求"
+        ],
+        "testData": {
+          "username": "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvw"
+        },
+        "expectedResults": [
+          "登录失败",
+          "前端验证提示长度超限",
+          "或后端返回长度校验失败"
+        ],
+        "testType": "边界值测试"
+      },
+      {
+        "tcId": "TC-P1-BOUND-005",
+        "tcName": "边界值-密码最小长度6字符",
+        "testObjective": "验证密码长度为6时能够正常登录",
+        "priority": "P1",
+        "precondition": ["存在用户testuser01，密码Test12"],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 输入用户名testuser01",
+          "步骤3: 输入密码Test12（6字符）",
+          "步骤4: 提交登录请求"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test12"
+        },
+        "expectedResults": [
+          "登录成功",
+          "返回有效Token"
+        ],
+        "testType": "边界值测试"
+      },
+      {
+        "tcId": "TC-P1-BOUND-006",
+        "tcName": "边界值-密码最小长度-1（5字符应拒绝）",
+        "testObjective": "验证密码长度小于6时被正确拒绝",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 输入用户名testuser01",
+          "步骤2: 输入密码Test1（5字符）",
+          "步骤3: 提交登录请求"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1"
+        },
+        "expectedResults": [
+          "登录失败",
+          "提示\"密码长度必须为6-20个字符\"或类似错误"
+        ],
+        "testType": "边界值测试"
+      },
+      {
+        "tcId": "TC-P1-BOUND-007",
+        "tcName": "边界值-密码最大长度20字符",
+        "testObjective": "验证密码长度为20时能够正常登录",
+        "priority": "P1",
+        "precondition": ["存在用户testuser01，密码为20字符"],
+        "testSteps": [
+          "步骤1: 输入用户名testuser01",
+          "步骤2: 输入密码Test123456789012345（20字符）",
+          "步骤3: 提交登录请求"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test123456789012345"
+        },
+        "expectedResults": [
+          "登录成功"
+        ],
+        "testType": "边界值测试"
+      },
+      {
+        "tcId": "TC-P1-BOUND-008",
+        "tcName": "边界值-密码最大长度+1（21字符应拒绝）",
+        "testObjective": "验证密码长度大于20时被正确拒绝",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 输入用户名testuser01",
+          "步骤2: 输入密码Test1234567890123456（21字符）",
+          "步骤3: 提交登录请求"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234567890123456"
+        },
+        "expectedResults": [
+          "登录失败",
+          "提示长度超限错误"
+        ],
+        "testType": "边界值测试"
+      },
+      {
+        "tcId": "TC-P1-EXCP-001",
+        "tcName": "异常输入-用户名为空",
+        "testObjective": "验证用户名为空时被正确拒绝",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 用户名输入框留空",
+          "步骤3: 输入密码Test1234",
+          "步骤4: 尝试提交"
+        ],
+        "testData": {
+          "username": "",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "前端阻止提交或后端返回错误",
+          "提示\"请输入用户名\"或\"用户名不能为空\"",
+          "不发送请求到服务器（前端验证）"
+        ],
+        "testType": "异常输入测试"
+      },
+      {
+        "tcId": "TC-P1-EXCP-002",
+        "tcName": "异常输入-密码为空",
+        "testObjective": "验证密码为空时被正确拒绝",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 输入用户名testuser01",
+          "步骤2: 密码输入框留空",
+          "步骤3: 尝试提交"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": ""
+        },
+        "expectedResults": [
+          "提示\"请输入密码\"或\"密码不能为空\"",
+          "登录失败"
+        ],
+        "testType": "异常输入测试"
+      },
+      {
+        "tcId": "TC-P1-EXCP-003",
+        "tcName": "异常输入-用户名格式错误（数字开头）",
+        "testObjective": "验证用户名以数字开头时被拒绝",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 输入用户名123user（数字开头）",
+          "步骤2: 输入密码Test1234",
+          "步骤3: 提交登录"
+        ],
+        "testData": {
+          "username": "123user",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "前端或后端返回格式错误",
+          "提示\"用户名必须以字母开头\""
+        ],
+        "testType": "异常输入测试"
+      },
+      {
+        "tcId": "TC-P1-EXCP-004",
+        "tcName": "异常输入-纯数字密码",
+        "testObjective": "验证纯数字密码被拒绝",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 输入用户名testuser01",
+          "步骤2: 输入密码12345678（纯数字）",
+          "步骤3: 提交登录"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "12345678"
+        },
+        "expectedResults": [
+          "登录失败",
+          "提示\"密码必须包含字母和数字\""
+        ],
+        "testType": "异常输入测试"
+      },
+      {
+        "tcId": "TC-P1-EXCP-005",
+        "tcName": "异常输入-纯字母密码",
+        "testObjective": "验证纯字母密码被拒绝",
+        "priority": "P1",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 输入用户名testuser01",
+          "步骤2: 输入密码abcdefgh（纯字母）",
+          "步骤3: 提交登录"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "abcdefgh"
+        },
+        "expectedResults": [
+          "登录失败",
+          "提示\"密码必须包含字母和数字\""
+        ],
+        "testType": "异常输入测试"
+      },
+      {
+        "tcId": "TC-P1-EXCP-006",
+        "tcName": "异常输入-账号被禁用",
+        "testObjective": "验证禁用账号无法登录",
+        "priority": "P1",
+        "precondition": ["存在禁用状态账号disabled_user/Test1234"],
+        "testSteps": [
+          "步骤1: 输入用户名disabled_user",
+          "步骤2: 输入密码Test1234",
+          "步骤3: 提交登录",
+          "步骤4: 记录错误提示"
+        ],
+        "testData": {
+          "username": "disabled_user",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "登录失败",
+          "提示\"账号已被禁用\"或统一返回\"用户名或密码错误\"",
+          "禁用账号无法获取任何会话"
+        ],
+        "testType": "异常输入测试"
+      },
+      {
+        "tcId": "TC-P1-EXCP-007",
+        "tcName": "异常输入-账号已锁定",
+        "testObjective": "验证锁定账号无法登录",
+        "priority": "P1",
+        "precondition": ["存在锁定状态账号locked_user/Test1234"],
+        "testSteps": [
+          "步骤1: 输入用户名locked_user",
+          "步骤2: 输入密码Test1234",
+          "步骤3: 提交登录",
+          "步骤4: 记录错误提示和锁定信息"
+        ],
+        "testData": {
+          "username": "locked_user",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "登录失败",
+          "提示锁定信息或统一返回认证失败",
+          "包含解锁时间（如\"30分钟后自动解锁\"）"
+        ],
+        "testType": "异常输入测试"
+      }
+    ]
+  },
+  "section4测试用例_P2记住我": {
+    "title": "4.12 P2级测试用例 - 记住我功能测试",
+    "priority": "P2",
+    "description": "验证记住我功能的会话延长逻辑",
+    "testCases": [
+      {
+        "tcId": "TC-P2-REMEMBER-001",
+        "tcName": "记住我功能-会话有效期延长",
+        "testObjective": "验证勾选记住我后会话有效期延长至30天",
+        "priority": "P2",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 打开登录页面",
+          "步骤2: 勾选\"记住我\"复选框",
+          "步骤3: 输入用户名testuser01和密码Test1234",
+          "步骤4: 点击登录按钮",
+          "步骤5: 使用开发者工具查看Cookie的过期时间"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234",
+          "rememberMe": true
+        },
+        "expectedResults": [
+          "Cookie过期时间设置为登录后30天",
+          "普通会话Cookie过期时间为30分钟",
+          "记住我会话有效期明显更长"
+        ],
+        "testType": "功能测试"
+      },
+      {
+        "tcId": "TC-P2-REMEMBER-002",
+        "tcName": "记住我功能-关闭浏览器后会话保持",
+        "testObjective": "验证关闭浏览器后记住我的会话仍然有效",
+        "priority": "P2",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 勾选记住我并登录",
+          "步骤2: 关闭所有浏览器标签页",
+          "步骤3: 重新打开浏览器",
+          "步骤4: 访问需要登录的页面",
+          "步骤5: 验证是否保持登录状态"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234",
+          "rememberMe": true
+        },
+        "expectedResults": [
+          "关闭浏览器后重新打开仍保持登录",
+          "无需重新输入用户名密码",
+          "可正常访问需要认证的页面"
+        ],
+        "testType": "功能测试"
+      },
+      {
+        "tcId": "TC-P2-REMEMBER-003",
+        "tcName": "记住我功能-退出登录清除记住状态",
+        "testObjective": "验证退出登录后清除记住我的Cookie",
+        "priority": "P2",
+        "precondition": ["已登录并勾选记住我"],
+        "testSteps": [
+          "步骤1: 点击退出登录按钮",
+          "步骤2: 使用开发者工具检查Cookie状态",
+          "步骤3: 尝试使用原Cookie访问",
+          "步骤4: 验证是否已登出"
+        ],
+        "testData": {},
+        "expectedResults": [
+          "退出登录后Session Cookie被清除",
+          "Remember-me Token被清除",
+          "重新访问需要登录"
+        ],
+        "testType": "功能测试"
+      }
+    ]
+  },
+  "section4测试用例_P2其他": {
+    "title": "4.13 P2级测试用例 - 其他重要功能测试",
+    "priority": "P2",
+    "description": "包括Token刷新、并发登录、多设备登录等功能测试",
+    "testCases": [
+      {
+        "tcId": "TC-P2-TOKEN-001",
+        "tcName": "Token自动刷新机制",
+        "testObjective": "验证Token即将过期时自动刷新",
+        "priority": "P2",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 登录系统，获取Token",
+          "步骤2: 等待Token即将过期（如剩余5分钟）",
+          "步骤3: 发起一个业务API请求",
+          "步骤4: 检查响应头是否包含新Token",
+          "步骤5: 使用新Token再次发起请求验证有效性"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "Token即将过期时系统自动发放新Token",
+          "新Token在响应头或响应体中返回",
+          "新Token可用于后续请求认证"
+        ],
+        "testType": "功能测试"
+      },
+      {
+        "tcId": "TC-P2-MULTI-001",
+        "tcName": "多设备同时在线",
+        "testObjective": "验证同一账号可以在多个设备同时登录",
+        "priority": "P2",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 在设备A使用testuser01登录",
+          "步骤2: 在设备B使用同一账号testuser01登录",
+          "步骤3: 验证两台设备都能保持登录状态",
+          "步骤4: 在设备A退出登录",
+          "步骤5: 验证设备B仍然保持登录"
+        ],
+        "testData": {
+          "username": "testuser01",
+          "password": "Test1234"
+        },
+        "expectedResults": [
+          "多设备同时在线功能正常",
+          "设备A退出不影响设备B的会话",
+          "两台设备的会话独立有效"
+        ],
+        "testType": "功能测试"
+      },
+      {
+        "tcId": "TC-P2-EXIT-001",
+        "tcName": "退出登录功能",
+        "testObjective": "验证用户能够正常退出登录",
+        "priority": "P2",
+        "precondition": ["已登录用户"],
+        "testSteps": [
+          "步骤1: 登录系统",
+          "步骤2: 点击退出登录或注销按钮",
+          "步骤3: 验证页面跳转到登录页或首页",
+          "步骤4: 尝试访问需要认证的页面",
+          "步骤5: 验证被重定向到登录页"
+        ],
+        "testData": {},
+        "expectedResults": [
+          "退出登录按钮可点击",
+          "点击后跳转到登录页或首页",
+          "会话Cookie被清除",
+          "访问受限页面被重定向"
+        ],
+        "testType": "功能测试"
+      },
+      {
+        "tcId": "TC-P2-REPLAY-001",
+        "tcName": "重放攻击防护",
+        "testObjective": "验证系统防护重放攻击",
+        "priority": "P2",
+        "precondition": [],
+        "testSteps": [
+          "步骤1: 登录系统",
+          "步骤2: 使用Burp Suite拦截一个有效的业务请求",
+          "步骤3: 记录请求的完整内容（URL、参数、Headers）",
+          "步骤4: 立即重放该请求",
+          "步骤5: 等待10分钟后再次重放",
+          "步骤6: 记录系统响应"
+        ],
+        "testData": {
+          "requestType": "业务API请求"
+        },
+        "expectedResults": [
+          "请求包含时间戳或Nonce参数",
+          "系统拒绝过旧的请求",
+          "相同Nonce的重复请求被拒绝",
+          "时间戳超过允许范围的请求被拒绝"
+        ],
+        "testType": "安全测试-重放攻击"
+      }
+    ]
+  },
+  "section5测试数据": {
+    "title": "5. 测试数据规格",
+    "section5_1有效等价类": {
+      "title": "5.1 有效等价类数据",
+      "data": [
+        {"type": "标准用户名", "value": "testuser01", "description": "字母+数字，标准格式"},
+        {"type": "短用户名", "value": "user", "description": "4字符，边界值"},
+        {"type": "长用户名", "value": "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv", "description": "50字符，边界值"},
+        {"type": "手机号", "value": "13800138000", "description": "11位有效手机号"},
+        {"type": "邮箱", "value": "test@example.com", "description": "标准邮箱格式"},
+        {"type": "标准密码", "value": "Test1234", "description": "字母+数字，符合规则"},
+        {"type": "短密码", "value": "Test12", "description": "6字符，边界值"},
+        {"type": "长密码", "value": "Test12345678901234567", "description": "20字符，边界值"},
+        {"type": "验证码", "value": "A1B2", "description": "4位字母数字组合"}
+      ]
+    },
+    "section5_2无效等价类": {
+      "title": "5.2 无效等价类数据",
+      "data": [
+        {"type": "空用户名", "value": "\"\"或null", "expectedError": "请输入用户名"},
+        {"type": "空密码", "value": "\"\"或null", "expectedError": "请输入密码"},
+        {"type": "过短用户名", "value": "abc", "expectedError": "用户名长度必须为4-50字符"},
+        {"type": "过长用户名", "value": "a*51", "expectedError": "用户名长度必须为4-50字符"},
+        {"type": "格式错误-数字开头", "value": "123user", "expectedError": "用户名必须以字母开头"},
+        {"type": "过短密码", "value": "Test1", "expectedError": "密码长度必须为6-20字符"},
+        {"type": "过长密码", "value": "a*21", "expectedError": "密码长度必须为6-20字符"},
+        {"type": "纯数字密码", "value": "12345678", "expectedError": "密码必须包含字母和数字"},
+        {"type": "纯字母密码", "value": "abcdefgh", "expectedError": "密码必须包含字母和数字"},
+        {"type": "错误验证码", "value": "XXXX", "expectedError": "验证码错误"}
+      ]
+    },
+    "section5_3安全测试Payload": {
+      "title": "5.3 安全测试Payload清单【新增】",
+      "data": [
+        {"category": "SQL注入", "payload": "' OR '1'='1", "purpose": "认证绕过测试"},
+        {"category": "SQL注入", "payload": "admin'--", "purpose": "注释符绕过"},
+        {"category": "SQL注入", "payload": "' UNION SELECT NULL--", "purpose": "UNION注入"},
+        {"category": "SQL注入", "payload": "test' AND '1'='1", "purpose": "布尔盲注"},
+        {"category": "SQL注入", "payload": "test' AND SLEEP(5)--", "purpose": "时间盲注"},
+        {"category": "SQL注入", "payload": "'; DROP TABLE users;--", "purpose": "堆叠查询注入"},
+        {"category": "XSS", "payload": "<script>alert('XSS')</script>", "purpose": "存储型脚本注入"},
+        {"category": "XSS", "payload": "<img src=x onerror=alert(1)>", "purpose": "img标签事件注入"},
+        {"category": "XSS", "payload": "<svg onload=alert(1)>", "purpose": "SVG事件注入"},
+        {"category": "XSS", "payload": "<div onclick=alert(1)>click</div>", "purpose": "点击事件注入"},
+        {"category": "XSS", "payload": "javascript:alert(1)", "purpose": "JavaScript伪协议"},
+        {"category": "XSS", "payload": "<iframe src=javascript:alert(1)>", "purpose": "iframe协议注入"},
+        {"category": "XSS-编码", "payload": "%3Cscript%3Ealert(1)%3C/script%3E", "purpose": "URL编码绕过"},
+        {"category": "XSS-编码", "payload": "<img src=x onerror=\\u0061lert(1)>", "purpose": "Unicode编码绕过"}
+      ]
+    }
+  },
+  "section6风险评估": {
+    "title": "6. 风险评估与优先级",
+    "section6_1风险矩阵": {
+      "title": "6.1 测试风险矩阵",
+      "risks": [
+        {"category": "安全", "risk": "SQL注入漏洞导致数据泄露", "impact": "极高", "probability": "中", "level": "高", "mitigation": "P0优先级测试，使用专业扫描工具"},
+        {"category": "安全", "risk": "XSS漏洞导致会话劫持", "impact": "高", "probability": "中", "level": "高", "mitigation": "P0优先级测试，输入过滤验证"},
+        {"category": "安全", "risk": "CSRF攻击导致账户被盗", "impact": "极高", "probability": "高", "level": "极高", "mitigation": "P0优先级，Anti-CSRF Token验证"},
+        {"category": "安全", "risk": "暴力破解成功", "impact": "高", "probability": "高", "level": "高", "mitigation": "限速机制，CAPTCHA强制，账户锁定"},
+        {"category": "安全", "risk": "Session Fixation攻击", "impact": "高", "probability": "中", "level": "高", "mitigation": "P0优先级，登录前后Session ID变化验证"},
+        {"category": "安全", "risk": "敏感信息泄露", "impact": "高", "probability": "中", "level": "高", "mitigation": "错误信息统一化，日志脱敏检查"},
+        {"category": "功能", "risk": "CAPTCHA机制失效", "impact": "中", "probability": "中", "level": "中", "mitigation": "P0优先级，验证码触发条件测试"},
+        {"category": "功能", "risk": "会话超时设置错误", "impact": "中", "probability": "低", "level": "低", "mitigation": "P0优先级，边界时间测试"},
+        {"category": "性能", "risk": "高峰期登录超时", "impact": "中", "probability": "高", "level": "中", "mitigation": "性能测试纳入回归测试"}
+      ]
+    },
+    "section6_2优先级": {
+      "title": "6.2 测试用例优先级定义",
+      "priorities": [
+        {"level": "P0", "description": "必须测试通过的阻塞性功能和严重安全漏洞", "passRate": "100%", "includes": ["正常登录流程", "SQL注入防护", "XSS防护", "CSRF防护", "CAPTCHA验证码", "Session Fixation防护", "会话超时", "暴力破解防护"]},
+        {"level": "P1", "description": "重要功能和高风险安全问题", "passRate": "≥95%", "includes": ["边界值测试", "错误处理", "OAuth安全", "敏感信息泄露", "错误枚举防护", "暴力破解多维度"]},
+        {"level": "P2", "description": "次要功能和优化体验", "passRate": "≥90%", "includes": ["记住我功能", "Token刷新", "多设备登录", "退出登录", "兼容性测试"]},
+        {"level": "P3", "description": "低优先级，可选测试", "passRate": "≥80%", "includes": ["特殊字符处理", "极端边界值", "可访问性", "移动端优化"]}
+      ]
+    }
+  },
+  "section7环境要求": {
+    "title": "7. 测试环境与准入准出条件",
+    "section7_1环境要求": {
+      "title": "7.1 测试环境要求",
+      "requirements": [
+        "测试服务器：独立测试环境，与生产环境隔离",
+        "测试数据库：包含各类测试账号（正常、锁定、禁用、过期）",
+        "网络环境：支持HTTP/HTTPS，模拟真实网络延迟",
+        "监控工具：Burp Suite、Selenium、JMeter"
+      ]
+    },
+    "section7_2准入条件": {
+      "title": "7.2 测试准入条件",
+      "conditions": [
+        "需求文档已评审通过",
+        "接口文档已提供",
+        "测试环境已部署",
+        "测试账号已准备"
+      ]
+    },
+    "section7_3准出条件": {
+      "title": "7.3 测试准出条件",
+      "conditions": [
+        "所有P0用例执行通过（100%）",
+        "P1用例通过率≥95%",
+        "无未解决的P0/P1安全缺陷",
+        "性能指标达标",
+        "安全扫描无高危漏洞"
+      ]
+    }
+  },
+  "section8总结": {
+    "title": "8. 文档变更记录",
+    "changes": [
+      {"version": "v1.0", "date": "2026-07-02", "author": "测试需求分析Agent", "changes": "初始版本"},
+      {"version": "v2.0", "date": "2026-07-02", "author": "测试需求分析Agent", "changes": "根据AI审核反馈重做：新增28项安全测试用例、补充CAPTCHA/Session Fixation/错误枚举测试、完善操作步骤、提升CSRF和会话超时为P0"}
+    ],
+    "summary": {
+      "totalTestCases": 82,
+      "p0Cases": 32,
+      "p1Cases": 30,
+      "p2Cases": 20,
+      "securityCases": 28,
+      "newFeaturesInV2": [
+        "28项新增安全测试用例（SQL注入7项、XSS防护6项、CSRF防护3项、会话安全5项、暴力破解4项、OAuth安全3项、敏感信息3项）",
+        "CAPTCHA验证码测试4项（P0）",
+        "Session Fixation防护测试1项（P0）",
+        "错误提示枚举防护测试3项（P1）",
+        "所有测试用例≥3步详细操作步骤",
+        "确定性预期结果，无模糊描述"
+      ]
+    }
+  }
+}

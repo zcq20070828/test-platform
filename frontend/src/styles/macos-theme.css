@@ -1,0 +1,284 @@
+/* 测试中台 - macOS 浅色组件规范（全局覆盖） */
+
+/* ============ 卡片 ============ */
+.el-card {
+  background: var(--surface-translucent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  overflow: hidden;
+}
+.el-card:hover {
+  box-shadow: var(--shadow-card-hover);
+}
+.el-card__header {
+  border-bottom: 1px solid var(--divider);
+  padding: 16px 18px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.el-card__body {
+  padding: 18px;
+}
+
+/* 通用卡片工具类 */
+.mac-card {
+  background: var(--surface-translucent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  padding: 18px;
+}
+
+/* ============ 按钮 ============ */
+.el-button {
+  height: 36px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 0 16px;
+  gap: 7px;
+  transition: background-color var(--transition), border-color var(--transition),
+    box-shadow var(--transition), transform var(--transition);
+}
+.el-button .el-icon {
+  font-size: 16px;
+}
+.el-button--primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(0, 122, 255, 0.25);
+}
+.el-button--primary:hover {
+  background: var(--primary-light);
+  border-color: var(--primary-light);
+}
+.el-button--primary:active {
+  background: var(--primary-dark);
+  border-color: var(--primary-dark);
+}
+.el-button:not(.el-button--primary):not(.el-button--danger):not(.el-button--success):not(.el-button--warning) {
+  background: var(--el-fill-color-light);
+  border-color: var(--border);
+  color: var(--text);
+}
+.el-button:not(.el-button--primary):not(.el-button--danger):not(.el-button--success):not(.el-button--warning):hover {
+  background: var(--el-fill-color);
+  border-color: var(--border-strong);
+}
+.el-button--small {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+.el-button--large {
+  height: 40px;
+  padding: 0 20px;
+  font-size: 14px;
+}
+.el-button.is-text {
+  background: transparent;
+  border-color: transparent;
+}
+.el-button.is-text:hover {
+  background: var(--el-fill-color-light);
+}
+
+/* ============ 表格 ============ */
+.el-table {
+  --el-table-border-color: var(--divider);
+  --el-table-header-bg-color: #FAFAFC;
+  --el-table-row-hover-bg-color: var(--el-color-primary-light-9);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  font-size: 13px;
+}
+.el-table th.el-table__cell {
+  background: #FAFAFC;
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 12px;
+}
+.el-table td.el-table__cell {
+  padding: 12px 0;
+}
+.el-table .cell {
+  padding: 0 12px;
+}
+.el-table__inner-wrapper::before {
+  background-color: var(--divider);
+}
+
+/* ============ 标签 / 状态徽标 ============ */
+.el-tag {
+  border-radius: 999px;
+  border: none;
+  font-weight: 500;
+  padding: 0 10px;
+  height: 22px;
+  line-height: 22px;
+}
+.el-tag--success {
+  background: rgba(52, 199, 89, 0.12);
+  color: #248A3D;
+}
+.el-tag--warning {
+  background: rgba(255, 149, 0, 0.14);
+  color: #B25E00;
+}
+.el-tag--danger,
+.el-tag--error {
+  background: rgba(255, 59, 48, 0.12);
+  color: #D23A2E;
+}
+.el-tag--info {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-secondary);
+}
+.el-tag--primary {
+  background: var(--el-color-primary-light-9);
+  color: var(--primary);
+}
+
+/* ============ 输入框 / 下拉 ============ */
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 1px var(--border) inset;
+}
+.el-input__wrapper:hover,
+.el-select__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--border-strong) inset;
+}
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--primary) inset;
+}
+.el-textarea__inner {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+}
+.el-textarea__inner:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.12);
+}
+
+/* ============ 分段切换器 ============ */
+.el-segmented {
+  background: var(--el-fill-color-light);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+}
+.el-segmented__item.is-selected {
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--text);
+  font-weight: 500;
+}
+.el-segmented__item {
+  border-radius: 6px;
+  color: var(--text-secondary);
+}
+
+/* ============ 分隔线 ============ */
+.el-divider {
+  border-color: var(--divider);
+}
+
+/* ============ 对话框 ============ */
+.el-dialog {
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+}
+.el-dialog__header {
+  padding: 18px 20px;
+  margin-right: 0;
+  border-bottom: 1px solid var(--divider);
+}
+.el-dialog__title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.el-dialog__body {
+  padding: 20px;
+}
+
+/* ============ 抽屉 ============ */
+.el-drawer {
+  background: var(--surface);
+}
+.el-drawer__header {
+  margin-bottom: 0;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--divider);
+  font-weight: 600;
+}
+
+/* ============ 工具类 ============ */
+.mac-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+.mac-page-header__title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+.mac-page-header__subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+.mac-page-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.mac-section-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 4px 0 12px;
+}
+.mac-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.mac-metric {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.mac-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+
+/* 焦点描边（柔和蓝） */
+:focus-visible {
+  outline: 2px solid rgba(0, 122, 255, 0.4);
+  outline-offset: 2px;
+}

@@ -1,0 +1,455 @@
+{
+  "report_meta": {
+    "title": "用户登录功能测试执行报告",
+    "version": "v1.0",
+    "generated_at": "2026-07-02T14:05:00+08:00",
+    "test_object": "Web 应用登录模块",
+    "test_case_source": "login_test_cases.md (v1.0)",
+    "generator": "Test Reporter Agent"
+  },
+
+  "summary": {
+    "total_cases": 146,
+    "by_priority": {
+      "P0": { "count": 43, "percent": 29.5, "label": "冒烟/阻塞" },
+      "P1": { "count": 69, "percent": 47.3, "label": "核心功能" },
+      "P2": { "count": 34, "percent": 23.3, "label": "常规功能" },
+      "P3": { "count": 0,  "percent": 0.0,  "label": "探索性" }
+    }
+  },
+
+  "dimensions": [
+    {
+      "id": "functional",
+      "name": "功能测试",
+      "icon": "🧪",
+      "submodule_count": 7,
+      "total": 43,
+      "P0": 13,
+      "P1": 24,
+      "P2": 6,
+      "P3": 0,
+      "percent_of_total": 29.5,
+      "submodules": [
+        { "id": "F-Normal", "name": "正常登录流程", "total": 5,  "P0": 4, "P1": 1, "P2": 0, "case_ids": ["F-001","F-002","F-003","F-004","F-005"] },
+        { "id": "F-AuthError", "name": "异常登录 — 账号/密码错误", "total": 10, "P0": 5, "P1": 5, "P2": 0, "case_ids": ["F-006","F-007","F-008","F-009","F-010","F-011","F-012","F-013","F-014","F-015"] },
+        { "id": "F-Captcha", "name": "异常登录 — 验证码", "total": 5, "P0": 2, "P1": 3, "P2": 0, "case_ids": ["F-016","F-017","F-018","F-019","F-020"] },
+        { "id": "F-AccountStatus", "name": "异常登录 — 账号状态", "total": 4, "P0": 0, "P1": 4, "P2": 0, "case_ids": ["F-021","F-022","F-023","F-024"] },
+        { "id": "F-Boundary", "name": "边界值测试", "total": 11, "P0": 0, "P1": 9, "P2": 2, "case_ids": ["F-025","F-026","F-027","F-028","F-029","F-030","F-031","F-032","F-033","F-034","F-035"] },
+        { "id": "F-RememberMe", "name": "\"记住我\"功能", "total": 5, "P0": 0, "P1": 5, "P2": 0, "case_ids": ["F-036","F-037","F-038","F-039","F-040"] },
+        { "id": "F-ForgotPwd", "name": "忘记密码流程", "total": 6, "P0": 2, "P1": 4, "P2": 0, "case_ids": ["F-041","F-042","F-043","F-044","F-045","F-046"] }
+      ]
+    },
+    {
+      "id": "ui",
+      "name": "UI 测试",
+      "icon": "🎨",
+      "submodule_count": 2,
+      "total": 19,
+      "P0": 3,
+      "P1": 9,
+      "P2": 7,
+      "P3": 0,
+      "percent_of_total": 13.0,
+      "submodules": [
+        { "id": "UI-Elements", "name": "界面元素", "total": 10, "P0": 3, "P1": 3, "P2": 4, "case_ids": ["UI-001","UI-002","UI-003","UI-004","UI-005","UI-006","UI-007","UI-008","UI-009","UI-010"] },
+        { "id": "UI-Responsive", "name": "布局与响应式", "total": 9, "P0": 1, "P1": 3, "P2": 5, "case_ids": ["UI-011","UI-012","UI-013","UI-014","UI-015","UI-016","UI-017","UI-018","UI-019"] }
+      ]
+    },
+    {
+      "id": "security",
+      "name": "安全测试",
+      "icon": "🛡️",
+      "submodule_count": 4,
+      "total": 33,
+      "P0": 16,
+      "P1": 12,
+      "P2": 5,
+      "P3": 0,
+      "percent_of_total": 22.6,
+      "submodules": [
+        { "id": "SEC-Injection", "name": "注入攻击防护", "total": 10, "P0": 8, "P1": 2, "P2": 0, "case_ids": ["SEC-001","SEC-002","SEC-003","SEC-004","SEC-005","SEC-006","SEC-007","SEC-008","SEC-009","SEC-010"] },
+        { "id": "SEC-BruteForce", "name": "暴力破解防护", "total": 8, "P0": 2, "P1": 5, "P2": 1, "case_ids": ["SEC-011","SEC-012","SEC-013","SEC-014","SEC-015","SEC-016","SEC-017","SEC-018"] },
+        { "id": "SEC-Session", "name": "会话管理与Token安全", "total": 8, "P0": 4, "P1": 4, "P2": 0, "case_ids": ["SEC-019","SEC-020","SEC-021","SEC-022","SEC-023","SEC-024","SEC-025","SEC-026"] },
+        { "id": "SEC-Transmission", "name": "敏感信息与传输安全", "total": 7, "P0": 2, "P1": 5, "P2": 0, "case_ids": ["SEC-027","SEC-028","SEC-029","SEC-030","SEC-031","SEC-032","SEC-033"] }
+      ]
+    },
+    {
+      "id": "compatibility",
+      "name": "兼容性测试",
+      "icon": "🌐",
+      "submodule_count": 2,
+      "total": 17,
+      "P0": 6,
+      "P1": 6,
+      "P2": 5,
+      "P3": 0,
+      "percent_of_total": 11.6,
+      "submodules": [
+        { "id": "COMP-Browser", "name": "浏览器兼容性", "total": 11, "P0": 5, "P1": 2, "P2": 4, "case_ids": ["COMP-001","COMP-002","COMP-003","COMP-004","COMP-005","COMP-006","COMP-007","COMP-008","COMP-009","COMP-010","COMP-011"] },
+        { "id": "COMP-OS", "name": "操作系统兼容性", "total": 4, "P0": 0, "P1": 2, "P2": 2, "case_ids": ["COMP-012","COMP-013","COMP-014","COMP-015"] }
+      ]
+    },
+    {
+      "id": "performance",
+      "name": "性能测试",
+      "icon": "⚡",
+      "submodule_count": 3,
+      "total": 14,
+      "P0": 2,
+      "P1": 8,
+      "P2": 4,
+      "P3": 0,
+      "percent_of_total": 9.6,
+      "submodules": [
+        { "id": "PERF-Response", "name": "响应时间", "total": 5, "P0": 1, "P1": 3, "P2": 1, "case_ids": ["PERF-001","PERF-002","PERF-003","PERF-004","PERF-005"] },
+        { "id": "PERF-Concurrency", "name": "并发与负载", "total": 7, "P0": 1, "P1": 5, "P2": 1, "case_ids": ["PERF-006","PERF-007","PERF-008","PERF-009","PERF-010","PERF-011","PERF-012"] },
+        { "id": "PERF-Resource", "name": "资源消耗", "total": 2, "P0": 0, "P1": 0, "P2": 2, "case_ids": ["PERF-013","PERF-014"] }
+      ]
+    },
+    {
+      "id": "usability",
+      "name": "易用性测试",
+      "icon": "👤",
+      "submodule_count": 3,
+      "total": 20,
+      "P0": 3,
+      "P1": 10,
+      "P2": 7,
+      "P3": 0,
+      "percent_of_total": 13.7,
+      "submodules": [
+        { "id": "US-Interaction", "name": "交互反馈", "total": 8, "P0": 1, "P1": 4, "P2": 3, "case_ids": ["US-001","US-002","US-003","US-004","US-005","US-006","US-007","US-008"] },
+        { "id": "US-ErrorMsg", "name": "错误提示", "total": 7, "P0": 1, "P1": 5, "P2": 1, "case_ids": ["US-009","US-010","US-011","US-012","US-013","US-014","US-015"] },
+        { "id": "US-Accessibility", "name": "可访问性", "total": 5, "P0": 0, "P1": 3, "P2": 2, "case_ids": ["US-016","US-017","US-018","US-019","US-020"] }
+      ]
+    }
+  ],
+
+  "test_plan": {
+    "rounds": [
+      {
+        "round": 1,
+        "name": "SIT / 冒烟测试",
+        "priority": "P0",
+        "total_cases": 43,
+        "estimated_days": 1.0,
+        "pass_criteria": "P0 通过率 = 100%（阻塞发布）",
+        "blocking": "任一 P0 失败 → 中止本轮，提交开发修复",
+        "execution_order": [
+          "功能正常路径",
+          "功能异常路径",
+          "安全关键项",
+          "性能基线"
+        ],
+        "priority_submodules": [
+          { "name": "功能测试", "count": 13, "ids": ["F-001","F-002","F-003","F-006","F-007","F-008","F-009","F-013","F-014","F-015","F-016","F-017","F-041","F-042"] },
+          { "name": "安全测试", "count": 16, "ids": ["SEC-001","SEC-002","SEC-003","SEC-004","SEC-005","SEC-006","SEC-007","SEC-009","SEC-011","SEC-012","SEC-019","SEC-020","SEC-023","SEC-024","SEC-025","SEC-027","SEC-028","SEC-033"] },
+          { "name": "兼容性测试", "count": 6, "ids": ["COMP-001","COMP-002","COMP-003","COMP-007","COMP-008"] },
+          { "name": "性能测试", "count": 2, "ids": ["PERF-002","PERF-006"] },
+          { "name": "UI 测试", "count": 3, "ids": ["UI-001","UI-004","UI-009"] },
+          { "name": "易用性测试", "count": 3, "ids": ["US-006","US-014"] }
+        ]
+      },
+      {
+        "round": 2,
+        "name": "功能深度测试",
+        "priority": "P1",
+        "total_cases": 69,
+        "estimated_days": 2.0,
+        "pass_criteria": "P1 通过率 ≥ 95%",
+        "blocking": "不阻塞本轮；失败需在发布前修复或评估影响",
+        "execution_order": [
+          "功能边界",
+          "账号状态",
+          "记住我",
+          "忘记密码",
+          "UI 布局",
+          "安全加固",
+          "兼容性基础",
+          "性能负载",
+          "易用性"
+        ]
+      },
+      {
+        "round": 3,
+        "name": "全面覆盖测试",
+        "priority": "P2",
+        "total_cases": 34,
+        "estimated_days": 1.5,
+        "pass_criteria": "P2 通过率 ≥ 90%",
+        "blocking": "不阻塞本轮",
+        "execution_order": [
+          "功能细节",
+          "UI 细节",
+          "兼容性历史版本",
+          "性能压测",
+          "易用性增强"
+        ]
+      }
+    ],
+    "total_estimated_days": 4.5
+  },
+
+  "environment": {
+    "servers": [
+      { "type": "Web Server", "software": "Nginx/Apache", "purpose": "反向代理、静态资源" },
+      { "type": "App Server", "software": "Node.js/Java/Python (按实际栈)", "purpose": "登录后端服务" },
+      { "type": "Database", "software": "MySQL/PostgreSQL", "notes": "需配置用户表+测试种子数据" },
+      { "type": "Cache", "software": "Redis", "purpose": "Session 存储" },
+      { "type": "HTTPS", "software": "SSL 证书", "purpose": "生产环境 HTTPS 必须" }
+    ],
+    "test_machines": [
+      { "label": "功能测试机 A", "os": "macOS 最新版", "browser": "Chrome 最新版", "resolution": "1920×1080" },
+      { "label": "功能测试机 B", "os": "Windows 11", "browser": "Chrome/Edge 最新版", "resolution": "1440×900" },
+      { "label": "移动测试机 A", "device": "iPhone 15/16", "os": "iOS 最新版", "browser": "Safari" },
+      { "label": "移动测试机 B", "device": "Android 旗舰", "os": "Android 14", "browser": "Chrome" }
+    ],
+    "tools": [
+      { "name": "Browser DevTools", "purpose": "Cookie 检查、网络请求监控", "required": true },
+      { "name": "Burp Suite / Fiddler / Charles", "purpose": "安全测试：请求拦截与篡改", "required": true },
+      { "name": "JMeter / k6 / Locust", "purpose": "性能测试：并发与负载", "required": true },
+      { "name": "Selenium / Playwright / Cypress", "purpose": "自动化回归测试", "required": false },
+      { "name": "BrowserStack / Sauce Labs", "purpose": "跨浏览器兼容性平台", "required": false },
+      { "name": "Lighthouse / axe DevTools", "purpose": "可访问性合规检查", "required": false },
+      { "name": "Postman", "purpose": "API 接口测试", "required": false }
+    ],
+    "test_data": [
+      { "type": "正常状态账号", "count": "5+", "notes": "含不同用户名格式" },
+      { "type": "禁用/注销账号", "count": 2, "notes": "用于 F-021, F-022" },
+      { "type": "未激活账号", "count": 2, "notes": "用于 F-023" },
+      { "type": "复杂密码账号", "count": 3, "notes": "含特殊字符、长密码、大小写" },
+      { "type": "纯空格密码账号", "count": 1, "notes": "用于 F-033" },
+      { "type": "锁定状态账号", "count": 2, "notes": "用于 SEC-013, SEC-014" },
+      { "type": "无效账号", "count": 3, "notes": "用于异常测试" }
+    ]
+  },
+
+  "risk_assessment": {
+    "risks": [
+      { "id": "R-001", "description": "P0 冒烟测试失败率高", "level": "high", "impact": "blocking", "mitigation": "开发先自测，提供环境稳定性保障" },
+      { "id": "R-002", "description": "安全测试需专用工具/HTTPS", "level": "high", "impact": "blocking", "mitigation": "提前准备 Burp Suite 和 HTTPS 环境" },
+      { "id": "R-003", "description": "验证码自动化测试困难", "level": "medium", "impact": "moderate", "mitigation": "提供验证码跳过开关或固定测试验证码" },
+      { "id": "R-004", "description": "并发测试可能损坏环境", "level": "medium", "impact": "moderate", "mitigation": "使用独立压测环境" },
+      { "id": "R-005", "description": "兼容性设备准备不足", "level": "medium", "impact": "moderate", "mitigation": "使用 BrowserStack 替代真实设备" },
+      { "id": "R-006", "description": "忘记密码需真实邮箱", "level": "medium", "impact": "moderate", "mitigation": "使用 MailHog 或后端提供跳过接口" },
+      { "id": "R-007", "description": "Session 过期等待时间长", "level": "low", "impact": "minor", "mitigation": "配置可缩短的 Session 超时参数" },
+      { "id": "R-008", "description": "可访问性测试需专业工具", "level": "low", "impact": "minor", "mitigation": "使用 axe DevTools 自动检测覆盖基础项" },
+      { "id": "R-009", "description": "密码重置链接过期等待(30min)", "level": "low", "impact": "minor", "mitigation": "后端提供可配置超时参数" }
+    ],
+    "summary": {
+      "high": { "count": 2, "ids": ["R-001","R-002"] },
+      "medium": { "count": 4, "ids": ["R-003","R-004","R-005","R-006"] },
+      "low": { "count": 3, "ids": ["R-007","R-008","R-009"] }
+    }
+  },
+
+  "progress_tracking": {
+    "overall": {
+      "total": 146,
+      "not_executed": 146,
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "skipped": 0,
+      "pass_rate": null
+    },
+    "by_dimension": [
+      { "dimension": "功能测试", "total": 43, "not_executed": 43, "passed": 0, "failed": 0, "blocked": 0, "skipped": 0, "pass_rate": null },
+      { "dimension": "UI 测试", "total": 19, "not_executed": 19, "passed": 0, "failed": 0, "blocked": 0, "skipped": 0, "pass_rate": null },
+      { "dimension": "安全测试", "total": 33, "not_executed": 33, "passed": 0, "failed": 0, "blocked": 0, "skipped": 0, "pass_rate": null },
+      { "dimension": "兼容性测试", "total": 17, "not_executed": 17, "passed": 0, "failed": 0, "blocked": 0, "skipped": 0, "pass_rate": null },
+      { "dimension": "性能测试", "total": 14, "not_executed": 14, "passed": 0, "failed": 0, "blocked": 0, "skipped": 0, "pass_rate": null },
+      { "dimension": "易用性测试", "total": 20, "not_executed": 20, "passed": 0, "failed": 0, "blocked": 0, "skipped": 0, "pass_rate": null }
+    ],
+    "by_round": [
+      { "round": 1, "name": "P0 冒烟", "total": 43, "not_executed": 43, "passed": 0, "failed": 0, "blocked": 0, "skipped": 0, "completion_rate": 0 },
+      { "round": 2, "name": "P1 核心", "total": 69, "not_executed": 69, "passed": 0, "failed": 0, "blocked": 0, "skipped": 0, "completion_rate": 0 },
+      { "round": 3, "name": "P2 全面", "total": 34, "not_executed": 34, "passed": 0, "failed": 0, "blocked": 0, "skipped": 0, "completion_rate": 0 }
+    ],
+    "daily_log": []
+  },
+
+  "test_cases": {
+    "F-001": { "id": "F-001", "scene": "正确用户名+密码+验证码登录成功", "priority": "P0", "dimension": "functional", "submodule": "正常登录流程", "status": "not_executed", "status_label": "待执行" },
+    "F-002": { "id": "F-002", "scene": "正确邮箱+密码+验证码登录成功", "priority": "P0", "dimension": "functional", "submodule": "正常登录流程", "status": "not_executed", "status_label": "待执行" },
+    "F-003": { "id": "F-003", "scene": "Cookie/Session 正确创建", "priority": "P0", "dimension": "functional", "submodule": "正常登录流程", "status": "not_executed", "status_label": "待执行" },
+    "F-004": { "id": "F-004", "scene": "登录后刷新页面保持状态", "priority": "P1", "dimension": "functional", "submodule": "正常登录流程", "status": "not_executed", "status_label": "待执行" },
+    "F-005": { "id": "F-005", "scene": "登录后点击浏览器后退键", "priority": "P1", "dimension": "functional", "submodule": "正常登录流程", "status": "not_executed", "status_label": "待执行" },
+    "F-006": { "id": "F-006", "scene": "用户名错误，密码正确", "priority": "P0", "dimension": "functional", "submodule": "异常登录—账号/密码错误", "status": "not_executed", "status_label": "待执行" },
+    "F-007": { "id": "F-007", "scene": "用户名正确，密码错误", "priority": "P0", "dimension": "functional", "submodule": "异常登录—账号/密码错误", "status": "not_executed", "status_label": "待执行" },
+    "F-008": { "id": "F-008", "scene": "用户名和密码均错误", "priority": "P0", "dimension": "functional", "submodule": "异常登录—账号/密码错误", "status": "not_executed", "status_label": "待执行" },
+    "F-009": { "id": "F-009", "scene": "账号未注册", "priority": "P0", "dimension": "functional", "submodule": "异常登录—账号/密码错误", "status": "not_executed", "status_label": "待执行" },
+    "F-010": { "id": "F-010", "scene": "账号大小写敏感性", "priority": "P1", "dimension": "functional", "submodule": "异常登录—账号/密码错误", "status": "not_executed", "status_label": "待执行" },
+    "F-011": { "id": "F-011", "scene": "用户名/邮箱前后含空格", "priority": "P1", "dimension": "functional", "submodule": "异常登录—账号/密码错误", "status": "not_executed", "status_label": "待执行" },
+    "F-012": { "id": "F-012", "scene": "密码大小写敏感性", "priority": "P1", "dimension": "functional", "submodule": "异常登录—账号/密码错误", "status": "not_executed", "status_label": "待执行" },
+    "F-013": { "id": "F-013", "scene": "空用户名登录", "priority": "P0", "dimension": "functional", "submodule": "异常登录—账号/密码错误", "status": "not_executed", "status_label": "待执行" },
+    "F-014": { "id": "F-014", "scene": "空密码登录", "priority": "P0", "dimension": "functional", "submodule": "异常登录—账号/密码错误", "status": "not_executed", "status_label": "待执行" },
+    "F-015": { "id": "F-015", "scene": "空用户名和密码登录", "priority": "P0", "dimension": "functional", "submodule": "异常登录—账号/密码错误", "status": "not_executed", "status_label": "待执行" },
+    "F-016": { "id": "F-016", "scene": "验证码错误", "priority": "P0", "dimension": "functional", "submodule": "异常登录—验证码", "status": "not_executed", "status_label": "待执行" },
+    "F-017": { "id": "F-017", "scene": "验证码为空", "priority": "P0", "dimension": "functional", "submodule": "异常登录—验证码", "status": "not_executed", "status_label": "待执行" },
+    "F-018": { "id": "F-018", "scene": "验证码过期", "priority": "P1", "dimension": "functional", "submodule": "异常登录—验证码", "status": "not_executed", "status_label": "待执行" },
+    "F-019": { "id": "F-019", "scene": "刷新验证码", "priority": "P1", "dimension": "functional", "submodule": "异常登录—验证码", "status": "not_executed", "status_label": "待执行" },
+    "F-020": { "id": "F-020", "scene": "验证码区分大小写", "priority": "P1", "dimension": "functional", "submodule": "异常登录—验证码", "status": "not_executed", "status_label": "待执行" },
+    "F-021": { "id": "F-021", "scene": "已注销账号登录", "priority": "P1", "dimension": "functional", "submodule": "异常登录—账号状态", "status": "not_executed", "status_label": "待执行" },
+    "F-022": { "id": "F-022", "scene": "已禁用账号登录", "priority": "P1", "dimension": "functional", "submodule": "异常登录—账号状态", "status": "not_executed", "status_label": "待执行" },
+    "F-023": { "id": "F-023", "scene": "未激活账号登录", "priority": "P1", "dimension": "functional", "submodule": "异常登录—账号状态", "status": "not_executed", "status_label": "待执行" },
+    "F-024": { "id": "F-024", "scene": "同一账号多人同时登录", "priority": "P1", "dimension": "functional", "submodule": "异常登录—账号状态", "status": "not_executed", "status_label": "待执行" },
+    "F-025": { "id": "F-025", "scene": "用户名最小长度边界", "priority": "P1", "dimension": "functional", "submodule": "边界值测试", "status": "not_executed", "status_label": "待执行" },
+    "F-026": { "id": "F-026", "scene": "用户名最大长度边界", "priority": "P1", "dimension": "functional", "submodule": "边界值测试", "status": "not_executed", "status_label": "待执行" },
+    "F-027": { "id": "F-027", "scene": "用户名超出最大长度", "priority": "P1", "dimension": "functional", "submodule": "边界值测试", "status": "not_executed", "status_label": "待执行" },
+    "F-028": { "id": "F-028", "scene": "密码最小长度边界", "priority": "P1", "dimension": "functional", "submodule": "边界值测试", "status": "not_executed", "status_label": "待执行" },
+    "F-029": { "id": "F-029", "scene": "密码超出最大长度", "priority": "P1", "dimension": "functional", "submodule": "边界值测试", "status": "not_executed", "status_label": "待执行" },
+    "F-030": { "id": "F-030", "scene": "用户名含特殊字符", "priority": "P1", "dimension": "functional", "submodule": "边界值测试", "status": "not_executed", "status_label": "待执行" },
+    "F-031": { "id": "F-031", "scene": "密码含特殊字符", "priority": "P1", "dimension": "functional", "submodule": "边界值测试", "status": "not_executed", "status_label": "待执行" },
+    "F-032": { "id": "F-032", "scene": "键盘长按连续字符", "priority": "P2", "dimension": "functional", "submodule": "边界值测试", "status": "not_executed", "status_label": "待执行" },
+    "F-033": { "id": "F-033", "scene": "纯空格作为密码", "priority": "P1", "dimension": "functional", "submodule": "边界值测试", "status": "not_executed", "status_label": "待执行" },
+    "F-034": { "id": "F-034", "scene": "复制粘贴密码", "priority": "P2", "dimension": "functional", "submodule": "边界值测试", "status": "not_executed", "status_label": "待执行" },
+    "F-035": { "id": "F-035", "scene": "复制粘贴用户名", "priority": "P2", "dimension": "functional", "submodule": "边界值测试", "status": "not_executed", "status_label": "待执行" },
+    "F-036": { "id": "F-036", "scene": "勾选\"记住我\"后登录", "priority": "P1", "dimension": "functional", "submodule": "记住我功能", "status": "not_executed", "status_label": "待执行" },
+    "F-037": { "id": "F-037", "scene": "勾选\"记住我\"后重启浏览器", "priority": "P1", "dimension": "functional", "submodule": "记住我功能", "status": "not_executed", "status_label": "待执行" },
+    "F-038": { "id": "F-038", "scene": "不勾选\"记住我\"登录", "priority": "P1", "dimension": "functional", "submodule": "记住我功能", "status": "not_executed", "status_label": "待执行" },
+    "F-039": { "id": "F-039", "scene": "\"记住我\"安全性验证", "priority": "P1", "dimension": "functional", "submodule": "记住我功能", "status": "not_executed", "status_label": "待执行" },
+    "F-040": { "id": "F-040", "scene": "\"记住我\"超时过期", "priority": "P1", "dimension": "functional", "submodule": "记住我功能", "status": "not_executed", "status_label": "待执行" },
+    "F-041": { "id": "F-041", "scene": "正常发送密码重置邮件", "priority": "P0", "dimension": "functional", "submodule": "忘记密码流程", "status": "not_executed", "status_label": "待执行" },
+    "F-042": { "id": "F-042", "scene": "发送重置邮件至未注册邮箱", "priority": "P0", "dimension": "functional", "submodule": "忘记密码流程", "status": "not_executed", "status_label": "待执行" },
+    "F-043": { "id": "F-043", "scene": "密码重置链接一次性使用", "priority": "P1", "dimension": "functional", "submodule": "忘记密码流程", "status": "not_executed", "status_label": "待执行" },
+    "F-044": { "id": "F-044", "scene": "密码重置链接过期", "priority": "P1", "dimension": "functional", "submodule": "忘记密码流程", "status": "not_executed", "status_label": "待执行" },
+    "F-045": { "id": "F-045", "scene": "重置后新密码生效", "priority": "P1", "dimension": "functional", "submodule": "忘记密码流程", "status": "not_executed", "status_label": "待执行" },
+    "F-046": { "id": "F-046", "scene": "重置后旧密码失效", "priority": "P1", "dimension": "functional", "submodule": "忘记密码流程", "status": "not_executed", "status_label": "待执行" },
+    "UI-001": { "id": "UI-001", "scene": "所有必要元素存在", "priority": "P0", "dimension": "ui", "submodule": "界面元素", "status": "not_executed", "status_label": "待执行" },
+    "UI-002": { "id": "UI-002", "scene": "Placeholder 提示", "priority": "P2", "dimension": "ui", "submodule": "界面元素", "status": "not_executed", "status_label": "待执行" },
+    "UI-003": { "id": "UI-003", "scene": "登录按钮状态", "priority": "P1", "dimension": "ui", "submodule": "界面元素", "status": "not_executed", "status_label": "待执行" },
+    "UI-004": { "id": "UI-004", "scene": "验证码图片显示", "priority": "P0", "dimension": "ui", "submodule": "界面元素", "status": "not_executed", "status_label": "待执行" },
+    "UI-005": { "id": "UI-005", "scene": "错误信息显示样式", "priority": "P1", "dimension": "ui", "submodule": "界面元素", "status": "not_executed", "status_label": "待执行" },
+    "UI-006": { "id": "UI-006", "scene": "成功登录跳转效果", "priority": "P1", "dimension": "ui", "submodule": "界面元素", "status": "not_executed", "status_label": "待执行" },
+    "UI-007": { "id": "UI-007", "scene": "页面标题和 Logo", "priority": "P2", "dimension": "ui", "submodule": "界面元素", "status": "not_executed", "status_label": "待执行" },
+    "UI-008": { "id": "UI-008", "scene": "输入框获取焦点样式", "priority": "P2", "dimension": "ui", "submodule": "界面元素", "status": "not_executed", "status_label": "待执行" },
+    "UI-009": { "id": "UI-009", "scene": "密码输入框掩码显示", "priority": "P0", "dimension": "ui", "submodule": "界面元素", "status": "not_executed", "status_label": "待执行" },
+    "UI-010": { "id": "UI-010", "scene": "密码可见切换按钮", "priority": "P2", "dimension": "ui", "submodule": "界面元素", "status": "not_executed", "status_label": "待执行" },
+    "UI-011": { "id": "UI-011", "scene": "PC 端居中布局", "priority": "P1", "dimension": "ui", "submodule": "布局与响应式", "status": "not_executed", "status_label": "待执行" },
+    "UI-012": { "id": "UI-012", "scene": "平板横屏布局", "priority": "P1", "dimension": "ui", "submodule": "布局与响应式", "status": "not_executed", "status_label": "待执行" },
+    "UI-013": { "id": "UI-013", "scene": "手机端单列布局", "priority": "P0", "dimension": "ui", "submodule": "布局与响应式", "status": "not_executed", "status_label": "待执行" },
+    "UI-014": { "id": "UI-014", "scene": "超宽屏布局", "priority": "P2", "dimension": "ui", "submodule": "布局与响应式", "status": "not_executed", "status_label": "待执行" },
+    "UI-015": { "id": "UI-015", "scene": "验证码图片自适应", "priority": "P2", "dimension": "ui", "submodule": "布局与响应式", "status": "not_executed", "status_label": "待执行" },
+    "UI-016": { "id": "UI-016", "scene": "无横向滚动条", "priority": "P1", "dimension": "ui", "submodule": "布局与响应式", "status": "not_executed", "status_label": "待执行" },
+    "UI-017": { "id": "UI-017", "scene": "背景适配", "priority": "P2", "dimension": "ui", "submodule": "布局与响应式", "status": "not_executed", "status_label": "待执行" },
+    "UI-018": { "id": "UI-018", "scene": "手机端虚拟键盘", "priority": "P1", "dimension": "ui", "submodule": "布局与响应式", "status": "not_executed", "status_label": "待执行" },
+    "UI-019": { "id": "UI-019", "scene": "屏幕旋转支持", "priority": "P2", "dimension": "ui", "submodule": "布局与响应式", "status": "not_executed", "status_label": "待执行" },
+    "SEC-001": { "id": "SEC-001", "scene": "SQL 注入—用户名字段", "priority": "P0", "dimension": "security", "submodule": "注入攻击防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-002": { "id": "SEC-002", "scene": "SQL 注入—密码字段", "priority": "P0", "dimension": "security", "submodule": "注入攻击防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-003": { "id": "SEC-003", "scene": "SQL 注入—组合绕过", "priority": "P0", "dimension": "security", "submodule": "注入攻击防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-004": { "id": "SEC-004", "scene": "SQL 注入—UNION 注入", "priority": "P0", "dimension": "security", "submodule": "注入攻击防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-005": { "id": "SEC-005", "scene": "XSS 攻击—用户名字段", "priority": "P0", "dimension": "security", "submodule": "注入攻击防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-006": { "id": "SEC-006", "scene": "XSS 攻击—密码字段", "priority": "P0", "dimension": "security", "submodule": "注入攻击防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-007": { "id": "SEC-007", "scene": "XSS 攻击—验证码字段", "priority": "P0", "dimension": "security", "submodule": "注入攻击防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-008": { "id": "SEC-008", "scene": "LDAP 注入测试", "priority": "P1", "dimension": "security", "submodule": "注入攻击防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-009": { "id": "SEC-009", "scene": "命令注入测试", "priority": "P0", "dimension": "security", "submodule": "注入攻击防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-010": { "id": "SEC-010", "scene": "JSON/URL 编码注入", "priority": "P1", "dimension": "security", "submodule": "注入攻击防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-011": { "id": "SEC-011", "scene": "连续错误触发锁定", "priority": "P0", "dimension": "security", "submodule": "暴力破解防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-012": { "id": "SEC-012", "scene": "IP 频率限制", "priority": "P0", "dimension": "security", "submodule": "暴力破解防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-013": { "id": "SEC-013", "scene": "锁定后使用正确密码", "priority": "P1", "dimension": "security", "submodule": "暴力破解防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-014": { "id": "SEC-014", "scene": "锁定超时自动解锁", "priority": "P1", "dimension": "security", "submodule": "暴力破解防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-015": { "id": "SEC-015", "scene": "锁定次数重置", "priority": "P1", "dimension": "security", "submodule": "暴力破解防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-016": { "id": "SEC-016", "scene": "验证码防 OCR 强度", "priority": "P1", "dimension": "security", "submodule": "暴力破解防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-017": { "id": "SEC-017", "scene": "验证码每次刷新更新", "priority": "P1", "dimension": "security", "submodule": "暴力破解防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-018": { "id": "SEC-018", "scene": "账户锁定通知", "priority": "P2", "dimension": "security", "submodule": "暴力破解防护", "status": "not_executed", "status_label": "待执行" },
+    "SEC-019": { "id": "SEC-019", "scene": "Session ID 随机性", "priority": "P0", "dimension": "security", "submodule": "会话管理与Token安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-020": { "id": "SEC-020", "scene": "Session 固定攻击防护", "priority": "P0", "dimension": "security", "submodule": "会话管理与Token安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-021": { "id": "SEC-021", "scene": "Session 超时过期", "priority": "P1", "dimension": "security", "submodule": "会话管理与Token安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-022": { "id": "SEC-022", "scene": "同一账号多处登录 Token 验证", "priority": "P1", "dimension": "security", "submodule": "会话管理与Token安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-023": { "id": "SEC-023", "scene": "注销后 Session 立即失效", "priority": "P0", "dimension": "security", "submodule": "会话管理与Token安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-024": { "id": "SEC-024", "scene": "敏感 Cookie 属性", "priority": "P0", "dimension": "security", "submodule": "会话管理与Token安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-025": { "id": "SEC-025", "scene": "Token 在 URL 中暴露", "priority": "P0", "dimension": "security", "submodule": "会话管理与Token安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-026": { "id": "SEC-026", "scene": "并发登录安全性", "priority": "P1", "dimension": "security", "submodule": "会话管理与Token安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-027": { "id": "SEC-027", "scene": "密码明文传输检测", "priority": "P0", "dimension": "security", "submodule": "敏感信息与传输安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-028": { "id": "SEC-028", "scene": "HTTPS 加密", "priority": "P0", "dimension": "security", "submodule": "敏感信息与传输安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-029": { "id": "SEC-029", "scene": "错误提示不泄露系统信息", "priority": "P1", "dimension": "security", "submodule": "敏感信息与传输安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-030": { "id": "SEC-030", "scene": "登录日志脱敏", "priority": "P1", "dimension": "security", "submodule": "敏感信息与传输安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-031": { "id": "SEC-031", "scene": "敏感页面缓存控制", "priority": "P1", "dimension": "security", "submodule": "敏感信息与传输安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-032": { "id": "SEC-032", "scene": "CORS 配置安全", "priority": "P1", "dimension": "security", "submodule": "敏感信息与传输安全", "status": "not_executed", "status_label": "待执行" },
+    "SEC-033": { "id": "SEC-033", "scene": "CSRF 防护验证", "priority": "P0", "dimension": "security", "submodule": "敏感信息与传输安全", "status": "not_executed", "status_label": "待执行" },
+    "COMP-001": { "id": "COMP-001", "scene": "Chrome 最新版登录", "priority": "P0", "dimension": "compatibility", "submodule": "浏览器兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-002": { "id": "COMP-002", "scene": "Firefox 最新版登录", "priority": "P0", "dimension": "compatibility", "submodule": "浏览器兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-003": { "id": "COMP-003", "scene": "Safari 最新版登录", "priority": "P0", "dimension": "compatibility", "submodule": "浏览器兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-004": { "id": "COMP-004", "scene": "Edge 最新版登录", "priority": "P1", "dimension": "compatibility", "submodule": "浏览器兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-005": { "id": "COMP-005", "scene": "Chrome 历史版本", "priority": "P2", "dimension": "compatibility", "submodule": "浏览器兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-006": { "id": "COMP-006", "scene": "Firefox 历史版本", "priority": "P2", "dimension": "compatibility", "submodule": "浏览器兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-007": { "id": "COMP-007", "scene": "Safari iOS 版登录", "priority": "P0", "dimension": "compatibility", "submodule": "浏览器兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-008": { "id": "COMP-008", "scene": "Chrome Android 版登录", "priority": "P0", "dimension": "compatibility", "submodule": "浏览器兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-009": { "id": "COMP-009", "scene": "IE 11 兼容性", "priority": "P2", "dimension": "compatibility", "submodule": "浏览器兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-010": { "id": "COMP-010", "scene": "浏览器自动填充兼容性", "priority": "P1", "dimension": "compatibility", "submodule": "浏览器兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-011": { "id": "COMP-011", "scene": "密码管理器集成", "priority": "P2", "dimension": "compatibility", "submodule": "浏览器兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-012": { "id": "COMP-012", "scene": "Windows 11 + Chrome", "priority": "P1", "dimension": "compatibility", "submodule": "操作系统兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-013": { "id": "COMP-013", "scene": "macOS + Safari", "priority": "P1", "dimension": "compatibility", "submodule": "操作系统兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-014": { "id": "COMP-014", "scene": "Android 多版本", "priority": "P2", "dimension": "compatibility", "submodule": "操作系统兼容性", "status": "not_executed", "status_label": "待执行" },
+    "COMP-015": { "id": "COMP-015", "scene": "iOS 多版本", "priority": "P2", "dimension": "compatibility", "submodule": "操作系统兼容性", "status": "not_executed", "status_label": "待执行" },
+    "PERF-001": { "id": "PERF-001", "scene": "登录页首次加载时间", "priority": "P1", "dimension": "performance", "submodule": "响应时间", "status": "not_executed", "status_label": "待执行" },
+    "PERF-002": { "id": "PERF-002", "scene": "登录请求响应时间", "priority": "P0", "dimension": "performance", "submodule": "响应时间", "status": "not_executed", "status_label": "待执行" },
+    "PERF-003": { "id": "PERF-003", "scene": "错误登录响应时间", "priority": "P1", "dimension": "performance", "submodule": "响应时间", "status": "not_executed", "status_label": "待执行" },
+    "PERF-004": { "id": "PERF-004", "scene": "验证码刷新响应时间", "priority": "P2", "dimension": "performance", "submodule": "响应时间", "status": "not_executed", "status_label": "待执行" },
+    "PERF-005": { "id": "PERF-005", "scene": "大流量下登录响应", "priority": "P1", "dimension": "performance", "submodule": "响应时间", "status": "not_executed", "status_label": "待执行" },
+    "PERF-006": { "id": "PERF-006", "scene": "并发登录 100 用户", "priority": "P0", "dimension": "performance", "submodule": "并发与负载", "status": "not_executed", "status_label": "待执行" },
+    "PERF-007": { "id": "PERF-007", "scene": "并发登录 500 用户", "priority": "P1", "dimension": "performance", "submodule": "并发与负载", "status": "not_executed", "status_label": "待执行" },
+    "PERF-008": { "id": "PERF-008", "scene": "并发登录 1000 用户", "priority": "P1", "dimension": "performance", "submodule": "并发与负载", "status": "not_executed", "status_label": "待执行" },
+    "PERF-009": { "id": "PERF-009", "scene": "峰值并发持续压力", "priority": "P1", "dimension": "performance", "submodule": "并发与负载", "status": "not_executed", "status_label": "待执行" },
+    "PERF-010": { "id": "PERF-010", "scene": "登录接口吞吐量 QPS", "priority": "P2", "dimension": "performance", "submodule": "并发与负载", "status": "not_executed", "status_label": "待执行" },
+    "PERF-011": { "id": "PERF-011", "scene": "Session 存储压力", "priority": "P1", "dimension": "performance", "submodule": "并发与负载", "status": "not_executed", "status_label": "待执行" },
+    "PERF-012": { "id": "PERF-012", "scene": "数据库连接池压力", "priority": "P1", "dimension": "performance", "submodule": "并发与负载", "status": "not_executed", "status_label": "待执行" },
+    "PERF-013": { "id": "PERF-013", "scene": "单次登录 CPU 占用", "priority": "P2", "dimension": "performance", "submodule": "资源消耗", "status": "not_executed", "status_label": "待执行" },
+    "PERF-014": { "id": "PERF-014", "scene": "登录页内存占用", "priority": "P2", "dimension": "performance", "submodule": "资源消耗", "status": "not_executed", "status_label": "待执行" },
+    "US-001": { "id": "US-001", "scene": "登录按钮悬停提示", "priority": "P2", "dimension": "usability", "submodule": "交互反馈", "status": "not_executed", "status_label": "待执行" },
+    "US-002": { "id": "US-002", "scene": "输入框即时校验", "priority": "P2", "dimension": "usability", "submodule": "交互反馈", "status": "not_executed", "status_label": "待执行" },
+    "US-003": { "id": "US-003", "scene": "Tab 键切换焦点顺序", "priority": "P2", "dimension": "usability", "submodule": "交互反馈", "status": "not_executed", "status_label": "待执行" },
+    "US-004": { "id": "US-004", "scene": "Enter 键快捷登录", "priority": "P1", "dimension": "usability", "submodule": "交互反馈", "status": "not_executed", "status_label": "待执行" },
+    "US-005": { "id": "US-005", "scene": "鼠标点击反馈", "priority": "P2", "dimension": "usability", "submodule": "交互反馈", "status": "not_executed", "status_label": "待执行" },
+    "US-006": { "id": "US-006", "scene": "表单提交 loading 状态", "priority": "P0", "dimension": "usability", "submodule": "交互反馈", "status": "not_executed", "status_label": "待执行" },
+    "US-007": { "id": "US-007", "scene": "登录过程不可中断", "priority": "P1", "dimension": "usability", "submodule": "交互反馈", "status": "not_executed", "status_label": "待执行" },
+    "US-008": { "id": "US-008", "scene": "登录成功后内容加载", "priority": "P1", "dimension": "usability", "submodule": "交互反馈", "status": "not_executed", "status_label": "待执行" },
+    "US-009": { "id": "US-009", "scene": "错误提示本地化", "priority": "P1", "dimension": "usability", "submodule": "错误提示", "status": "not_executed", "status_label": "待执行" },
+    "US-010": { "id": "US-010", "scene": "错误提示清晰度", "priority": "P1", "dimension": "usability", "submodule": "错误提示", "status": "not_executed", "status_label": "待执行" },
+    "US-011": { "id": "US-011", "scene": "错误提示清除", "priority": "P2", "dimension": "usability", "submodule": "错误提示", "status": "not_executed", "status_label": "待执行" },
+    "US-012": { "id": "US-012", "scene": "验证码加载失败提示", "priority": "P1", "dimension": "usability", "submodule": "错误提示", "status": "not_executed", "status_label": "待执行" },
+    "US-013": { "id": "US-013", "scene": "网络异常提示", "priority": "P1", "dimension": "usability", "submodule": "错误提示", "status": "not_executed", "status_label": "待执行" },
+    "US-014": { "id": "US-014", "scene": "服务端 5xx 错误提示", "priority": "P0", "dimension": "usability", "submodule": "错误提示", "status": "not_executed", "status_label": "待执行" },
+    "US-015": { "id": "US-015", "scene": "服务 503 维护提示", "priority": "P1", "dimension": "usability", "submodule": "错误提示", "status": "not_executed", "status_label": "待执行" },
+    "US-016": { "id": "US-016", "scene": "键盘完全可操作性", "priority": "P1", "dimension": "usability", "submodule": "可访问性", "status": "not_executed", "status_label": "待执行" },
+    "US-017": { "id": "US-017", "scene": "输入框 label 关联", "priority": "P1", "dimension": "usability", "submodule": "可访问性", "status": "not_executed", "status_label": "待执行" },
+    "US-018": { "id": "US-018", "scene": "aria 属性", "priority": "P2", "dimension": "usability", "submodule": "可访问性", "status": "not_executed", "status_label": "待执行" },
+    "US-019": { "id": "US-019", "scene": "颜色对比度 WCAG", "priority": "P2", "dimension": "usability", "submodule": "可访问性", "status": "not_executed", "status_label": "待执行" },
+    "US-020": { "id": "US-020", "scene": "验证码可访问性", "priority": "P1", "dimension": "usability", "submodule": "可访问性", "status": "not_executed", "status_label": "待执行" }
+  },
+
+  "next_actions": {
+    "preparation_checklist": [
+      { "id": "T-01", "task": "搭建测试环境（Web服务器、数据库、Redis）", "owner": "开发/运维", "estimated_hours": 8, "done": false },
+      { "id": "T-02", "task": "准备测试账号数据", "owner": "测试人员", "estimated_hours": 2, "done": false },
+      { "id": "T-03", "task": "安装 Burp Suite/Fiddler/Charles 配置代理", "owner": "测试人员", "estimated_hours": 1, "done": false },
+      { "id": "T-04", "task": "安装配置 JMeter/k6", "owner": "测试人员", "estimated_hours": 2, "done": false },
+      { "id": "T-05", "task": "确认生产环境 HTTPS 启用状态", "owner": "运维", "estimated_hours": 0.5, "done": false },
+      { "id": "T-06", "task": "申请 BrowserStack 或准备多设备", "owner": "测试人员", "estimated_hours": 0.5, "done": false },
+      { "id": "T-07", "task": "搭建 MailHog 或配置测试邮箱", "owner": "开发/测试", "estimated_hours": 1, "done": false },
+      { "id": "T-08", "task": "配置验证码可绕过开关", "owner": "开发", "estimated_hours": 1, "done": false },
+      { "id": "T-09", "task": "配置 Session 过期时间为测试友好值", "owner": "开发", "estimated_hours": 0.5, "done": false },
+      { "id": "T-10", "task": "准备缺陷管理工具", "owner": "测试组", "estimated_hours": 0.5, "done": false }
+    ],
+    "total_prep_hours": 17,
+    "status": "测试执行尚未开始，需完成准备工作 Checklist 中的 10 项任务"
+  },
+
+  "status_labels": {
+    "not_executed": "待执行",
+    "passed": "通过",
+    "failed": "失败",
+    "blocked": "阻塞",
+    "skipped": "跳过"
+  },
+
+  "status_emojis": {
+    "not_executed": "⬜",
+    "passed": "✅",
+    "failed": "❌",
+    "blocked": "🔒",
+    "skipped": "⏭️"
+  }
+}

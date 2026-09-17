@@ -1,0 +1,769 @@
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue'
+import { useKnowledgeStore } from '@/stores/knowledge'
+import { knowledgeApi, fsApi, gitApi } from '@/api/index'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
+import SemanticSearch from '@/components/SemanticSearch.vue'
+import type { KnowledgeDoc } from '@/types'
+
+const store = useKnowledgeStore()
+
+// ==================== 文档查看 ====================
+const searchInput = ref('')
+const currentDoc = ref<KnowledgeDoc | null>(null)
+const docDialogVisible = ref(false)
+
+async function handleSearch() {
+  if (searchInput.value.trim()) {
+    await store.search(searchInput.value, store.currentKbType === 'all' ? undefined : store.currentKbType)
+  } else {
+    store.clearSearch()
+  }
+}
+
+function viewDocument(doc: KnowledgeDoc) {
+  currentDoc.value = doc
+  docDialogVisible.value = true
+}
+
+async function handleVectorize(doc: KnowledgeDoc) {
+  const success = await store.vectorizeDocument(doc.path)
+  if (success) ElMessage.success('向量化成功')
+  else ElMessage.error('向量化失败')
+}
+
+// ==================== 上传对话框 ====================
+const uploadDialogVisible = ref(false)
+const activeUploadTab = ref('local')
+
+// 目标知识库选择
+const targetKbType = ref('general')
+
+// --- 本地文件 ---
+const localFiles = ref<File[]>([])
+const localUploading = ref(false)
+
+function handleLocalFileChange(file: File, fileList: File[]) {
+  localFiles.value = fileList
+  return false
+}
+
+function handleLocalRemove(file: File) {
+  localFiles.value = localFiles.value.filter(f => f.name !== file.name || f.size !== file.size)
+}
+
+async function submitLocalFiles() {
+  if (localFiles.value.length === 0) {
+    ElMessage.warning('请先选择文件')
+    return
+  }
+  localUploading.value = true
+  let success = 0, fail = 0
+  for (const file of localFiles.value) {
+    try {
+      const res = await knowledgeApi.upload(file, targetKbType.value)
+      if (res.success) success++
+      else fail++
+    } catch { fail++ }
+  }
+  localUploading.value = false
+  if (fail === 0) {
+    ElMessage.success(`成功上传 ${success} 个文件`)
+    uploadDialogVisible.value = false
+    localFiles.value = []
+    store.loadDocuments()
+  } else {
+    ElMessage.warning(`上传完成：${success} 成功，${fail} 失败`)
+  }
+}
+
+// --- NAS / 本地目录浏览 ---
+const nasCurrentPath = ref<string>('')
+const nasItems = ref<any[]>([])
+const nasLoading = ref(false)
+const nasSelectedPaths = ref<string[]>([])
+const nasUploading = ref(false)
+
+async function browseNas(dirPath?: string) {
+  nasLoading.value = true
+  try {
+    const data = await fsApi.browse(dirPath)
+    if (data) {
+      nasCurrentPath.value = data.path
+      nasItems.value = data.items || []
+    }
+  } catch (e: any) {
+    ElMessage.error(`浏览失败: ${e.message}`)
+  } finally {
+    nasLoading.value = false
+  }
+}
+
+function nasSelectItem(item: any) {
+  const idx = nasSelectedPaths.value.indexOf(item.path)
+  if (idx >= 0) nasSelectedPaths.value.splice(idx, 1)
+  else nasSelectedPaths.value.push(item.path)
+}
+
+function nasGoUp() {
+  const parent = nasCurrentPath.value.split('/').slice(0, -1).join('/')
+  if (parent) browseNas(parent)
+}
+
+const docExtensions = ['.md', '.txt', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.json', '.csv']
+
+function isDocFile(name: string) {
+  const ext = '.' + name.split('.').pop()?.toLowerCase()
+  return docExtensions.includes(ext)
+}
+
+async function submitNasFiles() {
+  if (nasSelectedPaths.value.length === 0) {
+    ElMessage.warning('请先选择文件或目录')
+    return
+  }
+  nasUploading.value = true
+  try {
+    const res = await knowledgeApi.batchVectorize(targetKbType.value)
+    ElMessage.success('NAS文档导入请求已提交')
+    uploadDialogVisible.value = false
+    nasSelectedPaths.value = []
+    store.loadDocuments()
+  } catch (e: any) {
+    ElMessage.error(`导入失败: ${e.message}`)
+  } finally {
+    nasUploading.value = false
+  }
+}
+
+// --- Git 仓库 ---
+const gitFormRef = ref<FormInstance>()
+const gitForm = ref({ url: '', branch: 'main', relPath: '' })
+const gitCloned = ref(false)
+const gitFiles = ref<any[]>([])
+const gitLoading = ref(false)
+const gitSelectedPaths = ref<string[]>([])
+const gitUploading = ref(false)
+
+const gitRules: FormRules = {
+  url: [{ required: true, message: '请输入仓库URL', trigger: 'blur' }]
+}
+
+async function handleGitClone() {
+  if (!gitFormRef.value) return
+  await gitFormRef.value.validate(async (valid) => {
+    if (!valid) return
+    gitLoading.value = true
+    try {
+      const repoName = gitForm.value.url.replace(/\.git$/, '').split('/').pop() || 'repo'
+      const clonePath = `~/.qclaw/git-clones/${repoName}`
+      const result = await gitApi.clone(gitForm.value.url, gitForm.value.branch, clonePath)
+      if (result) {
+        gitCloned.value = true
+        ElMessage.success('仓库克隆成功')
+        await loadGitFiles(clonePath)
+      }
+    } catch (e: any) {
+      ElMessage.error(`克隆失败: ${e.message}`)
+    } finally {
+      gitLoading.value = false
+    }
+  })
+}
+
+async function loadGitFiles(repoPath: string) {
+  gitLoading.value = true
+  try {
+    const data = await gitApi.listFiles(repoPath, gitForm.value.relPath || undefined)
+    if (data) gitFiles.value = data.files || []
+  } catch { gitFiles.value = [] }
+  finally { gitLoading.value = false }
+}
+
+function gitSelectFile(file: any) {
+  const idx = gitSelectedPaths.value.indexOf(file.path)
+  if (idx >= 0) gitSelectedPaths.value.splice(idx, 1)
+  else gitSelectedPaths.value.push(file.path)
+}
+
+// --- 网络链接 ---
+const webForm = ref({ url: '', name: '', type: 'webpage' })
+const webUploading = ref(false)
+
+async function submitWebLink() {
+  if (!webForm.value.url.trim()) {
+    ElMessage.warning('请输入链接地址')
+    return
+  }
+  webUploading.value = true
+  try {
+    const res = await knowledgeApi.batchVectorize(targetKbType.value)
+    ElMessage.success('网络文档导入请求已提交')
+    uploadDialogVisible.value = false
+    webForm.value = { url: '', name: '', type: 'webpage' }
+    store.loadDocuments()
+  } catch (e: any) {
+    ElMessage.error(`导入失败: ${e.message}`)
+  } finally {
+    webUploading.value = false
+  }
+}
+
+// --- 打开上传对话框 ---
+function openUploadDialog() {
+  activeUploadTab.value = 'local'
+  targetKbType.value = 'general'
+  localFiles.value = []
+  nasSelectedPaths.value = []
+  gitCloned.value = false
+  gitFiles.value = []
+  gitSelectedPaths.value = []
+  webForm.value = { url: '', name: '', type: 'webpage' }
+  uploadDialogVisible.value = true
+  // NAS 默认浏览主目录
+  browseNas()
+}
+
+// ==================== 删除文档 ====================
+async function handleDeleteDoc(doc: KnowledgeDoc) {
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除「${doc.name}」吗？删除后不可恢复。`,
+      '删除确认',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return // 用户取消
+  }
+  try {
+    const docPath = doc.path || doc.id.replace(/^[^/]+\//, '')
+    const kbType = doc.type || 'general'
+    const success = await knowledgeApi.deleteDoc(kbType, docPath)
+    if (success) {
+      ElMessage.success(`已删除「${doc.name}」`)
+      store.loadDocuments()
+    } else {
+      ElMessage.error('删除失败')
+    }
+  } catch (e: any) {
+    ElMessage.error(`删除失败: ${e.message}`)
+  }
+}
+
+// ==================== 解析（向量化）操作 ====================
+const parseLoading = ref(false)
+const parseProgress = ref('')
+
+async function handleBatchParse() {
+  await ElMessageBox.confirm(
+    '将对知识库中所有文档执行向量化解析（含LLM增强），可能需要较长时间。是否继续？',
+    '批量解析文档',
+    { type: 'warning' }
+  )
+  parseLoading.value = true
+  parseProgress.value = '正在解析中...'
+  try {
+    const kbType = store.currentKbType === 'all' ? undefined : store.currentKbType
+    const res = await knowledgeApi.batchVectorize(kbType)
+    if (res?.success) {
+      ElMessage.success(`解析完成：${res.data?.processed || 0} 个文档，${res.data?.totalChunks || 0} 个知识块`)
+    } else {
+      ElMessage.error('解析失败')
+    }
+  } catch (e: any) {
+    ElMessage.error(`解析失败: ${e.message}`)
+  } finally {
+    parseLoading.value = false
+    parseProgress.value = ''
+    store.loadDocuments()
+  }
+}
+
+async function handleSingleParse(doc: KnowledgeDoc) {
+  try {
+    const success = await knowledgeApi.vectorize(doc.path || doc.id)
+    if (success) ElMessage.success(`${doc.name} 解析成功`)
+    else ElMessage.error(`${doc.name} 解析失败`)
+    store.loadDocuments()
+  } catch (e: any) {
+    ElMessage.error(`解析失败: ${e.message}`)
+  }
+}
+
+// ==================== 工具函数 ====================
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+function getFileIcon(name: string): string {
+  const ext = name.split('.').pop()?.toLowerCase()
+  const iconMap: Record<string, string> = {
+    md: 'Document', txt: 'Document', pdf: 'Document',
+    docx: 'Document', doc: 'Document', xlsx: 'Document',
+    json: 'Document', csv: 'Document',
+    folder: 'Folder'
+  }
+  return iconMap[ext || ''] || 'Document'
+}
+
+onMounted(() => { store.loadDocuments() })
+</script>
+
+<template>
+  <div class="knowledge-view">
+    <SemanticSearch />
+
+    <!-- 知识库类型标签 -->
+    <div class="kb-tabs">
+      <el-radio-group v-model="store.currentKbType" @change="store.setKbType">
+        <el-radio-button
+          v-for="kb of store.kbTypes"
+          :key="kb.value"
+          :value="kb.value"
+        >
+          <el-icon><component :is="kb.icon" /></el-icon>
+          {{ kb.label }} ({{ kb.value === 'all' ? store.stats.total : store.stats[kb.value === 'project-test' ? 'projectTest' : kb.value === 'project-biz' ? 'projectBiz' : 'general'] || 0 }})
+        </el-radio-button>
+      </el-radio-group>
+    </div>
+
+    <!-- 统计卡片 + 操作按钮 -->
+    <el-row :gutter="16" class="stats-row">
+      <el-col :span="5">
+        <el-card class="stat-card">
+          <div class="stat-value">{{ store.stats.total }}</div>
+          <div class="stat-label">文档总数</div>
+        </el-card>
+      </el-col>
+      <el-col :span="5">
+        <el-card class="stat-card">
+          <div class="stat-value">{{ store.stats.general }}</div>
+          <div class="stat-label">通用测试</div>
+        </el-card>
+      </el-col>
+      <el-col :span="5">
+        <el-card class="stat-card">
+          <div class="stat-value">{{ store.stats.projectTest }}</div>
+          <div class="stat-label">项目测试</div>
+        </el-card>
+      </el-col>
+      <el-col :span="5">
+        <el-card class="stat-card">
+          <div class="stat-value">{{ store.stats.projectBiz }}</div>
+          <div class="stat-label">项目业务</div>
+        </el-card>
+      </el-col>
+      <el-col :span="4">
+        <el-card class="stat-card-action" @click="openUploadDialog">
+          <el-icon :size="28"><Upload /></el-icon>
+          <div class="stat-label">导入文档</div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <!-- 操作栏 -->
+    <div class="action-bar">
+      <el-button type="success" :loading="parseLoading" @click="handleBatchParse">
+        <el-icon><MagicStick /></el-icon>
+        {{ parseLoading ? parseProgress : '批量解析（向量化）' }}
+      </el-button>
+      <span v-if="parseLoading" class="parse-hint">正在调用LLM增强+向量入库，请耐心等待...</span>
+    </div>
+
+    <!-- 搜索结果 -->
+    <div v-if="store.searchResults.length > 0" class="search-results">
+      <h3>搜索结果 ({{ store.searchResults.length }})</h3>
+      <el-table :data="store.searchResults" stripe>
+        <el-table-column prop="name" label="文档名称" min-width="200">
+          <template #default="{ row }">
+            <el-icon><component :is="getFileIcon(row.name)" /></el-icon>
+            {{ row.name }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="type" label="类型" width="120" />
+        <el-table-column label="操作" width="100">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="viewDocument(row)">查看</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <!-- 文档列表 -->
+    <div v-else class="document-list">
+      <el-table :data="store.filteredDocuments" stripe v-loading="store.isLoading">
+        <el-table-column type="selection" width="50" />
+        <el-table-column prop="name" label="文档名称" min-width="250">
+          <template #default="{ row }">
+            <div class="doc-name">
+              <el-icon><component :is="getFileIcon(row.name)" /></el-icon>
+              <span>{{ row.name }}</span>
+              <el-tag v-if="row.vectorized" type="success" size="small">已解析</el-tag>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="type" label="知识库" width="120">
+          <template #default="{ row }">
+            <el-tag>{{ row.type }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="size" label="大小" width="100">
+          <template #default="{ row }">{{ formatSize(row.size) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="200" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="viewDocument(row)">查看</el-button>
+            <el-button link type="warning" @click="handleSingleParse(row)">
+              {{ row.vectorized ? '重新解析' : '解析' }}
+            </el-button>
+            <el-button link type="danger" @click="handleDeleteDoc(row)">
+              删除
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <!-- 文档详情对话框 -->
+    <el-dialog v-model="docDialogVisible" :title="currentDoc?.name" width="60%">
+      <div v-if="currentDoc" class="doc-detail">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="文件名">{{ currentDoc.name }}</el-descriptions-item>
+          <el-descriptions-item label="类型">{{ currentDoc.type }}</el-descriptions-item>
+          <el-descriptions-item label="大小">{{ formatSize(currentDoc.size) }}</el-descriptions-item>
+          <el-descriptions-item label="解析状态">
+            <el-tag :type="currentDoc.vectorized ? 'success' : 'info'">
+              {{ currentDoc.vectorized ? '已解析' : '未解析' }}
+            </el-tag>
+          </el-descriptions-item>
+        </el-descriptions>
+        <div v-if="currentDoc.content" class="doc-content">
+          <h4>内容预览</h4>
+          <pre>{{ currentDoc.content.slice(0, 500) }}...</pre>
+        </div>
+      </div>
+    </el-dialog>
+
+    <!-- ==================== 导入文档对话框 ==================== -->
+    <el-dialog v-model="uploadDialogVisible" title="导入文档到知识库" width="720px" :close-on-click-modal="false">
+      <!-- 目标知识库 -->
+      <div class="upload-target">
+        <span class="target-label">目标知识库：</span>
+        <el-radio-group v-model="targetKbType">
+          <el-radio-button value="general">通用测试</el-radio-button>
+          <el-radio-button value="project-test">项目测试</el-radio-button>
+          <el-radio-button value="project-biz">项目业务</el-radio-button>
+        </el-radio-group>
+      </div>
+
+      <!-- 5个来源Tab -->
+      <el-tabs v-model="activeUploadTab" class="upload-tabs">
+        <!-- 1. 本地文件 -->
+        <el-tab-pane label="本地文件" name="local">
+          <p class="tab-hint">选择文件或目录。选择目录将上传该目录及所有子目录下的文档。</p>
+          <el-upload
+            drag
+            multiple
+            :auto-upload="false"
+            :on-change="handleLocalFileChange"
+            :on-remove="handleLocalRemove"
+            accept=".md,.txt,.pdf,.docx,.doc,.xlsx,.xls,.json,.csv"
+            directory
+          >
+            <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+            <div class="el-upload__text">拖拽文件/目录到此处，或<em>点击选择</em></div>
+            <template #tip>
+              <div class="el-upload__tip">
+                支持 .md .txt .pdf .docx .xlsx .json .csv | 选择文件夹将自动导入所有子文档
+              </div>
+            </template>
+          </el-upload>
+          <div v-if="localFiles.length > 0" class="upload-summary">
+            已选择 {{ localFiles.length }} 个文件
+          </div>
+          <div class="upload-actions">
+            <el-button type="primary" :loading="localUploading" @click="submitLocalFiles">
+              上传到知识库
+            </el-button>
+          </div>
+        </el-tab-pane>
+
+        <!-- 2. NAS / 本地目录浏览 -->
+        <el-tab-pane label="NAS / 本地目录" name="nas">
+          <div class="nas-toolbar">
+            <el-button size="small" @click="nasGoUp" :disabled="nasCurrentPath === '/' || nasCurrentPath === ''">
+              <el-icon><ArrowUp /></el-icon> 上级目录
+            </el-button>
+            <el-input v-model="nasCurrentPath" size="small" placeholder="输入路径" @keyup.enter="browseNas(nasCurrentPath)" style="flex:1">
+              <template #append>
+                <el-button @click="browseNas(nasCurrentPath)">前往</el-button>
+              </template>
+            </el-input>
+          </div>
+          <div class="nas-path">{{ nasCurrentPath || '~' }}</div>
+          <el-table
+            :data="nasItems"
+            v-loading="nasLoading"
+            height="300"
+            size="small"
+            @row-click="(row: any) => { if (row.type === 'folder') browseNas(row.path) }"
+            highlight-current-row
+          >
+            <el-table-column type="selection" width="45" @selection-change="(rows: any[]) => { nasSelectedPaths = rows.map((r: any) => r.path) }" />
+            <el-table-column label="名称" min-width="200">
+              <template #default="{ row }">
+                <el-icon><component :is="row.type === 'folder' ? 'Folder' : 'Document'" /></el-icon>
+                <span :class="{ 'dir-name': row.type === 'folder' }">{{ row.name }}</span>
+                <el-tag v-if="row.type === 'folder'" size="small" type="info">目录</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="大小" width="100">
+              <template #default="{ row }">{{ row.type === 'folder' ? '-' : formatSize(row.size) }}</template>
+            </el-table-column>
+            <el-table-column label="修改时间" width="170">
+              <template #default="{ row }">{{ row.modified?.slice(0, 19) }}</template>
+            </el-table-column>
+          </el-table>
+          <p class="tab-hint">点击文件夹进入，勾选后点击导入。选择目录将导入该目录下所有文档及子目录文档。</p>
+          <div class="upload-actions">
+            <el-button type="primary" :loading="nasUploading" @click="submitNasFiles" :disabled="nasSelectedPaths.length === 0">
+              导入选中项（{{ nasSelectedPaths.length }}）
+            </el-button>
+          </div>
+        </el-tab-pane>
+
+        <!-- 3. Git 仓库 -->
+        <el-tab-pane label="Git 仓库" name="git">
+          <div v-if="!gitCloned">
+            <el-form ref="gitFormRef" :model="gitForm" :rules="gitRules" label-width="80px">
+              <el-form-item label="仓库URL" prop="url">
+                <el-input v-model="gitForm.url" placeholder="https://github.com/xxx/yyy.git" />
+              </el-form-item>
+              <el-form-item label="分支">
+                <el-input v-model="gitForm.branch" placeholder="main" />
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" :loading="gitLoading" @click="handleGitClone">
+                  克隆仓库
+                </el-button>
+              </el-form-item>
+            </el-form>
+          </div>
+          <div v-else>
+            <el-alert type="success" :closable="false" style="margin-bottom:12px">
+              仓库已克隆到 ~/.qclaw/git-clones/
+            </el-alert>
+            <el-input v-model="gitForm.relPath" placeholder="输入子目录路径（可选）" size="small" style="margin-bottom:12px">
+              <template #append>
+                <el-button @click="loadGitFiles(`~/.qclaw/git-clones/${gitForm.url.replace(/\\.git$/, '').split('/').pop()}`)">浏览</el-button>
+              </template>
+            </el-input>
+            <el-table :data="gitFiles" height="250" size="small" v-loading="gitLoading">
+              <el-table-column type="selection" width="45" @selection-change="(rows: any[]) => { gitSelectedPaths = rows.map((r: any) => r.path) }" />
+              <el-table-column prop="name" label="文件" min-width="200">
+                <template #default="{ row }">
+                  <el-icon><Document /></el-icon>
+                  {{ row.name }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="size" label="大小" width="100">
+                <template #default="{ row }">{{ row.size ? formatSize(row.size) : '-' }}</template>
+              </el-table-column>
+            </el-table>
+            <div class="upload-actions" style="margin-top:12px">
+              <el-button type="primary" :loading="gitUploading" :disabled="gitSelectedPaths.length === 0" @click="submitNasFiles">
+                导入选中文件（{{ gitSelectedPaths.length }}）
+              </el-button>
+              <el-button @click="gitCloned = false">重新克隆</el-button>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <!-- 4. 网络链接 -->
+        <el-tab-pane label="网络链接" name="web">
+          <p class="tab-hint">输入网页URL或在线文档链接，系统将自动抓取内容并导入知识库。</p>
+          <el-form :model="webForm" label-width="80px">
+            <el-form-item label="链接类型">
+              <el-radio-group v-model="webForm.type">
+                <el-radio-button value="webpage">网页</el-radio-button>
+                <el-radio-button value="clouddoc">云文档</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item label="链接地址">
+              <el-input v-model="webForm.url" :placeholder="webForm.type === 'webpage' ? 'https://example.com/article' : '腾讯文档/飞书文档/语雀等链接'" />
+            </el-form-item>
+            <el-form-item label="文档名称">
+              <el-input v-model="webForm.name" placeholder="可选，留空将自动从页面提取" />
+            </el-form-item>
+          </el-form>
+          <div class="upload-actions">
+            <el-button type="primary" :loading="webUploading" @click="submitWebLink">
+              抓取并导入
+            </el-button>
+          </div>
+        </el-tab-pane>
+
+        <!-- 5. 云文档 -->
+        <el-tab-pane label="云文档" name="cloud">
+          <p class="tab-hint">支持导入腾讯文档、飞书文档、语雀等在线文档。</p>
+          <el-form :model="webForm" label-width="80px">
+            <el-form-item label="文档链接">
+              <el-input v-model="webForm.url" placeholder="粘贴云文档分享链接" />
+            </el-form-item>
+            <el-form-item label="文档名称">
+              <el-input v-model="webForm.name" placeholder="可选" />
+            </el-form-item>
+          </el-form>
+          <div class="upload-actions">
+            <el-button type="primary" :loading="webUploading" @click="submitWebLink">
+              导入云文档
+            </el-button>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </el-dialog>
+  </div>
+</template>
+
+<style scoped>
+.knowledge-view {
+  padding: 24px;
+}
+
+.kb-tabs {
+  margin-bottom: 20px;
+}
+
+.stats-row {
+  margin-bottom: 16px;
+}
+
+.stat-card {
+  text-align: center;
+}
+
+.stat-card-action {
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.stat-card-action:hover {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+
+.stat-card-action .el-icon {
+  color: var(--el-color-primary);
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: bold;
+  color: var(--el-color-primary);
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-top: 4px;
+}
+
+.action-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.parse-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.doc-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.doc-detail {
+  padding: 16px 0;
+}
+
+.doc-content {
+  margin-top: 20px;
+}
+
+.doc-content pre {
+  background: var(--el-fill-color-light);
+  padding: 16px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 上传对话框 */
+.upload-target {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--el-fill-color-light);
+  border-radius: 8px;
+}
+
+.target-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.upload-tabs {
+  margin-top: 8px;
+}
+
+.tab-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 12px;
+}
+
+.upload-summary {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--el-color-primary);
+}
+
+.upload-actions {
+  margin-top: 16px;
+  text-align: right;
+}
+
+/* NAS 浏览 */
+.nas-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.nas-path {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 8px;
+  font-family: monospace;
+}
+
+.dir-name {
+  cursor: pointer;
+  color: var(--el-color-primary);
+}
+</style>
