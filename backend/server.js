@@ -5343,7 +5343,7 @@ async function executeInteractiveNativeWorkflow(workflowId, taskInput) {
   }
   console.log('[InteractiveNative] Dispatching to ' + matchedAgent + ' (keywords: ' + matchedKeywords.join(',') + ')');
   broadcast({ type: 'agent_started', workflowId, agentId: matchedAgent, message: 'Dispatching to ' + matchedAgent + '...' });
-  const streamCallback = (event) => { sseBroadcast({ type: 'agent_stream_event', workflowId, ...event }); };
+  const streamCallback = (event) => { sseBroadcast({ type: 'agent_stream_event', ...event, workflowId }); };
   try {
     const result = await spawnAgentSession(matchedAgent, taskInput, workflowId + '-interactive', streamCallback, false);
 
@@ -5395,7 +5395,7 @@ async function executeInteractiveNativeWorkflow(workflowId, taskInput) {
 }
 
 async function executeAutoNativeWorkflow(workflowId, taskInput) {
-  const streamCallback = (event) => { sseBroadcast({ type: 'agent_stream_event', workflowId, ...event }); };
+  const streamCallback = (event) => { sseBroadcast({ type: 'agent_stream_event', ...event, workflowId }); };
   console.log('[AutoNative] Starting workflow ' + workflowId);
   const workflowResults = { id: workflowId, status: 'running', mode: 'auto-native', scenario: 'QClaw原生方式', executorResults: [], startedAt: new Date().toISOString() };
   const stored = workflows.get(workflowId) || {}; syncWorkflow(workflowId, { workflowResults });
@@ -13604,7 +13604,8 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
 
       // streamCallback: 广播流式 chunk
       const streamCb = (event) => {
-        sseBroadcast({ type: 'agent_stream_chunk', workflowId: singleWfId, userId, ...event });
+        // 修复：workflowId / userId 必须放在 ...event 之后，避免被事件体里未定义的 workflowId 覆盖
+        sseBroadcast({ ...event, workflowId: singleWfId, userId });
       };
 
       const r = await spawnAgentSession(
@@ -14124,7 +14125,8 @@ app.post('/api/performance-test/workflow', authenticate, async (req, res) => {
 
       // streamCallback: 广播流式 chunk
       const streamCb = (event) => {
-        sseBroadcast({ type: 'agent_stream_chunk', workflowId: singleWfId, userId, ...event });
+        // 修复：workflowId / userId 必须放在 ...event 之后，避免被事件体里未定义的 workflowId 覆盖
+        sseBroadcast({ ...event, workflowId: singleWfId, userId });
       };
 
       const input = JSON.stringify({ target, description, phase, stage: stageName });
@@ -14257,7 +14259,7 @@ async function executePerformanceWorkflow(workflowId, taskInput, userId = 1) {
     try {
       // streamCallback: 广播流式输出到前端
       const stageStreamCb = (event) => {
-        sseBroadcast({ type: 'agent_stream_chunk', workflowId, userId, ...event });
+        sseBroadcast({ ...event, workflowId, userId });
       };
 
       const result = await spawnAgentSession(
