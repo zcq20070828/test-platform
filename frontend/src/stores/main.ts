@@ -895,56 +895,65 @@ export const useMainStore = defineStore('main', () => {
       if (data.type === 'workflow_stage_started') {
         content = `⚡ 性能测试阶段开始: ${data.stage || '执行阶段'}`
       } else if (data.type === 'workflow_stage_completed') {
-        // 提取阶段交付物：包括 code（脚本：jmx/k6 .js/.py）和 report（结果/报告 markdown）
-        const output = data.result?.text || data.result?.content || ''
-        const allArtifacts = extractArtifacts(output)
-        const codeArtifacts = allArtifacts.filter((a: any) => a.type === 'code')
-        const reportArtifacts = allArtifacts.filter((a: any) => a.type === 'report')
-        // 性能测试各阶段交付物名称前缀（按阶段语义划分）
-        // 步骤3=实现→脚本 / 4=执行→结果 / 5=结果分析与瓶颈定位→瓶颈 / 6=报告生成→报告
-        const stage = data.stage || ''
-        const stagePrefix = stage.includes('脚本') || stage.includes('实现') ? '性能测试脚本'
-          : stage.includes('报告') ? '性能测试报告'
-          : stage.includes('瓶颈') || stage.includes('结果分析') ? '性能瓶颈分析'
-          : stage.includes('执行') ? '性能测试结果'
-          : '性能测试交付物'
-        
         const statusText = data.success === false ? '⚠️ 阶段失败' : '✅ 阶段完成'
         content = `${statusText}: ${data.stage || '执行阶段'}`
-        
-        // 合并代码 + 报告交付物，重命名 code 类型以明确阶段语义
-        if (codeArtifacts.length > 0 || reportArtifacts.length > 0) {
-          const renamedArtifacts = [
-            ...codeArtifacts.map((a: any, i: number) => ({
-              ...a,
-              id: `code-${id}-${i}`,
-              name: i === 0 ? `${stagePrefix}.${getExtension(a.contentType?.split('/')[1] || 'txt')}` : `${stagePrefix}_${i + 1}.${getExtension(a.contentType?.split('/')[1] || 'txt')}`,
-            })),
-            ...reportArtifacts.map((a: any, i: number) => ({
-              ...a,
-              id: `report-${id}-${i}`,
-              name: i === 0 ? `${stagePrefix}报告.md` : `${stagePrefix}报告_${i + 1}.md`,
-            })),
-          ]
-          artifacts = renamedArtifacts
-          content += `\n\n📦 交付物（${renamedArtifacts.length}个）: ${renamedArtifacts.map((a: any) => a.name).join(', ')}`
-        } else if (output && output.length > 50) {
-          // 无结构化交付物但有输出内容，包装为 markdown 报告交付物
-          const reportName = `${stagePrefix}报告.md`
-          artifacts = [{
-            id: `report-${id}-0`,
-            type: 'report',
-            contentType: 'text/markdown',
-            name: reportName,
-            content: output,
-            createdAt: new Date().toISOString(),
-          }]
-          content += `\n\n📦 交付物（1个）: ${reportName}`
+
+        // 【修复】优先使用后端落盘的三格式文件交付物(md/docx/xlsx,带真实 downloadUrl)
+        if (data.artifacts && data.artifacts.length > 0) {
+          artifacts = data.artifacts
+          content += `\n\n📦 交付物（${data.artifacts.length}个,含 md/docx/xlsx）: ${data.artifacts.map((a: any) => a.name).join(', ')}`
+        } else {
+          // 兜底：从流式文本里抽取 code/report 交付物(纯文本,无文件下载)
+          const output = data.result?.text || data.result?.content || ''
+          const allArtifacts = extractArtifacts(output)
+          const codeArtifacts = allArtifacts.filter((a: any) => a.type === 'code')
+          const reportArtifacts = allArtifacts.filter((a: any) => a.type === 'report')
+          // 性能测试各阶段交付物名称前缀（按阶段语义划分）
+          const stage = data.stage || ''
+          const stagePrefix = stage.includes('脚本') || stage.includes('实现') ? '性能测试脚本'
+            : stage.includes('报告') ? '性能测试报告'
+            : stage.includes('瓶颈') || stage.includes('结果分析') ? '性能瓶颈分析'
+            : stage.includes('执行') ? '性能测试结果'
+            : '性能测试交付物'
+
+          if (codeArtifacts.length > 0 || reportArtifacts.length > 0) {
+            const renamedArtifacts = [
+              ...codeArtifacts.map((a: any, i: number) => ({
+                ...a,
+                id: `code-${id}-${i}`,
+                name: i === 0 ? `${stagePrefix}.${getExtension(a.contentType?.split('/')[1] || 'txt')}` : `${stagePrefix}_${i + 1}.${getExtension(a.contentType?.split('/')[1] || 'txt')}`,
+              })),
+              ...reportArtifacts.map((a: any, i: number) => ({
+                ...a,
+                id: `report-${id}-${i}`,
+                name: i === 0 ? `${stagePrefix}报告.md` : `${stagePrefix}报告_${i + 1}.md`,
+              })),
+            ]
+            artifacts = renamedArtifacts
+            content += `\n\n📦 交付物（${renamedArtifacts.length}个）: ${renamedArtifacts.map((a: any) => a.name).join(', ')}`
+          } else if (output && output.length > 50) {
+            // 无结构化交付物但有输出内容，包装为 markdown 报告交付物
+            const reportName = `${stagePrefix}报告.md`
+            artifacts = [{
+              id: `report-${id}-0`,
+              type: 'report',
+              contentType: 'text/markdown',
+              name: reportName,
+              content: output,
+              createdAt: new Date().toISOString(),
+            }]
+            content += `\n\n📦 交付物（1个）: ${reportName}`
+          }
         }
       } else if (data.type === 'workflow_error' || data.type === 'workflow_failed') {
         content = `❌ 性能测试工作流失败: ${data.error || data.stage || '未知错误'}`
       } else {
         content = `🎉 性能测试工作流执行完毕`
+        // 【修复】完整工作流完成时携带后端落盘的三格式交付物(md/docx/xlsx)
+        if (data.artifacts && data.artifacts.length > 0) {
+          artifacts = data.artifacts
+          content += `\n\n📦 交付物（${data.artifacts.length}个,含 md/docx/xlsx）: ${data.artifacts.map((a: any) => a.name).join(', ')}`
+        }
       }
       
       // 性能测试统一写到 Dashboard messages；同时写入 workflowMessages 以便持久化历史（PerfTestExecutor 重进时回显）
@@ -971,23 +980,33 @@ export const useMainStore = defineStore('main', () => {
       if (data.type === 'workflow_stage_started') {
         content = `🔍 安全测试阶段开始: ${data.stage || '执行阶段'}`
       } else if (data.type === 'workflow_stage_completed') {
-        // 提取 code + report 交付物
-        const output = data.result?.text || data.result?.content || ''
-        const allArtifacts = extractArtifacts(output)
-        const codeArtifacts = allArtifacts.filter((a: any) => a.type === 'code')
-        const reportArtifacts = allArtifacts.filter((a: any) => a.type === 'report')
-        
         const statusText = data.success === false ? '⚠️ 阶段失败' : '✅ 阶段完成'
         content = `${statusText}: ${data.stage || '执行阶段'}`
-        
-        if (codeArtifacts.length > 0 || reportArtifacts.length > 0) {
-          artifacts = [...codeArtifacts, ...reportArtifacts]
-          content += `\n\n📦 交付物（${artifacts.length}个）: ${artifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+
+        // 【修复】优先使用后端落盘的三格式文件交付物(md/docx/xlsx,带真实 downloadUrl)
+        if (data.artifacts && data.artifacts.length > 0) {
+          artifacts = data.artifacts
+          content += `\n\n📦 交付物（${data.artifacts.length}个,含 md/docx/xlsx）: ${data.artifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+        } else {
+          // 兜底：从流式文本里抽取 code/report 交付物
+          const output = data.result?.text || data.result?.content || ''
+          const allArtifacts = extractArtifacts(output)
+          const codeArtifacts = allArtifacts.filter((a: any) => a.type === 'code')
+          const reportArtifacts = allArtifacts.filter((a: any) => a.type === 'report')
+          if (codeArtifacts.length > 0 || reportArtifacts.length > 0) {
+            artifacts = [...codeArtifacts, ...reportArtifacts]
+            content += `\n\n📦 交付物（${artifacts.length}个）: ${artifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+          }
         }
       } else if (data.type === 'workflow_error' || data.type === 'workflow_failed') {
         content = `❌ 安全测试工作流失败: ${data.error || data.stage || '未知错误'}`
       } else {
         content = `🎉 安全测试工作流执行完毕`
+        // 【修复】完整工作流完成时携带后端落盘的三格式交付物(md/docx/xlsx)
+        if (data.artifacts && data.artifacts.length > 0) {
+          artifacts = data.artifacts
+          content += `\n\n📦 交付物（${data.artifacts.length}个,含 md/docx/xlsx）: ${data.artifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+        }
       }
       
       messages.value.push({
