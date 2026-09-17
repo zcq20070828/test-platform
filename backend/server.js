@@ -2869,8 +2869,9 @@ app.get('/api/tasks/:taskId/artifacts/:artifactId/download', authenticate, (req,
     return res.status(403).json({ error: '无权访问此任务' });
   }
 
-  if (task.status !== 'completed') {
-    return res.status(400).json({ error: '任务尚未完成' });
+  // 放宽门禁:仅拦截 failed;性能/安全工作流逐步累积 artifacts,运行中海报阶段交付物也应可下载
+  if (task.status === 'failed') {
+    return res.status(400).json({ error: '任务已失败' });
   }
 
   const artifact = task.artifacts?.find(a => a.id === artifactId);
@@ -9730,6 +9731,7 @@ const AGENT_DELIVERABLE_FORMATS = {
   'test-reporter': ['docx', 'xlsx'],
   'security-sentinel': ['docx', 'xlsx'],
   'test-master': ['docx', 'xlsx'],
+  'performance-tester': ['docx', 'xlsx'],
 };
 
 const PANDOC_PATH = '/opt/homebrew/bin/pandoc';
@@ -9929,6 +9931,65 @@ async function saveDeliverablesToFiles(workflowId, stage, agentId, deliverables)
     console.error(`[FileManager] Failed to save deliverables: ${err.message}`);
     return [];
   }
+}
+
+// ========== 工作流(性能/安全)每阶段「三格式」交付物落盘 ==========
+// 与通用路由同源:写 md 主文件 + 按 AGENT_DELIVERABLE_FORMATS 派生 docx/xlsx,
+// 区别是以 stageLabel 作为文件名前缀,避免同一 agent 多阶段互相覆盖。
+async function saveWorkflowStageDeliverables(workflowId, agentId, stageLabel, stageIndex, agentText) {
+  try {
+    if (!agentText || !String(agentText).trim()) return [];
+    const { deliverables } = extractDeliverables(agentText);
+    if (!deliverables.length) return [];
+
+    const outputDir = path.join(__dirname, 'output', workflowId);
+    await fs.mkdir(outputDir, { recursive: true });
+
+    const safeStage = (stageLabel || `stage${stageIndex}`).replace(/[\\/:*?"<>|]/g, '_').slice(0, 24);
+    const outputFiles = [];
+
+    for (let i = 0; i < deliverables.length; i++) {
+      const d = deliverables[i];
+      const ext = d.format === 'md' ? '.md' : `.${d.format}`;
+      const baseName = deliverables.length === 1 ? safeStage : `${safeStage}_${i + 1}`;
+      const fileName = `${baseName}${ext}`;
+      const filePath = path.join(outputDir, fileName);
+      await fs.writeFile(filePath, d.content, 'utf-8');
+      try { await taskDAO.createTaskOutputFile(workflowId, filePath); } catch (_) {}
+      outputFiles.push(filePath);
+      // 派生 docx/xlsx(与 saveDeliverableToFile 行为一致)
+      try {
+        const stem = fileName.replace(/\.[^.]+$/, '');
+        const extra = await deriveExtraFormats(workflowId, stem, agentId, d.content);
+        outputFiles.push(...extra);
+      } catch (e) {
+        console.error(`[saveWorkflowStageDeliverables] 派生格式失败: ${e.message}`);
+      }
+    }
+    return outputFiles;
+  } catch (e) {
+    console.error(`[saveWorkflowStageDeliverables] 失败: ${e.message}`);
+    return [];
+  }
+}
+
+// 把落盘的文件路径数组转成前端 artifacts(带 downloadUrl),artifactId 以 stageKey 前缀保证全局唯一
+function buildWorkflowArtifacts(workflowId, outputFiles, stageKey) {
+  if (!outputFiles || !outputFiles.length) return [];
+  return outputFiles.map((fp, i) => {
+    const name = path.basename(fp);
+    const ext = path.extname(fp).toLowerCase();
+    const artifactId = `${stageKey}-${i}`;
+    return {
+      id: artifactId,
+      name,
+      type: 'file',
+      ext,
+      path: fp,
+      downloadUrl: `/api/tasks/${workflowId}/artifacts/${artifactId}/download`,
+      createdAt: new Date().toISOString(),
+    };
+  });
 }
 
 /**
@@ -13328,7 +13389,7 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
   workflows.set(workflowId, { id: workflowId, userId, status: 'running', scenario: '安全测试', mode: 'security', startedAt: new Date().toISOString() });
   const { target, scanType = 'full', description = '' } = taskInput;
   const startTime = Date.now();
-  const results = { stages: [], status: 'running', findings: [] };
+  const results = { stages: [], status: 'running', findings: [], allArtifacts: [] };
 
   const broadcast = (data) => sseBroadcast({ ...data, workflowId, userId });
 
@@ -13387,7 +13448,11 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
     );
     const scheme = extractJson(schemeResult.text || schemeResult.content || '');
     results.stages.push({ stage: '安全测试方案生成', agentId: 'security-sentinel', success: !!scheme, output: scheme?.schemeId || '失败' });
-    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '安全测试方案生成', success: !!scheme });
+    // 落盘本阶段三格式交付物(md + docx + xlsx)
+    const sec0Files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', '安全测试方案生成', 0, schemeResult.text || schemeResult.content || '');
+    const sec0Art = buildWorkflowArtifacts(workflowId, sec0Files, 'sec0');
+    results.allArtifacts.push(...sec0Art);
+    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '安全测试方案生成', success: !!scheme, outputFiles: sec0Files, artifacts: sec0Art });
 
     // ========== 阶段2: 安全测试用例生成 ==========
     broadcast({ type: 'workflow_stage_started', workflowId, stage: '安全测试用例生成', agentId: 'security-sentinel' });
@@ -13408,7 +13473,11 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
     );
     const testCases = extractJson(caseResult.text || caseResult.content || '');
     results.stages.push({ stage: '安全测试用例生成', agentId: 'security-sentinel', success: !!testCases, output: testCases?.caseCount || 0 });
-    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '安全测试用例生成', success: !!testCases });
+    // 落盘本阶段三格式交付物(md + docx + xlsx)
+    const sec1Files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', '安全测试用例生成', 1, caseResult.text || caseResult.content || '');
+    const sec1Art = buildWorkflowArtifacts(workflowId, sec1Files, 'sec1');
+    results.allArtifacts.push(...sec1Art);
+    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '安全测试用例生成', success: !!testCases, outputFiles: sec1Files, artifacts: sec1Art });
 
     // ========== 阶段3: 执行安全扫描 ==========
     broadcast({ type: 'workflow_stage_started', workflowId, stage: '执行安全扫描', agentId: 'security-sentinel' });
@@ -13430,7 +13499,11 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
     );
     const scanOutput = extractJson(scanResult.text || scanResult.content || '');
     results.stages.push({ stage: '执行安全扫描', agentId: 'security-sentinel', success: !!scanOutput, output: scanOutput?.findings?.length || 0 });
-    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '执行安全扫描', success: !!scanOutput });
+    // 落盘本阶段三格式交付物(md + docx + xlsx)
+    const sec2Files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', '执行安全扫描', 2, scanResult.text || scanResult.content || '');
+    const sec2Art = buildWorkflowArtifacts(workflowId, sec2Files, 'sec2');
+    results.allArtifacts.push(...sec2Art);
+    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '执行安全扫描', success: !!scanOutput, outputFiles: sec2Files, artifacts: sec2Art });
 
     // 保存扫描发现的漏洞
     if (scanOutput?.findings?.length > 0) {
@@ -13458,7 +13531,11 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
     );
     const pentestOutput = extractJson(pentestResult.text || pentestResult.content || '');
     results.stages.push({ stage: '执行手工渗透', agentId: 'security-sentinel', success: !!pentestOutput, output: pentestOutput?.findings?.length || 0 });
-    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '执行手工渗透', success: !!pentestOutput });
+    // 落盘本阶段三格式交付物(md + docx + xlsx)
+    const sec3Files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', '执行手工渗透', 3, pentestResult.text || pentestResult.content || '');
+    const sec3Art = buildWorkflowArtifacts(workflowId, sec3Files, 'sec3');
+    results.allArtifacts.push(...sec3Art);
+    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '执行手工渗透', success: !!pentestOutput, outputFiles: sec3Files, artifacts: sec3Art });
 
     // 保存手工渗透发现的漏洞（标记【手工渗透】）
     if (pentestOutput?.findings?.length > 0) {
@@ -13506,8 +13583,12 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
       stages: results.stages,
       durationMs: Date.now() - startTime
     });
+    // 落盘报告阶段三格式交付物(md + docx + xlsx),以可读 Markdown 报告为正文
+    const sec4Files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', '安全报告生成', 4, results.fullReportText || reportResult.text || '');
+    const sec4Art = buildWorkflowArtifacts(workflowId, sec4Files, 'sec4');
+    results.allArtifacts.push(...sec4Art);
     results.stages.push({ stage: '安全报告生成', agentId: 'security-sentinel', success: !!report, output: report?.reportId || '失败' });
-    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '安全报告生成', success: !!report });
+    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '安全报告生成', success: !!report, outputFiles: sec4Files, artifacts: sec4Art });
 
     // ========== 保存到数据库 ==========
     let reportId;
@@ -13621,13 +13702,24 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
       const output = r?.data || r?.text || null;
       const success = r?.success !== false;
 
+      // 落盘三格式交付物(md + docx + xlsx),与通用路由一致
+      const stageOutFiles = await saveWorkflowStageDeliverables(singleWfId, 'security-sentinel', stageName, stageIdx, output);
+      const stageArtifacts = buildWorkflowArtifacts(singleWfId, stageOutFiles, `ss${stageIdx}`);
+      tasks.set(singleWfId, {
+        id: singleWfId, userId, status: success ? 'completed' : 'failed',
+        type: 'security-test', agentId: 'security-sentinel', artifacts: stageArtifacts,
+      });
+
       // 更新任务状态
       await taskDAO.updateTask(singleWfId, { status: success ? 'completed' : 'failed', completedAt: new Date() });
 
-      // SSE 广播阶段完成（携带 result）
-      sseBroadcast({ type: 'workflow_stage_completed', workflowId: singleWfId, stage: stageName, step: stageIdx, success, result: output, userId });
+      // SSE 广播阶段完成（携带 outputFiles / artifacts,前端即可下载三格式）
+      sseBroadcast({
+        type: 'workflow_stage_completed', workflowId: singleWfId, stage: stageName, step: stageIdx,
+        success, result: output, outputFiles: stageOutFiles, artifacts: stageArtifacts, userId,
+      });
 
-      return res.json({ success: true, stage: stageName, phase, output, taskId: singleWfId });
+      return res.json({ success: true, stage: stageName, phase, output, outputFiles: stageOutFiles, artifacts: stageArtifacts, taskId: singleWfId });
     }
 
     // ── 完整工作流
@@ -13650,6 +13742,9 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
       priority: 'high'
     });
 
+    // 用于累积各阶段三格式交付物(供前端下载),与性能工作流一致
+    tasks.set(taskId, { id: taskId, userId, status: 'running', type: 'security-test', agentId: 'security-sentinel', artifacts: [] });
+
     sseBroadcast({ type: 'task_created', taskId, taskName: `安全测试: ${target}`, target, scanType, userId });
     sseBroadcast({ type: 'workflow_stage_started', workflowId, stage: '安全测试', agentId: 'security-sentinel', userId });
     res.json({ success: true, workflowId, taskId, target, scanType, message: '安全智能体正在执行完整测试，请等待...' });
@@ -13658,6 +13753,9 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
       .then(async (wr) => {
         const status = wr && wr.status === 'completed' ? 'completed' : 'failed';
         await taskDAO.updateTask(taskId, { status, completedAt: new Date() });
+        // 累积各阶段三格式交付物到 tasks Map,随 task_completed 下发(前端即可下载 md/docx/xlsx)
+        const secArtifacts = wr?.allArtifacts || [];
+        tasks.set(taskId, { id: taskId, userId, status, type: 'security-test', agentId: 'security-sentinel', artifacts: secArtifacts });
         // 【修复】task_completed 同时下发平铺结构 + task 对象（前端 handleRealtimeEvent 依赖 data.task）
         // result 优先带完整报告正文（fullReportText），前端可直接渲染到聊天面板
         const reportText = (wr && (wr.fullReportText || wr.report?.content)) || '';
@@ -13668,6 +13766,8 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
           status,
           result: wr,
           output: reportText || null,
+          artifacts: secArtifacts,
+          outputFiles: secArtifacts.map(a => a.path),
           userId,
           task: {
             id: taskId,
@@ -13679,6 +13779,7 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
             agentId: 'security-sentinel',
             agentName: '🛡️ 安全测试',
             type: 'security-test',
+            artifacts: secArtifacts,
             createdAt: new Date().toISOString()
           }
         });
@@ -14143,13 +14244,24 @@ app.post('/api/performance-test/workflow', authenticate, async (req, res) => {
       const output = r?.data || r?.text || null;
       const success = r?.success !== false;
 
+      // 落盘三格式交付物(md + docx + xlsx),与通用路由一致
+      const stageOutFiles = await saveWorkflowStageDeliverables(singleWfId, 'performance-tester', stageName, stageIdx, output);
+      const stageArtifacts = buildWorkflowArtifacts(singleWfId, stageOutFiles, `ps${stageIdx}`);
+      tasks.set(singleWfId, {
+        id: singleWfId, userId, status: success ? 'completed' : 'failed',
+        type: 'performance-test', agentId: 'performance-tester', artifacts: stageArtifacts,
+      });
+
       // 更新任务状态
       await taskDAO.updateTask(singleWfId, { status: success ? 'completed' : 'failed', completedAt: new Date() });
 
-      // SSE 广播阶段完成
-      sseBroadcast({ type: 'workflow_stage_completed', workflowId: singleWfId, stage: stageName, step: stageIdx, success, result: output, userId });
+      // SSE 广播阶段完成(携带 outputFiles / artifacts,前端即可下载三格式)
+      sseBroadcast({
+        type: 'workflow_stage_completed', workflowId: singleWfId, stage: stageName, step: stageIdx,
+        success, result: output, outputFiles: stageOutFiles, artifacts: stageArtifacts, userId,
+      });
 
-      return res.json({ success: true, stage: stageName, phase, output, taskId: singleWfId });
+      return res.json({ success: true, stage: stageName, phase, output, outputFiles: stageOutFiles, artifacts: stageArtifacts, taskId: singleWfId });
     }
 
     // ── 完整工作流 ────────────────────────────────────────────────
@@ -14169,6 +14281,12 @@ app.post('/api/performance-test/workflow', authenticate, async (req, res) => {
       results: [], workflow_results: null,
       mode: 'performance', scenario: '',
       manual_hours: 0, started_at: new Date(), completed_at: null,
+    });
+
+    // 用于累积各阶段三格式交付物(供前端下载)
+    tasks.set(workflowId, {
+      id: workflowId, userId, status: 'running', type: 'performance-test',
+      agentId: 'performance-tester', artifacts: [],
     });
 
     sseBroadcast({ type: 'workflow_stage_started', workflowId, stage: '性能测试需求分析', step: 0, userId });
@@ -14211,7 +14329,18 @@ app.post('/api/performance-test/workflow', authenticate, async (req, res) => {
           await performanceDAO.bulkCreateFindings(reportId, wr.findings);
         }
         await taskDAO.updateTask(workflowId, { status, completedAt: new Date() });
-        sseBroadcast({ type: 'workflow_completed', workflowId, status, userId });
+        // 累积各阶段三格式交付物到 tasks Map,并随完成事件下发(前端即可下载 md/docx/xlsx)
+        const finalArtifacts = wr?.artifacts || [];
+        const taskEntry = tasks.get(workflowId) || { id: workflowId, userId, type: 'performance-test', agentId: 'performance-tester' };
+        taskEntry.status = status;
+        taskEntry.artifacts = finalArtifacts;
+        tasks.set(workflowId, taskEntry);
+        sseBroadcast({
+          type: 'workflow_completed', workflowId, status,
+          outputFiles: finalArtifacts.map(a => a.path),
+          artifacts: finalArtifacts,
+          userId,
+        });
       })
       .catch(async (err) => {
         console.error('[PerfWorkflow] 失败:', err.message);
@@ -14247,6 +14376,7 @@ async function executePerformanceWorkflow(workflowId, taskInput, userId = 1) {
   ];
 
   const results = {};
+  const allArtifacts = [];
   let totalStart = Date.now();
 
   for (let i = 0; i < stages.length; i++) {
@@ -14272,9 +14402,14 @@ async function executePerformanceWorkflow(workflowId, taskInput, userId = 1) {
         userId
       );
       results[i] = result;
-      // SSE 广播阶段完成（携带 success 字段，标定本次阶段是否成功）
+      // 落盘本阶段三格式交付物(md + docx + xlsx)
+      const stageText = result?.data || result?.text || '';
+      const stageOutFiles = await saveWorkflowStageDeliverables(workflowId, 'performance-tester', name, i, stageText);
+      const stageArtifacts = buildWorkflowArtifacts(workflowId, stageOutFiles, `pf${i}`);
+      allArtifacts.push(...stageArtifacts);
+      // SSE 广播阶段完成（携带 success 字段，标定本次阶段是否成功 + 三格式交付物）
       console.log(`[PerfWorkflow] stage ${name} completed, result keys:`, Object.keys(result || {}));
-      sseBroadcast({ type: 'workflow_stage_completed', workflowId, stage: name, step, success: true, result, userId });
+      sseBroadcast({ type: 'workflow_stage_completed', workflowId, stage: name, step, success: true, result, outputFiles: stageOutFiles, artifacts: stageArtifacts, userId });
     } catch (err) {
       console.error(`[PerfWorkflow] 阶段 ${name} 失败:`, err.message);
       sseBroadcast({ type: 'workflow_error', workflowId, stage: name, step, error: err.message, userId });
@@ -14290,6 +14425,7 @@ async function executePerformanceWorkflow(workflowId, taskInput, userId = 1) {
     status: 'completed',
     workflowId,
     durationMs: Date.now() - totalStart,
+    artifacts: allArtifacts,
     overallScore: data.overallScore || data.overall_score || null,
     grade: data.grade || null,
     slaPass: data.slaPass || data.sla_pass || false,
