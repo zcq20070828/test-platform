@@ -14100,6 +14100,12 @@ app.post('/api/performance-test/workflow', authenticate, async (req, res) => {
       // 临时 workflowId 用于 SSE 广播
       const singleWfId = `perf-single-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
+      // 预估人工工时（与全平台口径一致：由 performance-tester 智能体评估）
+      let perfManualHours = 4
+      try {
+        perfManualHours = await estimateManualEffort({ agent: 'performance-tester', input: { target, description, stage: stageName } })
+      } catch (e) { /* 失败时回退默认 4h */ }
+
       // 写入 tasks 表，使单阶段任务在任务列表可见
       await taskDAO.createTask({
         id: singleWfId,
@@ -14110,6 +14116,7 @@ app.post('/api/performance-test/workflow', authenticate, async (req, res) => {
         agentId: 'performance-tester',
         input: JSON.stringify({ target, description, stage: stageName }),
         priority: 'high',
+        manualHours: perfManualHours,
       });
 
       // SSE 广播阶段开始
@@ -14165,6 +14172,12 @@ app.post('/api/performance-test/workflow', authenticate, async (req, res) => {
     sseBroadcast({ type: 'workflow_stage_started', workflowId, stage: '性能测试需求分析', step: 0, userId });
     sseBroadcast({ type: 'task_created', workflowId, taskId: workflowId, agentId: 'performance-tester', userId });
 
+    // 预估人工工时（与全平台口径一致：由 performance-tester 智能体评估）
+    let perfManualHoursFull = 4
+    try {
+      perfManualHoursFull = await estimateManualEffort({ agent: 'performance-tester', input: { target, description } })
+    } catch (e) { /* 失败时回退默认 4h */ }
+
     // 写入 tasks 表（与安全测试一致），使性能测试任务在"任务"页面可见
     await taskDAO.createTask({
       id: workflowId,
@@ -14175,6 +14188,7 @@ app.post('/api/performance-test/workflow', authenticate, async (req, res) => {
       agentId: 'performance-tester',
       input: JSON.stringify({ target, description }),
       priority: 'high',
+      manualHours: perfManualHoursFull,
     });
 
     // 异步执行 7 步工作流

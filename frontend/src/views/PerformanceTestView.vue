@@ -58,7 +58,7 @@
       <el-tabs v-model="activeTab">
         <!-- 报告列表 -->
         <el-tab-pane label="🚀 测试执行" name="execute">
-          <DomainTestExecutor domain="performance" />
+          <PerfTestExecutor />
         </el-tab-pane>
 
         <el-tab-pane label="📋 测试报告" name="reports">
@@ -266,7 +266,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { performanceTestApi } from '@/api/index'
-import DomainTestExecutor from '@/components/DomainTestExecutor.vue'
+import PerfTestExecutor from '@/components/PerfTestExecutor.vue'
 
 // 状态
 const activeTab = ref('execute')

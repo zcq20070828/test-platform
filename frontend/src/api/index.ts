@@ -880,7 +880,10 @@ export const performanceTestApi = {
   async startWorkflow(target: string, description?: string, stage?: number) {
     const url = stage !== undefined ? `/api/performance-test/workflow?stage=${stage}` : '/api/performance-test/workflow'
     const res = await request<{ workflowId: string; testId: string } | { success: boolean; stage: string; output: unknown }>(url, { method: 'POST', body: JSON.stringify({ target, description }) })
-    return res.success ? (res.data as any) : null
+    // 完整工作流后端返回 { success, data: { workflowId, testId, target } }（嵌套 data），需解包；
+    // 单阶段返回 { success, stage, phase, output, taskId }（无嵌套），原样返回
+    const body: any = res.data
+    return res.success ? (body?.data?.workflowId || body?.data?.testId ? body.data : body) : null
   },
   async getReport(id: number): Promise<Record<string, unknown> | null> {
     const res = await request<Record<string, unknown>>(`/api/performance-test/reports/${id}`)

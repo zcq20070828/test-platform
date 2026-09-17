@@ -947,8 +947,8 @@ export const useMainStore = defineStore('main', () => {
         content = `🎉 性能测试工作流执行完毕`
       }
       
-      // 性能测试统一写到 Dashboard messages
-      messages.value.push({
+      // 性能测试统一写到 Dashboard messages；同时写入 workflowMessages 以便持久化历史（PerfTestExecutor 重进时回显）
+      const perfMsg = {
         id,
         role: 'assistant',
         type: 'system',
@@ -956,7 +956,9 @@ export const useMainStore = defineStore('main', () => {
         timestamp: new Date().toISOString(),
         artifacts,
         workflowId: data.workflowId,
-      })
+      }
+      messages.value.push(perfMsg)
+      workflowMessages.value.push({ ...perfMsg })
       return
     }
 
@@ -1623,7 +1625,9 @@ export const useMainStore = defineStore('main', () => {
             agentIcon: getAgentEmoji(data.agentId || 'unknown'),
             agentId: data.agentId,
             isStreaming: true,
-            thinking: []
+            thinking: [],
+            // 携带 workflowId，供 PerfTestExecutor 等按 workflowId 过滤实时面板内容
+            workflowId: data.workflowId,
           }
           writeMsg(streamMsg)
           // 自动滚动到底部
@@ -1636,7 +1640,9 @@ export const useMainStore = defineStore('main', () => {
 
       case 'agent_stream_chunk':
         {
+          // 流式消息可能写入 messages（单任务/security）或 workflowMessages（perf-wf-/perf-single- 等工作流），两处都找
           const target = messages.value.find(m => m.id === data.streamMsgId)
+            || workflowMessages.value.find(m => m.id === data.streamMsgId)
           if (!target) return
           // 兼容两种字段名：后端发 content/chunkText，前端期望 chunkType/chunkText
           const chunkType = data.chunkType || 'content'
@@ -1707,9 +1713,10 @@ export const useMainStore = defineStore('main', () => {
       case 'agent_stream_end':
         {
           let target = messages.value.find(m => m.id === data.streamMsgId)
+            || workflowMessages.value.find(m => m.id === data.streamMsgId)
           // 兜底：streamMsgId 未匹配时，取该智能体最后一条流式消息
           if (!target && data.agentId) {
-            const candidates = messages.value.filter(m => m.agentId === data.agentId && m.isStreaming)
+            const candidates = [...messages.value, ...workflowMessages.value].filter(m => m.agentId === data.agentId && m.isStreaming)
             if (candidates.length > 0) target = candidates[candidates.length - 1]
           }
           if (target) {
@@ -1732,6 +1739,7 @@ export const useMainStore = defineStore('main', () => {
         console.log(`[SSE] Artifacts from ${data.agentId}:`, data.artifacts)
         {
           const target = messages.value.find(m => m.id === data.streamMsgId)
+            || workflowMessages.value.find(m => m.id === data.streamMsgId)
           if (target && data.artifacts && data.artifacts.length > 0) {
             target.artifacts = data.artifacts
           }

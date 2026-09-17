@@ -167,6 +167,8 @@ export interface ChatMessage {
   // 流式处理时的状态标记
   isAutoRetry?: boolean
   isWorkflowFailed?: boolean
+  // 所属工作流 ID（性能/安全等工作流事件消息携带，供按 workflowId 过滤）
+  workflowId?: string
 }
 
 // API 响应
