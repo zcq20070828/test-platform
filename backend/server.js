@@ -3889,7 +3889,15 @@ app.post('/api/kb/upload', authenticate, (req, res, next) => {
       const filePath2 = path.join(KB_ROOT, kbType2, req.file.originalname);
       let fileContent = '';
       try {
-        fileContent = await fs.readFile(filePath2, 'utf-8');
+        const ext2 = path.extname(filePath2).toLowerCase();
+        if (ext2 === '.docx' || ext2 === '.doc') {
+          // Word 文档走 mammoth(与 parseDocumentContent / readKBFileContent 统一),
+          // 避免把二进制 docx 当 UTF-8 读成乱码导致向量化内容失真
+          const buf = await fs.readFile(filePath2);
+          fileContent = (await mammoth.extractRawText({ buffer: buf })).value || '';
+        } else {
+          fileContent = await fs.readFile(filePath2, 'utf-8');
+        }
       } catch (readErr) {
         console.warn('[KB Upload] 自动向量化读取文件失败:', readErr.message);
         return;
@@ -4837,7 +4845,25 @@ function parseDocumentContent(filePath, timeoutMs = 5000) {
       return;
     }
 
-    // 二进制格式调用Python脚本解析
+    // Word 文档(.docx/.doc)走 Node mammoth 解析
+    // 说明: 原 Python(parse_document.py)依赖 QClaw 自带 Python,该环境缺 python-docx 会崩溃;
+    // 而 Node 侧 mammoth 已随 readKBFileContent 验证可用,故统一在此复用,消除 Python 环境依赖。
+    if (ext === '.docx' || ext === '.doc') {
+      fs.readFile(filePath)
+        .then(buffer => mammoth.extractRawText({ buffer }))
+        .then(result => {
+          const text = (result.value || '').trim();
+          if (!text) {
+            reject(new Error('Word 文档解析结果为空'));
+            return;
+          }
+          resolve(text);
+        })
+        .catch(err => reject(new Error(`Word 文档解析失败: ${err.message}`)));
+      return;
+    }
+
+    // 其它二进制格式调用Python脚本解析
     const proc = spawn(PYTHON_PATH, [PARSE_DOC_SCRIPT, filePath], {
       stdio: ['pipe', 'pipe', 'pipe']
     });
@@ -8105,7 +8131,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
         }
       }
     }
-    const baseSystem = AGENT_SYSTEM_PROMPTS[agentId] || '';
+    let baseSystem = AGENT_SYSTEM_PROMPTS[agentId] || '';
     if (AGENT_DELIVERABLE_FORMATS[agentId]) {
       baseSystem += '\n\n【交付件格式说明】你只需输出 Markdown 格式主文档(纯文本或 ```md 代码块)。系统会自动将你的输出额外转换为 Word(.docx)和 Excel(.xlsx)格式副本,无需你手动输出 docx/xlsx 代码块。请在文档中用表格表达结构化数据,以便正确生成 Excel 工作表。';
     }
