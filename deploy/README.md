@@ -1,77 +1,43 @@
-# 测试中台部署包
+# 智能体 / 技能 / 知识库 安装脚本
 
-## 目录结构
+封版包内置一键安装脚本 `deploy/install.sh`，把包内的
+`qclaw-agents/`、`qclaw-skills/`、`qclaw-knowledge-base/`
+复制到目标机的 `~/.qclaw/` 下，使后端能正确加载智能体与技能。
 
-```
-test-platform/
-├── backend/             # 后端服务 (Node.js)
-│   ├── server.js         # 主入口
-│   ├── .env              # 配置文件 (需自行创建)
-│   ├── .env.example      # 配置示例
-│   ├── routes/           # API 路由
-│   ├── services/         # 业务服务
-│   ├── utils/           # 工具函数
-│   └── knowledge/        # 知识库模块
-├── frontend/            # 前端页面 (已构建)
-│   └── dist/            # Vue 静态文件
-├── openclaw/           # OpenClaw Agent 配置
-│   └── agents/          # Agent 定义
-│   └── skills/          # Skill 脚本
-├── knowledge-base/      # 知识库文件
-├── vector-service/      # 向量服务 (Python)
-├── deploy.sh           # 部署脚本
-└── README.md           # 本文件
-```
-
-## 快速启动
+## 在腾讯云应用服务器上的用法
 
 ```bash
-# 1. 配置后端
-cd backend
-cp .env.example .env
-# 编辑 .env，配置 OpenClaw Gateway URL 等
+# 1) 上传整个封版包到服务器，进入包目录
+cd /path/to/test-platform-2026-07-18
 
-# 2. 启动服务
-cd ..
-chmod +x deploy.sh
-./deploy.sh --start
+# 2)（可选）校验部署包本身是否完整
+bash deploy/install.sh --check
 
-# 3. 访问前端
-open http://localhost:3001
+# 3) 安装智能体 + 技能 + 知识库（默认装到 $HOME/.qclaw）
+bash deploy/install.sh
+
+# 4) 安装后校验目标机内容
+bash deploy/install.sh --verify
+
+# 5) 重启后端使智能体/技能生效
+pm2 restart test-platform
 ```
 
-## 配置说明
+## 参数
 
-`.env` 关键配置项：
+| 参数 | 说明 |
+|------|------|
+| （无） | 安装到 `$HOME/.qclaw` |
+| `--home <dir>` | 安装到 `<dir>/.qclaw`（如部署用户非运行用户时） |
+| `--dry-run` | 仅打印将执行的操作，不实际写入 |
+| `--verify` | 校验目标机已安装内容是否完整（不写入） |
+| `--check` | 校验部署包本身是否完整（不写入） |
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `PORT` | 后端服务端口 | `3001` |
-| `OPENCLAW_GATEWAY_URL` | OpenClaw Gateway 地址 | `http://localhost:3001` |
-| `OPENCLAW_GATEWAY_TOKEN` | Gateway 认证 Token | - |
-| `UI_PATH` | 前端静态文件目录 | `../frontend/dist` |
+## 说明
 
-## 部署架构
-
-```
-浏览器 ──→ 前端 (3001) ──→ 后端 API (3001)
-                        └──→ OpenClaw Gateway (3001)
-                              └──→ 测试 Agent (LLM)
-```
-
-## 管理命令
-
-```bash
-./deploy.sh --start   # 启动
-./deploy.sh --stop    # 停止
-./deploy.sh --restart # 重启
-./deploy.sh --status  # 状态
-```
-
-## 主要功能
-
-- 🤖 **智能体调度** — 13个专项测试智能体 (需求分析、用例生成、API测试、UI/E2E测试等)
-- 🔄 **自动化工作流** — Test-Master 规划 + 后端自动调度 + 并行AI审核
-- 📚 **知识库** — 多知识库支持，支持上传文档和语义搜索
-- 📊 **仪表盘** — 实时任务状态、SSE流式输出、Markdown渲染
-- 🔒 **安全合规** — 数据脱敏、多维度AI审核
+- 智能体与技能均为**文件形态**：智能体 = `~/.qclaw/agents/<id>/SOUL.md`，
+  技能 = `~/.qclaw/skills/<id>/SKILL.md`，后端启动时按路径读取。
+- 本脚本为**幂等**：重复执行会先清除再复制，结果一致。
+- 安装后**必须重启后端**，新的智能体/技能才会被加载。
+- 知识库根目录由后端硬编码为 `$HOME/.qclaw/knowledge-base`，
+  本脚本一并安装，请确保运行后端的用户 HOME 与此一致。

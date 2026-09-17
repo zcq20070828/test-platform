@@ -27,3 +27,12 @@ runtime/data/test-runs/
 
 # 本地运行时数据（tasks/users/评估/db/克隆仓库），不进版本控制
 runtime/
+
+# Python 向量/RAG 服务：源码入库，生成的索引数据不入库
+backend/vector/__pycache__/
+backend/vector/*.pyc
+backend/vector/vector_data/
+backend/vector/chroma_db/
+backend/vector/bm25_index.json
+__pycache__/
+*.pyc
