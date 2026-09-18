@@ -215,7 +215,11 @@ async function run() {
         <el-card class="config-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span>⚡ 性能测试执行配置</span>
+              <span class="header-icon">⚡</span>
+              <div class="header-text">
+                <div class="header-title">性能测试执行配置</div>
+                <div class="header-sub">选择阶段、填写需求，可上传技术方案文档作为分析输入</div>
+              </div>
             </div>
           </template>
 
@@ -236,14 +240,20 @@ async function run() {
                   </div>
                 </el-option>
               </el-select>
+              <div v-if="selected" class="stage-hint">
+                <span class="stage-hint-badge">
+                  {{ selected.isFull ? '全流程' : `Step ${(selected.stageIdx as number) + 1}/7` }}
+                </span>
+                <span class="stage-hint-text">{{ selected.desc }}</span>
+              </div>
             </el-form-item>
 
             <template v-if="selected">
-              <div class="de-panel-head">{{ selected.name }}</div>
               <el-form-item label="被测目标地址 (URL)">
                 <el-input
                   v-model="target"
                   placeholder="https://example.com  （完整工作流必填；单阶段可留空或上传文档）"
+                  clearable
                 />
               </el-form-item>
               <el-form-item label="任务描述">
@@ -254,16 +264,36 @@ async function run() {
                   placeholder="描述测试需求，例如：对订单接口做 500 并发压力测试，关注响应时间与错误率"
                 />
               </el-form-item>
-              <div class="de-actions">
-                <el-button type="primary" :loading="submitting" @click="run">
-                  执行{{ selected.isFull ? '工作流' : '该阶段' }}
-                </el-button>
-              </div>
-              <el-form-item label="补充材料（可选）">
-                <el-upload :auto-upload="false" :on-change="onFileChange" multiple :show-file-list="true">
-                  <el-button>选择文件</el-button>
+              <el-form-item class="upload-item">
+                <template #label>
+                  <span class="label-with-note">补充材料 <em>（可选，Word 文档将自动解析正文）</em></span>
+                </template>
+                <el-upload
+                  class="upload-zone"
+                  drag
+                  :auto-upload="false"
+                  :on-change="onFileChange"
+                  multiple
+                  :show-file-list="true"
+                >
+                  <div class="upload-zone-inner">
+                    <div class="upload-icon">📄</div>
+                    <div class="upload-main">点击或拖拽文件到此处上传</div>
+                    <div class="upload-sub">支持 PRD / 技术方案（docx、md、txt、json 等），单文件 ≤ 10MB</div>
+                  </div>
                 </el-upload>
               </el-form-item>
+              <div class="de-actions">
+                <el-button
+                  type="primary"
+                  size="large"
+                  class="exec-btn"
+                  :loading="submitting"
+                  @click="run"
+                >
+                  {{ selected.isFull ? '🚀 执行完整工作流' : `▶  执行第 ${(selected.stageIdx as number) + 1} 阶段「${STAGES[selected.stageIdx as number]}」` }}
+                </el-button>
+              </div>
             </template>
 
             <div v-else class="de-empty-inline">
@@ -279,8 +309,15 @@ async function run() {
         <el-card class="output-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span>📡 处理过程信息（实时输出）</span>
-              <el-button v-if="currentWorkflowId" size="small" text @click="resetOutput">重置</el-button>
+              <span class="header-icon header-icon--live">📡</span>
+              <div class="header-text">
+                <div class="header-title">处理过程信息</div>
+                <div class="header-sub">
+                  <span v-if="currentWorkflowId" class="live-dot"></span>
+                  {{ currentWorkflowId ? '实时输出中' : '实时输出' }}
+                </div>
+              </div>
+              <el-button v-if="currentWorkflowId" size="small" text class="reset-btn" @click="resetOutput">重置</el-button>
             </div>
           </template>
 
@@ -295,8 +332,11 @@ async function run() {
             />
           </div>
           <div v-else class="output-empty">
-            <el-icon :size="32" color="#c0c4cc"><Monitor /></el-icon>
-            <p>执行后在此实时显示处理过程与交付物</p>
+            <div class="output-empty-glow">
+              <el-icon :size="40" color="#a0b4d8"><Monitor /></el-icon>
+            </div>
+            <p class="output-empty-title">执行后在此实时显示处理过程与交付物</p>
+            <p class="output-empty-sub">支持实时流式输出 · 阶段进度 · 三格式交付物下载</p>
           </div>
         </el-card>
       </el-col>
@@ -309,30 +349,98 @@ async function run() {
   padding: 4px 0;
 }
 
-.config-card {
+/* ── 卡片整体 ─────────────────────────────── */
+.config-card,
+.output-card {
   height: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.04);
+}
+.config-card :deep(.el-card__header),
+.output-card :deep(.el-card__header) {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5);
+  background: linear-gradient(180deg, #fafbfd 0%, #ffffff 100%);
+}
+.config-card :deep(.el-card__body) {
+  padding: 20px 20px 24px;
+}
+.output-card :deep(.el-card__body) {
+  height: 560px;
+  padding: 0;
 }
 
+/* ── 卡片头部 ─────────────────────────────── */
 .card-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  font-size: 14px;
-  font-weight: 600;
+  gap: 12px;
 }
-
-.de-panel-head {
-  margin: 8px 0 14px;
-  font-size: 16px;
+.header-icon {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(0, 122, 255, 0.12) 0%, rgba(0, 180, 255, 0.10) 100%);
+  border: 1px solid rgba(0, 122, 255, 0.15);
+}
+.header-icon--live {
+  background: linear-gradient(135deg, rgba(103, 194, 58, 0.12) 0%, rgba(0, 200, 120, 0.10) 100%);
+  border-color: rgba(103, 194, 58, 0.25);
+}
+.header-text {
+  flex: 1;
+  min-width: 0;
+}
+.header-title {
+  font-size: 15px;
   font-weight: 700;
   color: var(--text-primary);
+  line-height: 1.3;
+}
+.header-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-secondary, #909399);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.reset-btn {
+  flex-shrink: 0;
 }
 
-.de-actions {
+/* ── 执行方式：下拉与阶段提示 ─────────────── */
+.stage-hint {
   display: flex;
-  justify-content: flex-end;
-  margin-top: -10px; /* 抵消 el-form-item 底部间距, 贴紧任务描述框右下角 */
-  margin-bottom: 14px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(0, 122, 255, 0.05);
+  border: 1px dashed rgba(0, 122, 255, 0.25);
+  font-size: 12.5px;
+  color: var(--text-secondary, #606266);
+  line-height: 1.5;
+}
+.stage-hint-badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--primary, #007aff);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.stage-hint-text {
+  min-width: 0;
 }
 
 .de-opt {
@@ -354,6 +462,76 @@ async function run() {
   flex-shrink: 0;
 }
 
+/* ── 上传区 ───────────────────────────────── */
+.label-with-note em {
+  font-style: normal;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-secondary, #909399);
+}
+.upload-item :deep(.el-upload),
+.upload-item :deep(.el-upload-dragger) {
+  width: 100%;
+}
+.upload-item :deep(.el-upload-dragger) {
+  padding: 18px 16px;
+  border-radius: 10px;
+  border: 1.5px dashed var(--el-border-color, #dcdfe6);
+  background: #fafbfd;
+  transition: border-color 0.2s, background 0.2s;
+}
+.upload-item :deep(.el-upload-dragger:hover),
+.upload-item :deep(.el-upload-dragger.is-dragover) {
+  border-color: var(--primary, #007aff);
+  background: rgba(0, 122, 255, 0.04);
+}
+.upload-zone-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 0;
+}
+.upload-icon {
+  font-size: 26px;
+  line-height: 1;
+}
+.upload-main {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.upload-sub {
+  font-size: 11.5px;
+  color: var(--text-secondary, #a8abb2);
+}
+
+/* ── 执行按钮 ─────────────────────────────── */
+.de-actions {
+  display: flex;
+  margin-top: 18px;
+}
+.exec-btn {
+  width: 100%;
+  height: 44px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  border-radius: 10px;
+  border: none;
+  background: linear-gradient(135deg, #007aff 0%, #00a6ff 100%);
+  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.25);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.exec-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(0, 122, 255, 0.32);
+}
+.exec-btn:active {
+  transform: translateY(0);
+}
+
+/* ── 左栏空态 ─────────────────────────────── */
 .de-empty-inline {
   display: flex;
   flex-direction: column;
@@ -368,14 +546,7 @@ async function run() {
   font-size: 36px;
 }
 
-/* 右栏实时输出 */
-.output-card {
-  height: 100%;
-}
-.output-card :deep(.el-card__body) {
-  height: 560px;
-  padding: 0;
-}
+/* ── 右栏 ─────────────────────────────────── */
 .workflow-chat {
   width: 100%;
   height: 100%;
@@ -393,8 +564,41 @@ async function run() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 12px;
   color: #909399;
   font-size: 13px;
+}
+.output-empty-glow {
+  width: 84px;
+  height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 24px;
+  background: radial-gradient(circle at 30% 30%, rgba(0, 122, 255, 0.10) 0%, rgba(0, 122, 255, 0.03) 70%);
+  border: 1px solid rgba(0, 122, 255, 0.10);
+}
+.output-empty-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary, #606266);
+}
+.output-empty-sub {
+  margin: 0;
+  font-size: 12px;
+  color: #c0c4cc;
+}
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #67c23a;
+  box-shadow: 0 0 0 3px rgba(103, 194, 58, 0.2);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 </style>
