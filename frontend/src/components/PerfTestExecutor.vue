@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Monitor } from '@element-plus/icons-vue'
 import { useMainStore } from '@/stores/main'
-import { performanceTestApi } from '@/api'
+import { performanceTestApi, request } from '@/api'
 import DashboardChatPanel from '@/components/DashboardChatPanel.vue'
 import type { AttachmentFile } from '@/types'
 
@@ -126,6 +126,23 @@ async function readAttachmentContent(file: AttachmentFile): Promise<string> {
       return `=== ${file.name} ===\n\n\`\`\`\n${truncated}\n\`\`\``
     } catch {
       return `[附件: ${file.name}]`
+    }
+  }
+  // Word 文档:通过后端 /api/parse/word 解析(与 DashboardView.readAttachmentContent 统一)
+  if (['.docx', '.doc'].includes(ext)) {
+    try {
+      const base64 = file.dataUrl.split(',').pop() || ''
+      const res = await request<{ success: boolean; text?: string }>('/api/parse/word', {
+        method: 'POST',
+        body: JSON.stringify({ filename: file.name, base64 })
+      })
+      if (res.success && res.data?.success && res.data?.text) {
+        return `=== ${file.name} (已解析) ===\n\n${res.data.text}\n\n--- 文档解析完成 ---`
+      }
+      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析结果为空]`
+    } catch (e) {
+      console.warn('[PerfTest] Word 解析失败:', file.name, e)
+      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析失败: ${e}]`
     }
   }
   return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB)]`
