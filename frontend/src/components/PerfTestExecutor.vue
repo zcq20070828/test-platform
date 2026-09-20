@@ -415,8 +415,23 @@ async function run() {
   border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5);
   background: linear-gradient(180deg, #fafbfd 0%, #ffffff 100%);
 }
+.config-card {
+  display: flex;
+  flex-direction: column;
+}
 .config-card :deep(.el-card__body) {
   padding: 20px 20px 24px;
+  /* 弹性布局：让 input-section 撑满剩余高度，与右栏输出框底端对齐 */
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.config-card :deep(.el-form) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .output-card :deep(.el-card__body) {
   height: 560px;
@@ -515,6 +530,13 @@ async function run() {
 }
 
 /* ── 任务输入区（对齐分步测试 DashboardChatPanel 输入样式）── */
+/* input-section 撑满卡片体剩余高度，使底部 hint 与右栏输出框底端对齐 */
+.input-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .attachments-preview { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .attachment-item { position: relative; border: 1px solid var(--el-border-color, #dcdfe6); border-radius: 6px; padding: 4px; max-width: 180px; }
 .attachment-image { max-width: 100%; max-height: 80px; border-radius: 4px; display: block; }
@@ -530,6 +552,21 @@ async function run() {
   padding: 12px;
   background: var(--el-bg-color-page, #f5f7fa);
   transition: all 0.3s;
+  /* 随 input-section 高度等比撑满，按钮与输入框底部随之下移 */
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.input-box :deep(.el-textarea) {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.input-box :deep(.el-textarea__inner) {
+  flex: 1;
+  min-height: 130px;
+  height: 100%;
 }
 .input-box.drag-over {
   border-color: var(--el-color-primary);

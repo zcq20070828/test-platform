@@ -346,6 +346,23 @@ async function deleteTaskOutputFiles(taskId) {
   await query('DELETE FROM task_output_files WHERE task_id = ?', [taskId]);
 }
 
+/**
+ * 一次性获取全部任务的输出文件(用于启动时批量重建 artifacts,避免逐任务查询)
+ */
+async function getAllTaskOutputFiles() {
+  const sql = 'SELECT * FROM task_output_files ORDER BY created_at ASC';
+  const rows = await query(sql);
+  return rows.map(row => ({
+    id: row.id,
+    taskId: row.task_id,
+    filePath: row.file_path,
+    version: row.version,
+    versionSource: row.version_source,
+    displayVersion: row.display_version,
+    createdAt: row.created_at,
+  }));
+}
+
 export {
   createTask,
   getTaskById,
@@ -357,4 +374,5 @@ export {
   createTaskOutputFile,
   getTaskOutputFiles,
   deleteTaskOutputFiles,
+  getAllTaskOutputFiles,
 };

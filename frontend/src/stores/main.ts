@@ -608,7 +608,7 @@ export const useMainStore = defineStore('main', () => {
   // 创建任务
   // SSE 断线兜底：提交任务后轮询任务状态，完成后从 GET /api/tasks/:id 拉取 artifacts，
   // 确保聊天面板必现交付物（即使 task_completed 的 SSE 事件被丢也不会漏）。
-  async function ensureTaskDeliverable(taskId: string, agentId: string, maxAttempts = 40) {
+  async function ensureTaskDeliverable(taskId: string, agentId: string, maxAttempts = 240) {
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise((r) => setTimeout(r, 2500))
       let task: any = null
@@ -618,7 +618,7 @@ export const useMainStore = defineStore('main', () => {
         continue
       }
       if (!task) continue
-      if (task.status === 'completed' || task.status === 'failed') {
+      if (task.status === 'completed' || task.status === 'failed' || task.status === 'error') {
         const taskOutput = task.output || task.result || ''
         const baseArtifacts: any[] = task.artifacts || []
         // 前端兜底：服务端没交付物时，从输出里提取 markdown 报告，避免聊天面板空白
@@ -677,8 +677,15 @@ export const useMainStore = defineStore('main', () => {
         // 跳过已存在的消息（避免与 task-output-XXX 或任务流式残留重复）
         if (messages.value.some(m => m.id === `loaded-task-${taskId}` || m.id === `task-output-${taskId}`)) continue
         // 提取 artifacts（与 task_completed 处理保持一致）
+        // 列表接口不含 artifacts，按需拉详情补全交付物文件卡片(否则刷新后只有报告正文、缺 md/docx/xlsx 卡片)
         const reportArtifacts = extractArtifacts(taskOutput).filter((a: any) => a.type === 'report')
-        const baseArtifacts = task.artifacts || []
+        let baseArtifacts = task.artifacts || []
+        if (baseArtifacts.length === 0) {
+          try {
+            const _d = await taskApi.getById(taskId)
+            if (_d && Array.isArray(_d.artifacts) && _d.artifacts.length > 0) baseArtifacts = _d.artifacts
+          } catch (_) { /* 忽略,退化为 report 提取 */ }
+        }
         const taskArtifacts = baseArtifacts.length > 0 ? baseArtifacts : reportArtifacts
         const agentId = task.agentId || task.agent
         messages.value.push({
@@ -1850,6 +1857,10 @@ export const useMainStore = defineStore('main', () => {
       workflowMessages.value = []
     }
   }
+
+  // 【修复】启动时从 localStorage 恢复 workflowMessages（性能测试/工作流的历史处理过程），
+  // 否则刷新页面后 workflowMessages 为空，性能测试页「处理过程信息」无法回显历史。
+  restoreWorkflowMessages()
 
   /** 持久化聊天消息到 localStorage */
   function persistWorkflowMessages(messages?: ChatMessage[]) {

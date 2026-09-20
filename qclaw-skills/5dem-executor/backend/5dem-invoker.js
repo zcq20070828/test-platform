@@ -2,7 +2,7 @@
 
 /**
  * 5DEM Invoker - 供 LLM tool-call 调用的统一入口
- * 封装五维穷举模型执行器，将易填的参数映射到 execute5DEM 所需格式
+ * 封装九维穷举模型执行器，将易填的参数映射到 execute5DEM 所需格式
  */
 
 const {
@@ -113,7 +113,7 @@ async function invoke(params) {
       skill: '5dem-executor',
       success: false,
       error: '请提供 task（需求文本）、inputSpec（结构化规范）或 fields（字段列表）参数之一',
-      hint: '五维穷举模型需要定义输入字段（字段名、类型、边界值等）才能生成等价类/边界值测试设计。'
+      hint: '九维穷举模型需要定义输入字段（字段名、类型、边界值等）才能生成等价类/边界值测试设计。'
     };
   }
 
@@ -127,15 +127,13 @@ async function invoke(params) {
       dimensions,
       inputSpec: spec,
       summary: {
-        equivalenceClassesCount: result.data?.equivalenceClasses?.validClasses?.length || 0,
-        boundaryValuesCount: result.data?.boundaryValues?.length || 0,
-        pairwiseCount: result.data?.pairwise?.length || 0
+        requestedDimensions: dimensions,
+        dataEquivalenceClassesCount: result.data?.equivalenceClasses?.validClasses?.length || 0,
+        dataBoundaryValuesCount: result.data?.boundaryValues?.length || 0,
+        dataPairwiseCount: result.data?.pairwise?.length || 0
       },
-      data: result.data,
-      process: result.process,
-      environment: result.environment,
-      time: result.time,
-      dependency: result.dependency
+      dimensionsResult: result,
+      ...result
     };
   } catch (e) {
     return {

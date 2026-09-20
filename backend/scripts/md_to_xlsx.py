@@ -6,6 +6,23 @@ import sys, re
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
+# openpyxl 不允许出现在 sheet 标题中的字符(ASCII)
+_FORBIDDEN = set('\\/:*?[]')
+# 常见全角/变体斜杠(部分 Markdown 会用)，一并替换为 '-'
+_VARIANT_SLASH = {'／', '⁄', '∕', '╱', '⧸', '⟋'}
+
+
+def _sanitize_title(name):
+    out = []
+    for c in name:
+        if c in _FORBIDDEN or c in _VARIANT_SLASH:
+            out.append('-')
+        else:
+            out.append(c)
+    s = ''.join(out).strip()
+    s = s[:31]
+    return s or 'Sheet'
+
 
 def md_to_xlsx(md_path, xlsx_path):
     try:
@@ -21,6 +38,7 @@ def md_to_xlsx(md_path, xlsx_path):
     i = 0
     table_idx = 0
     last_heading = 'Sheet'
+    used_titles = set()
     while i < len(lines):
         line = lines[i]
         h = re.match(r'^#{1,4}\s+(.+)$', line)
@@ -36,8 +54,16 @@ def md_to_xlsx(md_path, xlsx_path):
             # 第二行须为分隔行(全 - : | 空格)
             if len(block) >= 2 and re.match(r'^[\|\s:\-]+$', block[1].strip()):
                 table_idx += 1
-                sheet_name = last_heading if last_heading != 'Sheet' else f'table_{table_idx}'
-                ws = wb.create_sheet(title=sheet_name[:31])
+                base = last_heading if last_heading != 'Sheet' else f'table_{table_idx}'
+                title = _sanitize_title(base)
+                # 保证 sheet 名唯一,避免 openpyxl 抛 "already exists"
+                if title in used_titles:
+                    k = 2
+                    while f'{title}_{k}' in used_titles:
+                        k += 1
+                    title = f'{title}_{k}'
+                used_titles.add(title)
+                ws = wb.create_sheet(title=title)
                 for r in block:
                     cells = [c.strip() for c in r.strip().strip('|').split('|')]
                     if re.match(r'^[\s:\-]+$', ''.join(cells)):
@@ -58,7 +84,24 @@ def md_to_xlsx(md_path, xlsx_path):
         wb.save(xlsx_path)
         print("OK sheets:", ",".join(wb.sheetnames))
     else:
-        print("NO_TABLES")
+        # 兜底:无表格时仍生成一张"内容"表,保证 Excel 交付物必然存在(全量放开三格式需要)
+        title = '内容'
+        if title in used_titles:
+            title = '内容_2'
+        used_titles.add(title)
+        ws = wb.create_sheet(title=title)
+        for line in md.split('\n'):
+            s = line.strip()
+            if not s:
+                continue
+            if re.match(r'^[\|\s:\-]+$', s):  # 跳过分隔噪音行
+                continue
+            if s.startswith('|') and s.endswith('|') and '|' in s[1:-1]:
+                s = s[1:-1].strip()
+            ws.append([s])
+        ws.column_dimensions['A'].width = 80
+        wb.save(xlsx_path)
+        print("OK sheets(兜底): 内容")
 
 
 if __name__ == '__main__':

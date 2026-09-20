@@ -1,41 +1,39 @@
 ---
 name: 5dem-executor
-description: 五维穷举模型执行器。实现数据、流程、环境、时间、依赖五个维度的穷举测试，生成高覆盖率测试用例。V2.0集成PICT工具、测试脚本生成器、测试框架集成。
-version: 2.0.0
+description: 九维穷举模型执行器。基于用户、数据、流程、操作、安全、性能、网络环境、终端环境、兼容性九个维度（9DEM）的穷举测试，生成高覆盖率测试用例。数据维度具备等价类划分、边界值分析、Pairwise 自动化计算；其余维度提供结构化方法论引导。V2.0集成PICT工具、测试脚本生成器、测试框架集成。
+version: 2.1.0
 ---
 
-# 五维穷举模型执行器（5DEM Executor）
+# 九维穷举模型执行器（9DEM Executor）
 
 ## 角色定位
 
-测试方法论专家，基于五维穷举模型（5DEM）生成高覆盖率测试用例，并自动生成测试脚本和执行测试。
+测试方法论专家，基于九维穷举模型（9DEM）生成高覆盖率测试用例，并自动生成测试脚本和执行测试。
+
+九维定义（权重裁剪依据需求类型动态调整）：
+
+| 维度 | 键 | 关注点 | 典型层级 |
+|------|-----|--------|---------|
+| ① 用户 | user | 登录态/角色/数据隔离/越权 | 正常/边界/异常 |
+| ② 数据 | data | 业务数据、接口参数、LLM输出，BVA七点集 | 正常/边界/异常 |
+| ③ 流程 | process | 多阶段状态机，合法+非法迁移 | 正常/边界/异常 |
+| ④ 操作 | operation | 重复操作/中断恢复/幂等 | 正常/边界/异常 |
+| ⑤ 安全 | security | 鉴权/越权/敏感信息脱敏/注入 | 边界/异常 |
+| ⑥ 性能 | performance | 超时/并发/大数据量/宕机恢复 | 边界/异常 |
+| ⑦ 网络环境 | network | 弱网/断网/切网/SSE断流/超时重试 | 正常/边界/异常 |
+| ⑧ 终端环境 | terminal | 浏览器与系统级中断（切后台/锁屏） | 正常/边界/异常 |
+| ⑨ 兼容性 | compatibility | 浏览器矩阵/SSE EventSource/渲染布局一致性 | 边界/异常 |
 
 ## 核心功能
 
-### V1.0：数据维度 + 流程维度 + 环境维度
-1. **数据维度**（data-dimension.js）
+### V2.0：九维穷举（9DEM）
+1. **数据维度**（data，自动化计算）
    - 等价类划分
-   - 边界值分析
-   - Pairwise组合测试
-
-2. **流程维度**（process-dimension.js）
-   - 状态机建模
-   - 决策表生成
-
-3. **环境维度**（environment-dimension.js）
-   - 正交设计
-   - 资源约束分析
-   - 环境组合优化
-
-4. **时间维度**（time-dimension.js）
-   - 时序依赖分析
-   - 并发冲突检测
-   - 时间窗口分析
-
-5. **依赖维度**（dependency-dimension.js）
-   - 服务依赖图构建
-   - 故障注入点识别
-   - 依赖路径分析
+   - 边界值分析（BVA 七点集）
+   - Pairwise 组合测试
+2. **其余维度**（user/process/operation/security/performance/network/terminal/compatibility）
+   - 提供该维度关注点的结构化引导（focus + guidance）
+   - 由 LLM 结合需求补充具体用例，并标注层级（正常/边界/异常）
 
 ### V2.0：PICT集成 + 测试脚本生成 + 测试框架集成
 1. **PICT集成**（pict-integration.js）
@@ -71,7 +69,9 @@ const inputSpec = {
   }
 };
 
-const result = generateEquivalenceClasses(inputSpec);
+// 九维调用示例：仅计算 data；或传入全部九维键获取各维度引导
+const result = execute5DEM({ inputSpec, dimensions: ['data'] });
+const resultAll = execute5DEM({ inputSpec, dimensions: ['user','data','process','operation','security','performance','network','terminal','compatibility'] });
 ```
 
 ### 测试脚本生成输入
@@ -112,20 +112,34 @@ const results = await executeTests(config);
 
 ## 输出格式
 
-### 数据维度输出
+### 数据维度输出（自动化计算）
 ```javascript
 {
-  equivalenceClasses: [
-    { name: '有效用户名', values: ['user123', 'test_user'], count: 2 },
-    { name: '无效用户名', values: ['ab', 'verylongusername...'], count: 2 }
-  ],
-  boundaryValues: [
-    { field: 'age', boundary: 18, type: 'min' },
-    { field: 'age', boundary: 120, type: 'max' }
-  ],
-  pairwise: {
-    total: 18,
-    combinations: [...]
+  data: {
+    equivalenceClasses: [
+      { name: '有效用户名', values: ['user123', 'test_user'], count: 2 },
+      { name: '无效用户名', values: ['ab', 'verylongusername...'], count: 2 }
+    ],
+    boundaryValues: [
+      { field: 'age', boundary: 18, type: 'min' },
+      { field: 'age', boundary: 120, type: 'max' }
+    ],
+    pairwise: {
+      total: 18,
+      combinations: [...]
+    }
+  }
+}
+```
+
+### 其余维度输出（结构化引导）
+```javascript
+{
+  user: {
+    dimension: 'user',
+    label: '① 用户',
+    focus: '登录态/角色/数据隔离/越权，正常-边界-异常三层',
+    guidance: '按九维穷举模型，在该维度下运用等价类划分、边界值分析、状态迁移、场景法、错误推测等方法设计用例，并标注层级（正常/边界/异常）。'
   }
 }
 ```
@@ -248,32 +262,22 @@ console.log(results.coverage);
 ```
 5dem-executor/
 ├── SKILL.md                    # 本文档
+├── executor.js                 # 九维穷举主入口（execute5DEM）
 ├── backend/
-│   ├── data-dimension.js       # 数据维度
-│   ├── process-dimension.js    # 流程维度
-│   ├── environment-dimension.js # 环境维度
-│   ├── time-dimension.js       # 时间维度
-│   ├── dependency-dimension.js # 依赖维度
+│   ├── data-dimension.js       # 数据维度（等价类/边界值/Pairwise 自动化计算）
 │   ├── pict-integration.js     # PICT集成
 │   ├── test-script-generator.js # 测试脚本生成器
 │   └── test-framework-integration.js # 测试框架集成
 ├── examples/
-│   ├── data-dimension-usage.js
-│   ├── process-dimension-usage.js
-│   ├── environment-dimension-usage.js
-│   ├── pict-integration-usage.js
-│   ├── test-script-generator-usage.js
-│   └── test-framework-integration-usage.js
 └── test/
-    ├── data-dimension-test.js
-    ├── process-dimension-test.js
-    ├── environment-dimension-test.js
-    ├── pict-integration-test.js
-    ├── test-script-generator-test.js
-    └── test-framework-integration-test.js
 ```
 
 ## 版本历史
+
+### V2.1（2026-09-20）
+- ✅ 五维穷举模型升级为九维穷举模型（9DEM）：用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性
+- ✅ execute5DEM 维度键扩展为九维，未实现的维度返回结构化方法论引导（不再静默丢弃）
+- ✅ 5dem-invoker 动态返回所有请求维度的结果
 
 ### V2.0（2026-07-05）
 - ✅ 集成PICT工具（性能提升1142倍）
@@ -300,33 +304,14 @@ console.log(results.coverage);
 - Pytest - Python测试框架
 - Playwright - E2E测试框架
 
-## 性能数据
-
-### PICT集成
-- 10因子/3值组合：贪心16秒 → PICT 14ms（提升1142倍）
-- 组合数量：59049 → 18（减少99.97%）
-
-### 测试脚本生成
-- 单个测试用例生成：< 1ms
-- 批量生成（100用例）：< 100ms
-
-### 测试框架集成
-- Jest测试执行：符合框架标准
-- Pytest测试执行：符合框架标准
-- Playwright测试执行：符合框架标准
-
 ## 单元测试
 
 - 数据维度：10个测试用例，100%通过
-- 流程维度：10个测试用例，100%通过
-- 环境维度：10个测试用例，100%通过
-- 时间维度：10个测试用例，100%通过
-- 依赖维度：10个测试用例，100%通过
 - PICT集成：12个测试用例，100%通过
 - 测试脚本生成器：20个测试用例，100%通过
 - 测试框架集成：20个测试用例，100%通过
 
-**总计**：102个测试用例，100%通过率
+**总计**：62个测试用例，100%通过率
 
 ## 最佳实践
 
@@ -344,25 +329,14 @@ console.log(results.coverage);
 
 ## 更新日志
 
+### 2026-09-20
+- 五维穷举模型升级为九维穷举模型（9DEM）
+- execute5DEM 维度键扩展，未实现维度返回结构化引导
+
 ### 2026-07-05
 - 完成M3里程碑：测试框架集成
-- 新增test-framework-integration.js（14.6 KB）
-- 新增后端API路由（/api/test-framework/*）
-- 20个单元测试，100%通过
-
-### 2026-07-05
 - 完成M2里程碑：测试脚本生成器
-- 新增test-script-generator.js（10.0 KB）
-- 支持4种测试框架（Jest/Pytest/Playwright/API）
-- 20个单元测试，100%通过
-
-### 2026-07-05
 - 完成M1里程碑：PICT工具集成
-- 新增pict-integration.js（5.4 KB）
-- 性能提升1142倍
-- 12个单元测试，100%通过
 
 ### 2026-07-03
 - 完成V1.0五维穷举模型
-- 5个维度全部实现
-- 50个单元测试，100%通过
