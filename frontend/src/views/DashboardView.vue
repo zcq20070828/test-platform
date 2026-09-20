@@ -180,7 +180,7 @@ const chatMode = ref<{ taskId: string; taskName: string } | null>(null)
 // 进入多轮对话续写模式（点选历史任务卡片触发）
 // enterChatMode: 兼容 task 对象（历史任务弹窗）和 {taskId,agentId,taskName} 对象（localStorage autoChatMode）
 // autoEnter=true 表示由 task_completed 自动触发，不清空已有消息（保留任务输出）
-function enterChatMode(task: any, autoEnter = false) {
+async function enterChatMode(task: any, autoEnter = false) {
   const taskId = task.id || task.taskId
   const agentId = task.agent || task.agentId
   const taskName = task.type || task.agent || task.agentId || task.taskName || '历史任务'
@@ -207,6 +207,35 @@ function enterChatMode(task: any, autoEnter = false) {
       })
     }
   } catch (_) { /* 历史解析失败忽略 */ }
+
+  // 【修复】手动继续对话时，把该任务自身的生成结果（历史信息核心）也加载进面板。
+  // 否则单轮任务 chat_history 为空，面板会一片空白，用户看不到历史任务的产出内容。
+  const taskOutput = task.output || (typeof task.result === 'string' ? task.result : (task.result ? JSON.stringify(task.result) : ''))
+  if (taskOutput) {
+    const msgId = `loaded-task-${taskId}`
+    if (!store.messages.find((m: any) => m.id === msgId)) {
+      store.messages.push({
+        id: msgId,
+        role: 'assistant',
+        type: 'agent',
+        content: `✅ 任务 ${taskId} 完成\n\n${taskOutput}`,
+        timestamp: task.completedAt || task.updatedAt || task.createdAt || new Date().toISOString(),
+        agentId,
+        agentName: task.agentName || agentId,
+        artifacts: (Array.isArray(task.artifacts) && task.artifacts.length) ? task.artifacts : undefined
+      })
+    }
+    // 异步补全交付物卡片（md/docx/xlsx）：任务列表不含 artifacts，按需拉详情接口
+    if (!(Array.isArray(task.artifacts) && task.artifacts.length)) {
+      try {
+        const detail = await taskApi.getById(taskId)
+        if (detail && Array.isArray(detail.artifacts) && detail.artifacts.length) {
+          const m = store.messages.find((x: any) => x.id === msgId)
+          if (m) m.artifacts = detail.artifacts
+        }
+      } catch (_) { /* 详情拉取失败忽略，退化为纯文本 */ }
+    }
+  }
   ElMessage.success(`已进入「${chatMode.value.taskName}」的对话模式，可继续补充需求或修改交付物`)
 }
 

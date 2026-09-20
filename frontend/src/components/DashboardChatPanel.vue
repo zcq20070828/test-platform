@@ -88,15 +88,31 @@ const previewRenderedContent = ref('')
 async function openPreview(artifact: any) {
   previewArtifact.value = artifact
   
-  // 【修复】docx/xlsx 等二进制格式不支持在线预览,提示下载
-  const binExts = ['.docx', '.xlsx', '.pdf', '.zip', '.doc', '.xls', '.ppt', '.pptx']
   const fname = (artifact.name || '').toLowerCase()
-  if (binExts.some(ext => fname.endsWith(ext))) {
+  // 支持在线预览的二进制格式(docx/xlsx -> HTML),走后端预览接口
+  const previewableBin = ['.docx', '.xlsx']
+  if (previewableBin.some(ext => fname.endsWith(ext)) && artifact.downloadUrl) {
+    try {
+      const _token_ = localStorage.getItem('token')
+      const previewUrl = artifact.downloadUrl.replace(/\/download$/, '/preview')
+      const response = await fetch(previewUrl, { headers: _token_ ? { 'Authorization': `Bearer ${_token_}` } : {} })
+      if (!response.ok) throw new Error(`预览生成失败(${response.status})`)
+      previewRenderedContent.value = await response.text()
+    } catch (err: any) {
+      const msg = (err && err.message) ? err.message : String(err)
+      previewRenderedContent.value = `<p style="color:#f56c6c;text-align:center;">预览失败：${msg}</p>`
+    }
+    previewVisible.value = true
+    return
+  }
+  // 其余二进制格式仍不支持在线预览
+  const otherBin = ['.pdf', '.zip', '.doc', '.xls', '.ppt', '.pptx']
+  if (otherBin.some(ext => fname.endsWith(ext))) {
     previewRenderedContent.value = `<div style="text-align:center;padding:40px 20px;color:#909399;">
       <el-icon size="48" style="margin-bottom:16px;"><Document /></el-icon>
       <p style="font-size:16px;margin-bottom:8px;">该文件格式不支持在线预览</p>
       <p style="font-size:13px;color:#C0C4CC;margin-bottom:20px;">${artifact.name || ''}</p>
-      <p style="font-size:13px;">请点击「下载」按钮，用 Word/Excel 打开查看</p>
+      <p style="font-size:13px;">请点击「下载」按钮，用对应软件打开查看</p>
     </div>`
     previewVisible.value = true
     return
