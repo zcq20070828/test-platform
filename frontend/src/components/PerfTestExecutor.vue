@@ -45,8 +45,7 @@ const entries = computed<Entry[]>(() => {
 const selectedKey = ref<string>('')
 const selected = computed<Entry | null>(() => entries.value.find((e) => e.key === selectedKey.value) || null)
 
-const target = ref('')
-const description = ref('')
+const input = ref('')
 const files = ref<AttachmentFile[]>([])
 const submitting = ref(false)
 
@@ -206,18 +205,17 @@ async function run() {
   const e = selected.value
   submitting.value = true
   try {
-    let rawTarget = target.value.trim()
-    let desc = description.value.trim()
+    const text = input.value.trim()
+    // URL 直接写在输入内容里，执行时自动提取（无 URL 时单阶段回退 uploaded-docs，完整工作流会被下方校验拦截）
+    const rawTarget = extractUrl(text)
+    let desc = text
     if (files.value.length) {
       const contents: string[] = []
       for (const f of files.value) contents.push(await readAttachmentContent(f))
       desc = contents.join('\n\n---\n\n') + '\n\n用户需求：' + desc
-      if (!rawTarget) rawTarget = extractUrl(desc)
-    } else if (!rawTarget) {
-      rawTarget = extractUrl(desc) || (desc.split(/[\s,，]+/)[0] || '')
     }
     if (e.isFull && !rawTarget.startsWith('http')) {
-      ElMessage.warning(`完整${LABEL}请输入目标地址，或选择单个阶段执行`)
+      ElMessage.warning(`完整${LABEL}请在输入内容中包含被测地址（http/https 链接），或选择单个阶段执行`)
       submitting.value = false
       return
     }
@@ -231,8 +229,7 @@ async function run() {
           ? `${ICON} ${LABEL}工作流已启动（${STAGES.length}阶段自动串联）\n${STAGES.join(' → ')}`
           : `${ICON} ${LABEL}·第${(e.stageIdx as number) + 1}步「${STAGES[e.stageIdx as number]}」已提交，请等待结果返回...`
       )
-      target.value = ''
-      description.value = ''
+      input.value = ''
       files.value = []
     }
   } catch (err: any) {
@@ -323,25 +320,19 @@ async function run() {
                     <span class="toolbar-note">补充材料（可选，Word 文档将自动解析正文）</span>
                   </div>
                   <el-input
-                    v-model="target"
-                    class="target-input"
-                    placeholder="被测目标地址 https://example.com（完整工作流必填；单阶段可留空或上传文档）"
-                    clearable
-                  />
-                  <el-input
-                    v-model="description"
+                    v-model="input"
                     type="textarea"
-                    :rows="4"
+                    :rows="5"
                     resize="none"
-                    placeholder="描述测试需求，例如：对订单接口做 500 并发压力测试，关注响应时间与错误率（Enter 执行，Shift+Enter 换行）"
+                    placeholder="描述测试需求（被测地址直接写在内容中，如：对 https://api.example.com/orders 做 500 并发压力测试，关注响应时间与错误率。完整工作流必须包含 URL；单阶段可留空或上传文档）（Enter 执行，Shift+Enter 换行）"
                     @keydown.enter.exact.prevent="run"
-                    @keydown.shift.enter.prevent="description += '\n'"
+                    @keydown.shift.enter.prevent="input += '\n'"
                   />
                   <div class="input-actions">
                     <el-button
                       type="primary"
                       :loading="submitting"
-                      :disabled="!target.trim() && !description.trim() && files.length === 0"
+                      :disabled="!input.trim() && files.length === 0"
                       @click="run"
                     >
                       <el-icon v-if="!submitting"><Promotion /></el-icon>
@@ -359,7 +350,7 @@ async function run() {
 
             <div v-else class="de-empty-inline">
               <div class="de-empty-icon">{{ ICON }}</div>
-              <p>请选择执行方式，然后填写目标地址与任务描述</p>
+              <p>请选择执行方式，然后在输入框描述测试需求</p>
             </div>
           </el-form>
         </el-card>
@@ -555,7 +546,6 @@ async function run() {
   font-size: 11.5px;
   color: var(--el-text-color-placeholder, #a8abb2);
 }
-.target-input { margin-bottom: 8px; }
 .input-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 .input-hint {
   display: flex;
