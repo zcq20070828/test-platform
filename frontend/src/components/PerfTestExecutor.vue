@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Monitor } from '@element-plus/icons-vue'
+import { Monitor, Document, Promotion, InfoFilled, CircleClose } from '@element-plus/icons-vue'
 import { useMainStore } from '@/stores/main'
 import { performanceTestApi, request } from '@/api'
 import DashboardChatPanel from '@/components/DashboardChatPanel.vue'
@@ -148,18 +148,54 @@ async function readAttachmentContent(file: AttachmentFile): Promise<string> {
   return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB)]`
 }
 
-async function onFileChange(_file: any, fileList: any) {
-  files.value = []
-  for (const uf of fileList || []) {
-    const raw = uf.raw as File
-    if (!raw) continue
-    const dataUrl = await new Promise<string>((resolve) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result as string)
-      reader.readAsDataURL(raw)
-    })
+const fileInput = ref<HTMLInputElement | null>(null)
+const isDragOver = ref(false)
+const MAX_FILE_SIZE = 10 * 1024 * 1024
+
+function checkFileSize(file: File): boolean {
+  if (file.size > MAX_FILE_SIZE) {
+    ElMessage.error(`文件 ${file.name} 超过 10MB 限制，已跳过`)
+    return false
+  }
+  return true
+}
+
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.readAsDataURL(file)
+  })
+}
+
+async function addFiles(list: FileList | File[]) {
+  for (const raw of Array.from(list)) {
+    if (!checkFileSize(raw)) continue
+    const dataUrl = await readAsDataUrl(raw)
     files.value.push({ name: raw.name, size: raw.size, type: raw.type, dataUrl })
   }
+}
+
+function handleFileSelect() {
+  fileInput.value?.click()
+}
+
+function handleFileChange(e: Event) {
+  const list = (e.target as HTMLInputElement).files
+  if (list) addFiles(list)
+  ;(e.target as HTMLInputElement).value = ''
+}
+
+function handleDragOver() { isDragOver.value = true }
+function handleDragLeave() { isDragOver.value = false }
+
+function handleDrop(e: DragEvent) {
+  isDragOver.value = false
+  if (e.dataTransfer?.files) addFiles(e.dataTransfer.files)
+}
+
+function removeAttachment(index: number) {
+  files.value.splice(index, 1)
 }
 
 async function run() {
@@ -249,50 +285,75 @@ async function run() {
             </el-form-item>
 
             <template v-if="selected">
-              <el-form-item label="被测目标地址 (URL)">
-                <el-input
-                  v-model="target"
-                  placeholder="https://example.com  （完整工作流必填；单阶段可留空或上传文档）"
-                  clearable
-                />
-              </el-form-item>
-              <el-form-item label="任务描述">
-                <el-input
-                  v-model="description"
-                  type="textarea"
-                  :rows="4"
-                  placeholder="描述测试需求，例如：对订单接口做 500 并发压力测试，关注响应时间与错误率"
-                />
-              </el-form-item>
-              <el-form-item class="upload-item">
-                <template #label>
-                  <span class="label-with-note">补充材料 <em>（可选，Word 文档将自动解析正文）</em></span>
-                </template>
-                <el-upload
-                  class="upload-zone"
-                  drag
-                  :auto-upload="false"
-                  :on-change="onFileChange"
-                  multiple
-                  :show-file-list="true"
-                >
-                  <div class="upload-zone-inner">
-                    <div class="upload-icon">📄</div>
-                    <div class="upload-main">点击或拖拽文件到此处上传</div>
-                    <div class="upload-sub">支持 PRD / 技术方案（docx、md、txt、json 等），单文件 ≤ 10MB</div>
+              <div class="input-section">
+                <!-- 附件预览条（与分步测试一致） -->
+                <div v-if="files.length > 0" class="attachments-preview">
+                  <div v-for="(file, index) in files" :key="file.name + index" class="attachment-item">
+                    <img
+                      v-if="file.type?.startsWith('image/') && file.dataUrl"
+                      :src="file.dataUrl"
+                      class="attachment-image"
+                    />
+                    <div v-else class="attachment-file">
+                      <el-icon><Document /></el-icon>
+                      <div class="file-info">
+                        <span class="file-name">{{ file.name }}</span>
+                        <span class="file-size">{{ (file.size / 1024).toFixed(1) }}KB</span>
+                      </div>
+                    </div>
+                    <el-button class="remove-attachment" text size="small" @click="removeAttachment(index)">
+                      <el-icon><CircleClose /></el-icon>
+                    </el-button>
                   </div>
-                </el-upload>
-              </el-form-item>
-              <div class="de-actions">
-                <el-button
-                  type="primary"
-                  size="large"
-                  class="exec-btn"
-                  :loading="submitting"
-                  @click="run"
+                </div>
+
+                <!-- 聊天式输入框（对齐分步测试 DashboardChatPanel 输入区） -->
+                <div
+                  class="input-box"
+                  :class="{ 'drag-over': isDragOver }"
+                  @dragover.prevent="handleDragOver"
+                  @dragleave.prevent="handleDragLeave"
+                  @drop.prevent="handleDrop"
                 >
-                  {{ selected.isFull ? '🚀 执行完整工作流' : `▶  执行第 ${(selected.stageIdx as number) + 1} 阶段「${STAGES[selected.stageIdx as number]}」` }}
-                </el-button>
+                  <div class="input-toolbar">
+                    <el-button text title="上传补充材料" @click="handleFileSelect">
+                      <el-icon><Document /></el-icon>
+                    </el-button>
+                    <input ref="fileInput" type="file" multiple style="display: none" @change="handleFileChange" />
+                    <span class="toolbar-note">补充材料（可选，Word 文档将自动解析正文）</span>
+                  </div>
+                  <el-input
+                    v-model="target"
+                    class="target-input"
+                    placeholder="被测目标地址 https://example.com（完整工作流必填；单阶段可留空或上传文档）"
+                    clearable
+                  />
+                  <el-input
+                    v-model="description"
+                    type="textarea"
+                    :rows="4"
+                    resize="none"
+                    placeholder="描述测试需求，例如：对订单接口做 500 并发压力测试，关注响应时间与错误率（Enter 执行，Shift+Enter 换行）"
+                    @keydown.enter.exact.prevent="run"
+                    @keydown.shift.enter.prevent="description += '\n'"
+                  />
+                  <div class="input-actions">
+                    <el-button
+                      type="primary"
+                      :loading="submitting"
+                      :disabled="!target.trim() && !description.trim() && files.length === 0"
+                      @click="run"
+                    >
+                      <el-icon v-if="!submitting"><Promotion /></el-icon>
+                      {{ selected.isFull ? '执行完整工作流' : `执行第 ${(selected.stageIdx as number) + 1} 阶段「${STAGES[selected.stageIdx as number]}」` }}
+                    </el-button>
+                  </div>
+                </div>
+
+                <div class="input-hint">
+                  <el-icon><InfoFilled /></el-icon>
+                  <span>支持拖拽文件到输入框上传（docx、md、txt、json 等，单文件 ≤ 10MB）</span>
+                </div>
               </div>
             </template>
 
@@ -462,73 +523,47 @@ async function run() {
   flex-shrink: 0;
 }
 
-/* ── 上传区 ───────────────────────────────── */
-.label-with-note em {
-  font-style: normal;
-  font-weight: 400;
-  font-size: 12px;
-  color: var(--text-secondary, #909399);
+/* ── 任务输入区（对齐分步测试 DashboardChatPanel 输入样式）── */
+.attachments-preview { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.attachment-item { position: relative; border: 1px solid var(--el-border-color, #dcdfe6); border-radius: 6px; padding: 4px; max-width: 180px; }
+.attachment-image { max-width: 100%; max-height: 80px; border-radius: 4px; display: block; }
+.attachment-file { display: flex; align-items: center; gap: 6px; padding: 6px 8px; font-size: 12px; min-width: 120px; }
+.attachment-file .file-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.attachment-file .file-name { font-size: 12px; color: var(--el-text-color-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+.attachment-file .file-size { font-size: 11px; color: var(--el-text-color-secondary); }
+.remove-attachment { position: absolute; top: -8px; right: -8px; padding: 0; margin: 0; }
+
+.input-box {
+  border: 2px dashed transparent;
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--el-bg-color-page, #f5f7fa);
+  transition: all 0.3s;
 }
-.upload-item :deep(.el-upload),
-.upload-item :deep(.el-upload-dragger) {
-  width: 100%;
+.input-box.drag-over {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
 }
-.upload-item :deep(.el-upload-dragger) {
-  padding: 18px 16px;
-  border-radius: 10px;
-  border: 1.5px dashed var(--el-border-color, #dcdfe6);
-  background: #fafbfd;
-  transition: border-color 0.2s, background 0.2s;
-}
-.upload-item :deep(.el-upload-dragger:hover),
-.upload-item :deep(.el-upload-dragger.is-dragover) {
-  border-color: var(--primary, #007aff);
-  background: rgba(0, 122, 255, 0.04);
-}
-.upload-zone-inner {
+.input-toolbar {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.input-toolbar .el-button { padding: 4px 6px; }
+.toolbar-note {
+  font-size: 11.5px;
+  color: var(--el-text-color-placeholder, #a8abb2);
+}
+.target-input { margin-bottom: 8px; }
+.input-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.input-hint {
+  display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 0;
-}
-.upload-icon {
-  font-size: 26px;
-  line-height: 1;
-}
-.upload-main {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.upload-sub {
-  font-size: 11.5px;
-  color: var(--text-secondary, #a8abb2);
-}
-
-/* ── 执行按钮 ─────────────────────────────── */
-.de-actions {
-  display: flex;
-  margin-top: 18px;
-}
-.exec-btn {
-  width: 100%;
-  height: 44px;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  border-radius: 10px;
-  border: none;
-  background: linear-gradient(135deg, #007aff 0%, #00a6ff 100%);
-  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.25);
-  transition: transform 0.15s, box-shadow 0.15s;
-}
-.exec-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(0, 122, 255, 0.32);
-}
-.exec-btn:active {
-  transform: translateY(0);
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--el-text-color-placeholder, #c0c4cc);
 }
 
 /* ── 左栏空态 ─────────────────────────────── */
