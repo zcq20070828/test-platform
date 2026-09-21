@@ -10,34 +10,65 @@ import type { AttachmentFile } from '@/types'
 // 🔒 兼容性测试「测试执行」tab —— 两栏格局（左：测试范围+用户输入；右：实时输出）
 // 结构与「性能/安全测试」的 DomainTestExecutor 对齐：下拉选择测试范围、聊天式输入区、右栏「处理过程信息」。
 // 执行通道复用分步测试的通用 Agent 通道 store.createTask(agentId='compatibility-coordinator')，零后端改动。
+// 同一组件在 Web / 移动APP / PC客户端 三个 tab 中复用，由 props 决定平台集合、图标与全平台范围。
 
 const AGENT_ID = 'compatibility-coordinator'
-const ICON = '🌐'
 const LABEL = '兼容性测试'
 
-// 测试范围（对应 coordinator 可识别的平台；Web 已实现，其他平台待后端扩展）
-const PLATFORMS = ['Web', 'Android', 'iOS', 'HarmonyOS', 'Windows', 'macOS']
+// props：不传时保持原全平台行为（Web tab 默认值）
+const props = withDefaults(defineProps<{
+  platforms?: string[]   // 下拉展示的单平台列表（底层 platform 值）
+  icon?: string          // tab 主题图标（选项名前缀）
+  fullLabel?: string     // 全平台选项显示名
+  fullDesc?: string      // 全平台选项描述
+  fullScope?: string     // 全平台选项注入的【测试范围：...】值（括号内为逗号分隔平台，协调器直传 invoker）
+  storageKey?: string    // localStorage 任务历史键后缀，避免三个 tab 任务回显串台
+}>(), {
+  platforms: () => ['Web', 'Android', 'iOS', 'HarmonyOS', 'Windows', 'macOS'],
+  icon: '🌐',
+  fullLabel: '全平台完整流程',
+  fullDesc: '自动识别 Web/安卓/iOS/鸿蒙/Windows/Mac 并串联测试',
+  fullScope: '全平台完整流程(web,android,ios,harmony,windows,mac)',
+  storageKey: '',
+})
+
+// 测试范围（对应 coordinator 可识别的平台）
+// 显示名与底层 platform 值分离：底层仍用 'Web' 触发浏览器矩阵，UI 显示“浏览器”更直观
+const PLATFORM_LABELS: Record<string, string> = {
+  Web: '浏览器',
+  Android: 'Android',
+  iOS: 'iOS',
+  HarmonyOS: '鸿蒙',
+  Windows: 'Windows',
+  macOS: 'macOS',
+}
 
 interface Entry {
   key: string
   name: string
   desc: string
   platform: string | undefined
+  label: string
   isFull: boolean
 }
 const entries = computed<Entry[]>(() => {
-  const list: Entry[] = PLATFORMS.map((p) => ({
-    key: `plat-${p}`,
-    name: `${ICON} ${LABEL}·${p}`,
-    desc: `针对 ${p} 平台执行兼容性测试（识别分辨率、交互、渲染差异）`,
-    platform: p,
-    isFull: false,
-  }))
+  const list: Entry[] = props.platforms.map((p) => {
+    const label = PLATFORM_LABELS[p] || p
+    return {
+      key: `plat-${p}`,
+      name: `${props.icon} ${LABEL}·${label}`,
+      desc: `针对 ${label} 平台执行兼容性测试（识别分辨率、交互、渲染差异）`,
+      platform: p,
+      label,
+      isFull: false,
+    }
+  })
   list.push({
     key: 'full',
-    name: `${ICON} ${LABEL}·全平台完整流程`,
-    desc: '自动识别 Web/安卓/iOS/鸿蒙/Windows/Mac 并串联测试',
+    name: `${props.icon} ${LABEL}·${props.fullLabel}`,
+    desc: props.fullDesc,
     platform: undefined,
+    label: props.fullLabel,
     isFull: true,
   })
   return list
@@ -52,7 +83,8 @@ const submitting = ref(false)
 
 const mainStore = useMainStore()
 const currentTaskId = ref('')
-const TASK_HISTORY_KEY = `compat_executor_current_task`
+// 每个 tab 实例独立保存任务历史，避免 Web/移动APP/PC 三个 tab 回显互相串台
+const TASK_HISTORY_KEY = computed(() => `compat_executor_current_task${props.storageKey ? '_' + props.storageKey : ''}`)
 
 // 从历史消息中找出最近一次兼容性任务 ID（按 taskId 或 agentId 兜底）
 function findLatestTaskId(): string {
@@ -66,7 +98,7 @@ function findLatestTaskId(): string {
 
 // 组件挂载时恢复上次任务，使实时面板回显历史信息
 onMounted(() => {
-  const saved = localStorage.getItem(TASK_HISTORY_KEY) || ''
+  const saved = localStorage.getItem(TASK_HISTORY_KEY.value) || ''
   const live = findLatestTaskId()
   const tid = live || saved
   if (tid) currentTaskId.value = tid
@@ -98,7 +130,7 @@ const currentAgent = computed(() =>
 
 function onTaskCreated(taskId: string) {
   currentTaskId.value = taskId
-  localStorage.setItem(TASK_HISTORY_KEY, taskId)
+  localStorage.setItem(TASK_HISTORY_KEY.value, taskId)
   ElMessage.info({ message: '⏳ 已开始执行，实时处理过程（含交付物）显示在下方面板', duration: 6000 })
 }
 
@@ -211,8 +243,8 @@ async function run() {
   }
   submitting.value = true
   try {
-    // 测试范围作为前缀注入需求（协调器会据此识别平台）
-    const platformHint = e.platform ? `【测试范围：${e.platform}】` : '【测试范围：全平台】'
+    // 测试范围作为前缀注入需求（协调器会据此识别平台；全平台选项带逗号分隔平台列表，协调器直传 invoker 多平台串跑）
+    const platformHint = e.isFull ? `【测试范围：${props.fullScope}】` : `【测试范围：${e.platform}】`
     let desc = `${platformHint}\n${text}`
     const filesToSubmit: { name: string; content: string }[] = []
     if (files.value.length) {
@@ -230,7 +262,7 @@ async function run() {
     const task: any = await mainStore.createTask(AGENT_ID, desc, filesToSubmit, { source: 'step', type: AGENT_ID })
     if (task && task.id) {
       onTaskCreated(task.id)
-      ElMessage.success(`${ICON} ${LABEL}任务已提交（${e.platform ? e.platform : '全平台'}），请等待结果返回...`)
+      ElMessage.success(`${props.icon} ${LABEL}任务已提交（${e.isFull ? props.fullLabel : e.label}），请等待结果返回...`)
       input.value = ''
       files.value = []
     } else if (task === null) {
@@ -256,9 +288,9 @@ async function run() {
         <el-card class="config-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span class="header-icon">{{ ICON }}</span>
+              <span class="header-icon">{{ icon }}</span>
               <div class="header-text">
-                <div class="header-title">{{ LABEL }}测试执行配置</div>
+                <div class="header-title">{{ LABEL }}执行配置</div>
                 <div class="header-sub">选择测试范围、填写需求，可上传技术方案文档作为分析输入</div>
               </div>
             </div>
@@ -276,14 +308,14 @@ async function run() {
                   <div class="de-opt">
                     <span class="de-opt-name">{{ e.name }}</span>
                     <span class="de-opt-tag">
-                      {{ e.isFull ? '全平台' : e.platform }}
+                      {{ e.isFull ? '全平台' : e.label }}
                     </span>
                   </div>
                 </el-option>
               </el-select>
               <div v-if="selected" class="stage-hint">
                 <span class="stage-hint-badge">
-                  {{ selected.isFull ? '全平台' : selected.platform }}
+                  {{ selected.isFull ? '全平台' : selected.label }}
                 </span>
                 <span class="stage-hint-text">{{ selected.desc }}</span>
               </div>
@@ -344,7 +376,7 @@ async function run() {
                       @click="run"
                     >
                       <el-icon v-if="!submitting"><Promotion /></el-icon>
-                      {{ selected.isFull ? `执行${LABEL}全平台流程` : `执行${selected.platform}兼容性测试` }}
+                      {{ selected.isFull ? `执行${LABEL}全平台流程` : `执行${selected.label}兼容性测试` }}
                     </el-button>
                   </div>
                 </div>
@@ -357,7 +389,7 @@ async function run() {
             </template>
 
             <div v-else class="de-empty-inline">
-              <div class="de-empty-icon">{{ ICON }}</div>
+              <div class="de-empty-icon">{{ icon }}</div>
               <p>请选择测试范围，然后在输入框描述测试需求</p>
             </div>
           </el-form>

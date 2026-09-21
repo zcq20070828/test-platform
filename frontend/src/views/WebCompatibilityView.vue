@@ -12,8 +12,28 @@
     </div>
 
     <el-tabs v-model="activeTab">
-      <el-tab-pane label="🚀 测试执行" name="execute">
-        <CompatTestExecutor />
+      <el-tab-pane label="🚀 测试执行-Web" name="execute">
+        <CompatTestExecutor storage-key="web" />
+      </el-tab-pane>
+      <el-tab-pane label="📱 测试执行-移动APP" name="execute-mobile" lazy>
+        <CompatTestExecutor
+          storage-key="mobile"
+          icon="📱"
+          :platforms="['Android', 'iOS', 'HarmonyOS']"
+          full-label="全平台完整流程"
+          full-desc="自动串联 Android/iOS/鸿蒙 三大移动平台兼容测试（原生 App 包出设计，网页/H5 URL 设备仿真实测）"
+          full-scope="移动APP全平台(android,ios,harmony)"
+        />
+      </el-tab-pane>
+      <el-tab-pane label="💻 测试执行-PC客户端" name="execute-pc" lazy>
+        <CompatTestExecutor
+          storage-key="pc"
+          icon="💻"
+          :platforms="['Windows', 'macOS']"
+          full-label="全平台完整流程"
+          full-desc="自动串联 Windows/macOS 两大桌面平台兼容测试（客户端出设计，网页 URL 设备仿真实测）"
+          full-scope="PC全平台(windows,mac)"
+        />
       </el-tab-pane>
       <el-tab-pane label="📋 兼容性报告" name="reports">
     <!-- 统计卡片 -->

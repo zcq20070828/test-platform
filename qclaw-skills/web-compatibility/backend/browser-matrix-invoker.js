@@ -451,7 +451,8 @@ function buildDesign(platform) {
 }
 
 // ─── 统一入口 ──────────────────────────────────────────────────────────────
-async function executeBrowserMatrix(opts) {
+// 单平台执行（原统一入口逻辑）
+async function runSinglePlatform(opts) {
   opts = opts || {};
   const { url, platform } = opts;
   const key = String(platform || '').toLowerCase();
@@ -477,6 +478,45 @@ async function executeBrowserMatrix(opts) {
     return { platform: 'unknown', executionMode: 'unavailable', error: `未知平台 "${platform}" 且缺少 url`, summary: { total: 0, passed: 0, failed: 0, errored: 1, score: 0 }, results: [] };
   }
   return runWebMatrix(opts);
+}
+
+// 统一入口：支持逗号分隔多平台（如 "android,ios,harmony"）→ 逐平台串行执行后按平台分节汇总
+async function executeBrowserMatrix(opts) {
+  opts = opts || {};
+  const rawPlatform = String(opts.platform || '').trim();
+  const keys = rawPlatform.split(',').map((s) => s.trim()).filter(Boolean);
+
+  if (keys.length > 1) {
+    const sections = [];
+    const results = [];
+    const modes = new Set();
+    let total = 0, passed = 0, failed = 0, errored = 0;
+    const scores = [];
+    for (const k of keys) {
+      const one = await runSinglePlatform({ ...opts, platform: k });
+      sections.push(one);
+      results.push(...(one.results || []));
+      const s = one.summary || {};
+      total += s.total || 0;
+      passed += s.passed || 0;
+      failed += s.failed || 0;
+      errored += s.errored || 0;
+      if (typeof s.score === 'number') scores.push(s.score);
+      modes.add(one.executionMode || 'unknown');
+    }
+    const avg = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
+    return {
+      platform: keys.join(','),
+      executionMode: [...modes].join('+'),
+      multiPlatform: true,
+      note: `多平台组合执行（${keys.join(' / ')}），以下按平台分节汇总；各平台执行模式以分节内标注为准。`,
+      sections,
+      summary: { total, passed, failed, errored, score: avg },
+      results,
+    };
+  }
+
+  return runSinglePlatform(opts);
 }
 
 module.exports = {
