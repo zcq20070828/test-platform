@@ -3,7 +3,7 @@
     <!-- 头部 -->
     <div class="view-header">
       <div>
-        <h2 class="view-title">🌐 Web 兼容性测试</h2>
+        <h2 class="view-title">🌐 兼容性测试</h2>
         <p class="view-subtitle">多浏览器 × 多分辨率 × 控制台监控</p>
       </div>
       <div class="header-actions">
