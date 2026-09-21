@@ -70,7 +70,7 @@ const menuItems = computed(() => {
     { path: '/performance-test', icon: 'DataLine', title: '性能测试' },
     { path: '/evaluation', icon: 'DataAnalysis', title: '智能评估' },
     { path: '/security', icon: 'Lock', title: '安全测试' },
-    { path: '/web-compatibility', icon: 'Monitor', title: '兼容性' }
+    { path: '/web-compatibility', icon: 'Monitor', title: '兼容性测试' }
   ]
   
   // 仅管理员可见的菜单项
