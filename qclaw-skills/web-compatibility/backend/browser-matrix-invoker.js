@@ -9,11 +9,14 @@
  *    采集控制台错误、页面异常、失败请求、CSS/JS 特性支持情况，输出可量化矩阵报告。
  *    - 优先使用本地已安装的 Chromium（/Applications/GPT Chrome.app/.../GptBrowser），避免联网下载浏览器二进制。
  *    - Firefox / WebKit 需要各自浏览器二进制；本 dev 环境若无对应二进制，相关单元格如实标注 unavailable。
- *  - 移动端（android / ios / harmony）与 PC 端（windows / mac）：当前 dev 环境无真机/模拟器/云设备
- *    农场等基础设施，无法"真正驱动设备执行"。本执行器对这类平台产出【平台专属兼容性测试设计】
- *    （基于九维穷举模型），并明确标注 executionMode='design'，供后续接入设备农场后切换为真实执行。
+ *  - 移动端（android / ios / harmony）与 PC 端（windows / mac）：
+ *    - 目标为【网页/H5/WebView 页面】（提供 http(s) URL）→ 真实执行：Chromium 设备仿真
+ *      （真机型视口 + UA + 触控 + DPR + deviceScaleFactor）驱动页面，采集错误与特性。
+ *      仿真保真度按平台如实标注（android 高 / windows·mac 高 / ios 中 / harmony 低-中）。
+ *    - 目标为【原生 App 包】（无 URL）→ 产出【平台专属兼容性测试设计】（九维穷举模型），
+ *      标注 executionMode='design'，供后续接入真机/设备农场后切换为完全真实执行。
  *
- * 设计原则：require('playwright-core') 仅在 Web 分支内懒加载，移动/PC 设计路径不依赖 playwright，
+ * 设计原则：require('playwright-core') 仅在真实执行分支内懒加载，设计路径不依赖 playwright，
  * 因此即便浏览器不可用，设计生成也能正常运行。
  */
 
@@ -59,6 +62,7 @@ const FEATURE_PROBES = [
   { key: 'webp', probe: "document.createElement('canvas').toDataURL('image/webp').indexOf('data:image/webp')===0" },
   { key: 'fetch', probe: "typeof window.fetch==='function'" },
   { key: 'intersectionObserver', probe: "typeof window.IntersectionObserver==='function'" },
+  { key: 'touchSupport', probe: "typeof window.ontouchstart!=='undefined' || (navigator.maxTouchPoints||0)>0" },
   { key: 'webgl', probe: "(function(){try{var c=document.createElement('canvas');return !!(c.getContext('webgl')||c.getContext('experimental-webgl'));}catch(e){return false;}})()" },
   { key: 'es2020', probe: "(function(){try{eval('const a={a:1};const {a}=a;return a===1;');return true;}catch(e){return false;}})()" },
   { key: 'prefersReducedMotion', probe: "typeof window.matchMedia==='function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches!==undefined" },
@@ -81,46 +85,27 @@ function resolveLaunchOptions(browserName) {
   return { headless: true, args: ['--no-sandbox'] };
 }
 
-// ─── Web 真实浏览器矩阵执行 ────────────────────────────────────────────────
-async function runWebMatrix({ url, matrix, timeout = 30000 }) {
-  // 懒加载 playwright（避免移动/PC 设计路径也触碰该依赖）
-  // 注意：执行器位于 qclaw-skills/.../backend，Node 默认向上找祖先 node_modules 找不到
-  // 兄弟目录 backend/node_modules/playwright-core，必须用 loadPlaywright() 显式解析。
-  let playwright;
-  try {
-    playwright = loadPlaywright();
-  } catch (e) {
-    return {
-      platform: 'web', executionMode: 'unavailable',
-      error: `无法加载 playwright/playwright-core：${e.message}`,
-      summary: { total: 0, passed: 0, failed: 0, errored: 1, score: 0 }, results: [],
-    };
-  }
-
-  const localChromium = hasLocalChromium();
-  // 默认浏览器列表：本环境仅本地 Chromium 可用时，默认只跑 chromium（保证默认运行真实可跑）
-  let browsers = (matrix && Array.isArray(matrix.browsers) && matrix.browsers.length)
-    ? matrix.browsers.filter(b => WEB_BROWSERS.includes(b))
-    : (localChromium ? ['chromium'] : WEB_BROWSERS);
-  if (!browsers.length) browsers = localChromium ? ['chromium'] : WEB_BROWSERS;
-
-  const viewports = (matrix && Array.isArray(matrix.viewports) && matrix.viewports.length)
-    ? matrix.viewports
-    : DEFAULT_VIEWPORTS;
-
+// ─── 通用矩阵执行内核（Web 视口矩阵 与 设备仿真矩阵 共用）────────────────
+async function runMatrixCells({ url, playwright, cells, timeout = 30000, platform, executionMode, browserEngine, extraMeta }) {
   const results = [];
   let total = 0, passed = 0, failed = 0, errored = 0, unavailable = 0;
 
-  for (const browserName of browsers) {
-    const launchOpts = resolveLaunchOptions(browserName);
+  // 按浏览器分组，每组只启动一次浏览器实例
+  const byBrowser = new Map();
+  for (const c of cells) {
+    if (!byBrowser.has(c.browser)) byBrowser.set(c.browser, []);
+    byBrowser.get(c.browser).push(c);
+  }
+
+  for (const [browserName, group] of byBrowser) {
     let browser;
     try {
-      browser = await playwright[browserName].launch(launchOpts);
+      browser = await playwright[browserName].launch(resolveLaunchOptions(browserName));
     } catch (e) {
-      for (const vp of viewports) {
+      for (const spec of group) {
         total++; unavailable++;
         results.push({
-          browser: browserName, viewport: vp.name, status: 'unavailable',
+          browser: spec.name, viewport: `${spec.width}×${spec.height}`, status: 'unavailable',
           error: `浏览器二进制不可用: ${e.message.split('\n')[0]}`,
           consoleErrors: [], pageErrors: [], failedRequests: [], features: {},
         });
@@ -128,16 +113,25 @@ async function runWebMatrix({ url, matrix, timeout = 30000 }) {
       continue;
     }
 
-    for (const vp of viewports) {
+    for (const spec of group) {
       total++;
       const cell = {
-        browser: browserName, viewport: vp.name, width: vp.width, height: vp.height,
+        browser: spec.name, viewport: `${spec.width}×${spec.height}`,
+        width: spec.width, height: spec.height,
+        userAgent: spec.ua || null,
         status: 'passed', consoleErrors: [], pageErrors: [], failedRequests: [], features: {},
         navigationMs: null,
       };
       let page;
       try {
-        const context = await browser.newContext({ viewport: { width: vp.width, height: vp.height } });
+        const ctxOpts = {
+          viewport: { width: spec.width, height: spec.height },
+          deviceScaleFactor: spec.dpr || 1,
+          isMobile: !!spec.isMobile,
+          hasTouch: !!spec.hasTouch,
+        };
+        if (spec.ua) ctxOpts.userAgent = spec.ua;
+        const context = await browser.newContext(ctxOpts);
         page = await context.newPage();
 
         const consoleErrors = [];
@@ -194,16 +188,150 @@ async function runWebMatrix({ url, matrix, timeout = 30000 }) {
 
   const score = total ? Math.round((passed / total) * 100) : 0;
   return {
-    platform: 'web',
-    executionMode: 'real',
-    browserEngine: localChromium ? 'local-chromium' : 'playwright-bundled',
+    platform,
+    executionMode,
+    browserEngine,
     url,
+    ...(extraMeta || {}),
     summary: { total, passed, failed, errored, unavailable, score },
     results,
   };
 }
 
-// ─── 移动端 / PC 端 兼容性测试设计生成（九维穷举模型）─────────────────────
+// ─── Web 真实浏览器矩阵执行 ────────────────────────────────────────────────
+async function runWebMatrix({ url, matrix, timeout = 30000 }) {
+  // 懒加载 playwright（避免设计路径也触碰该依赖）
+  // 注意：执行器位于 qclaw-skills/.../backend，Node 默认向上找祖先 node_modules 找不到
+  // 兄弟目录 backend/node_modules/playwright-core，必须用 loadPlaywright() 显式解析。
+  let playwright;
+  try {
+    playwright = loadPlaywright();
+  } catch (e) {
+    return {
+      platform: 'web', executionMode: 'unavailable',
+      error: `无法加载 playwright/playwright-core：${e.message}`,
+      summary: { total: 0, passed: 0, failed: 0, errored: 1, score: 0 }, results: [],
+    };
+  }
+
+  const localChromium = hasLocalChromium();
+  // 默认浏览器列表：本环境仅本地 Chromium 可用时，默认只跑 chromium（保证默认运行真实可跑）
+  let browsers = (matrix && Array.isArray(matrix.browsers) && matrix.browsers.length)
+    ? matrix.browsers.filter(b => WEB_BROWSERS.includes(b))
+    : (localChromium ? ['chromium'] : WEB_BROWSERS);
+  if (!browsers.length) browsers = localChromium ? ['chromium'] : WEB_BROWSERS;
+
+  const viewports = (matrix && Array.isArray(matrix.viewports) && matrix.viewports.length)
+    ? matrix.viewports
+    : DEFAULT_VIEWPORTS;
+
+  const cells = [];
+  for (const b of browsers) {
+    for (const vp of viewports) {
+      cells.push({ browser: b, name: `${b} · ${vp.name}`, width: vp.width, height: vp.height });
+    }
+  }
+
+  return runMatrixCells({
+    url, playwright, cells, timeout,
+    platform: 'web', executionMode: 'real',
+    browserEngine: localChromium ? 'local-chromium' : 'playwright-bundled',
+  });
+}
+
+// ─── 移动端 / PC 端 设备仿真真实执行 ──────────────────────────────────────
+// 每个平台的设备画像：真机型视口 + 真实 UA + 触控 + DPR。目标为网页/H5/WebView 页面。
+const DEVICE_PROFILES = {
+  android: [
+    { name: '安卓 · Pixel 8 旗舰 (Android 14 / Chrome 128)', width: 412, height: 915, dpr: 2.625, isMobile: true, hasTouch: true,
+      ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36' },
+    { name: '安卓 · Redmi Note 12 中端机 (Android 13 / Chrome 120)', width: 393, height: 873, dpr: 2.75, isMobile: true, hasTouch: true,
+      ua: 'Mozilla/5.0 (Linux; Android 13; 2201117TY) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36' },
+    { name: '安卓 · MatePad 平板 (Android 12 / Chrome 120)', width: 800, height: 1280, dpr: 2, isMobile: true, hasTouch: true,
+      ua: 'Mozilla/5.0 (Linux; Android 12; MatePad 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+  ],
+  ios: [
+    { name: 'iOS · iPhone 15 Pro (iOS 18 / Safari)', width: 393, height: 852, dpr: 3, isMobile: true, hasTouch: true,
+      ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' },
+    { name: 'iOS · iPhone SE 3 小屏 (iOS 16 / Safari)', width: 375, height: 667, dpr: 2, isMobile: true, hasTouch: true,
+      ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1' },
+    { name: 'iOS · iPad Air (iPadOS 17 / Safari)', width: 820, height: 1180, dpr: 2, isMobile: true, hasTouch: true,
+      ua: 'Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1' },
+  ],
+  harmony: [
+    { name: '鸿蒙 · Mate 60 (HarmonyOS NEXT 5.0 / ArkWeb)', width: 400, height: 880, dpr: 3, isMobile: true, hasTouch: true,
+      ua: 'Mozilla/5.0 (Phone; OpenHarmony 5.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36 ArkWeb/5.0.0' },
+    { name: '鸿蒙 · nova 12 (HarmonyOS 4.2 / ArkWeb)', width: 384, height: 840, dpr: 3, isMobile: true, hasTouch: true,
+      ua: 'Mozilla/5.0 (Phone; OpenHarmony 4.2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36 ArkWeb/4.2.0' },
+    { name: '鸿蒙 · MatePad Pro 平板 (HarmonyOS 4 / ArkWeb)', width: 800, height: 1280, dpr: 2.5, isMobile: true, hasTouch: true,
+      ua: 'Mozilla/5.0 (Tablet; OpenHarmony 4.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 ArkWeb/4.0.0' },
+  ],
+  windows: [
+    { name: 'Windows 11 · Chrome 128 (1080p 台式机)', width: 1920, height: 1080, dpr: 1,
+      ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36' },
+    { name: 'Windows 10 · Edge 128 (1366×768 笔记本)', width: 1366, height: 768, dpr: 1,
+      ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.2743' },
+    { name: 'Windows 11 · 150% DPI 高分屏笔记本', width: 1536, height: 864, dpr: 1.5,
+      ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36' },
+  ],
+  mac: [
+    { name: 'macOS · Chrome 128 (1440×900 MacBook)', width: 1440, height: 900, dpr: 2,
+      ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36' },
+    { name: 'macOS · 5K 外接显示器视口 (2560×1440)', width: 2560, height: 1440, dpr: 2,
+      ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36' },
+    { name: 'macOS · Safari 18 UA (1512×982)', width: 1512, height: 982, dpr: 2,
+      ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15' },
+  ],
+};
+
+// 仿真保真度（如实标注，不夸大）
+const FIDELITY_NOTES = {
+  android: '高：安卓系统 WebView / Chrome 本身即 Chromium 内核，设备仿真（视口/UA/触控/DPR）与真机表现高度一致。',
+  ios: '中：视口/UA/触控/DPR 已按真机型仿真，但渲染引擎为 Chromium 而非真机 WebKit(Safari)；Safari 专属行为（如滚动回弹、日期控件样式）需真机复核。',
+  harmony: '低-中：ArkWeb 基于 Chromium，UA/视口已仿真，但鸿蒙原生渲染与系统级特性无法仿真，需真机复核。',
+  windows: '高：浏览器引擎真实为 Chromium；操作系统环境（UA/高分屏缩放）为仿真，非 Windows 真机，IE 模式等系统级特性需真机复核。',
+  mac: '高：本机即 macOS，Chromium 引擎真实运行；Safari UA 单元仅仿真 UA，Safari 专属行为需另装 Safari 复核。',
+};
+
+async function runDeviceEmulatedMatrix({ url, platformKey, matrix, timeout = 30000 }) {
+  let playwright;
+  try {
+    playwright = loadPlaywright();
+  } catch (e) {
+    return {
+      platform: platformKey, executionMode: 'unavailable',
+      error: `无法加载 playwright/playwright-core：${e.message}`,
+      summary: { total: 0, passed: 0, failed: 0, errored: 1, score: 0 }, results: [],
+    };
+  }
+  if (!hasLocalChromium()) {
+    return {
+      platform: platformKey, executionMode: 'unavailable',
+      error: '本地 Chromium 不可用，无法执行设备仿真矩阵。',
+      summary: { total: 0, passed: 0, failed: 0, errored: 1, score: 0 }, results: [],
+    };
+  }
+
+  const profiles = DEVICE_PROFILES[platformKey] || [];
+  const cells = profiles.map(p => ({
+    browser: 'chromium',
+    name: p.name, width: p.width, height: p.height,
+    dpr: p.dpr, ua: p.ua, isMobile: p.isMobile, hasTouch: p.hasTouch,
+  }));
+
+  return runMatrixCells({
+    url, playwright, cells, timeout,
+    platform: platformKey, executionMode: 'real',
+    browserEngine: 'local-chromium-device-emulated',
+    extraMeta: {
+      executionDetail: 'device-emulated',
+      fidelityNote: FIDELITY_NOTES[platformKey] || null,
+      targetKind: 'web/h5/webview 页面',
+    },
+  });
+}
+
+// ─── 移动端 / PC 端 原生 App 兼容性测试设计生成（九维穷举模型）─────────────
 const PLATFORM_PROFILES = {
   android: {
     label: '安卓 (Android)',
@@ -316,7 +444,7 @@ function buildDesign(platform) {
     platform: p.label,
     platformKey: platform,
     executionMode: 'design',
-    note: '当前 dev 环境无真机/模拟器/云设备农场，本结果为【平台专属兼容性测试设计】(九维穷举模型)，用于指导测试执行；接入设备农场后可切换为真实执行。',
+    note: '目标是原生 App 包（未提供可访问的网页 URL），且当前 dev 环境无真机/模拟器/云设备农场，本结果为【平台专属兼容性测试设计】(九维穷举模型)，用于指导测试执行；接入设备农场后可切换为真实执行。若被测对象是网页/H5/WebView 页面，请提供 http(s) URL，将自动切换为设备仿真实测。',
     summary: { total, passed: 0, failed: 0, errored: 0, score: null, checkpointCount: total },
     results,
   };
@@ -326,6 +454,7 @@ function buildDesign(platform) {
 async function executeBrowserMatrix(opts) {
   opts = opts || {};
   const { url, platform } = opts;
+  const key = String(platform || '').toLowerCase();
 
   if (isWebPlatform(platform)) {
     if (!url) {
@@ -334,8 +463,12 @@ async function executeBrowserMatrix(opts) {
     return runWebMatrix(opts);
   }
 
-  const key = String(platform).toLowerCase();
   if (PLATFORM_PROFILES[key]) {
+    // 提供了 http(s) URL（网页/H5/WebView 页面）→ 设备仿真实测
+    if (url && /^https?:\/\//i.test(url)) {
+      return runDeviceEmulatedMatrix({ ...opts, platformKey: key });
+    }
+    // 原生 App 包或无 URL → 九维设计生成
     return buildDesign(key);
   }
 
@@ -346,4 +479,12 @@ async function executeBrowserMatrix(opts) {
   return runWebMatrix(opts);
 }
 
-module.exports = { executeBrowserMatrix, runWebMatrix, buildDesign, LOCAL_CHROMIUM };
+module.exports = {
+  executeBrowserMatrix,
+  runWebMatrix,
+  runDeviceEmulatedMatrix,
+  buildDesign,
+  DEVICE_PROFILES,
+  FIDELITY_NOTES,
+  LOCAL_CHROMIUM,
+};
