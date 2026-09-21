@@ -12,7 +12,7 @@ const store = useMainStore()
 const router = useRouter()
 // ===== 智能体下拉列表配置 =====
 // 排除:test-master(主控)、ai-quality-reviewer-1/2/3(审核智能体)
-const EXCLUDED_AGENTS = ['test-master', 'ai-quality-reviewer-1', 'ai-quality-reviewer-2', 'ai-quality-reviewer-3', 'security-sentinel', 'performance-tester']
+const EXCLUDED_AGENTS = ['test-master', 'ai-quality-reviewer-1', 'ai-quality-reviewer-2', 'ai-quality-reviewer-3', 'security-sentinel', 'performance-tester', 'test-script-generator', 'compatibility-coordinator']
 
 // 智能体中文名称映射
 const AGENT_NAME_MAP: Record<string, string> = {
@@ -25,7 +25,6 @@ const AGENT_NAME_MAP: Record<string, string> = {
   'test-reporter': '测试报告',
   'data-masking': '数据脱敏',
   'test-scheme-generator': '测试方案生成',
-  'test-script-generator': '测试脚本生成',
   'security-sentinel': '安全测试',
   'performance-tester': '性能测试'
 }
@@ -68,10 +67,6 @@ const AGENT_KEYWORDS: Record<string, { keywords: string[]; description: string }
   'test-scheme-generator': {
     keywords: ['方案', '测试方案', '策略', '计划', '测试策略', '方案设计', '测试计划', '设计', '规划', '架构'],
     description: '设计测试方案、制定测试策略'
-  },
-  'test-script-generator': {
-    keywords: ['脚本', '生成脚本', '脚本生成', '测试脚本', '自动化脚本', '写脚本', '代码生成', 'jest', 'playwright', 'pytest', 'cypress', 'newman'],
-    description: '生成自动化测试脚本、用例转代码'
   },
   'security-sentinel': {
     keywords: ['安全', '漏洞', '扫描', '渗透', 'xss', 'sql', '注入', 'owasp', '安全测试', '安全扫描'],

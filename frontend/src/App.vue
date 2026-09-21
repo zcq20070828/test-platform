@@ -60,11 +60,18 @@ const isCollapse = ref(false)
 // 导航菜单
 const menuItems = computed(() => {
   const items = [
-    { path: '/', icon: 'Odometer', title: '分步测试' },
+    {
+      path: '/functional',
+      icon: 'Menu',
+      title: '功能测试',
+      children: [
+        { path: '/', icon: 'Odometer', title: '分步测试' },
+        { path: '/workflow', icon: 'Connection', title: '测试流水线' }
+      ]
+    },
     { path: '/agents', icon: 'User', title: '智能体' },
     { path: '/knowledge', icon: 'Collection', title: '知识库' },
     { path: '/tasks', icon: 'List', title: '任务' },
-    { path: '/workflow', icon: 'Connection', title: '测试流水线' },
     { path: '/test-runner', icon: 'VideoPlay', title: '自动化测试' },
     { path: '/performance', icon: 'Monitor', title: '性能监控' },
     { path: '/performance-test', icon: 'DataLine', title: '性能测试' },
@@ -72,20 +79,29 @@ const menuItems = computed(() => {
     { path: '/security', icon: 'Lock', title: '安全测试' },
     { path: '/web-compatibility', icon: 'Monitor', title: '兼容性测试' }
   ]
-  
+
   // 仅管理员可见的菜单项
   if (store.isAdmin) {
     items.push({ path: '/admin', icon: 'Tools', title: '管理员功能' })
   }
-  
+
   return items
 })
 
-// 当前页面标题
+// 当前页面标题（支持二级菜单递归查找）
 const pageTitle = computed(() => {
   if (route.meta?.title) return route.meta.title as string
-  const item = menuItems.value.find((m: any) => m.path === route.path)
-  return item?.title || '测试中台'
+  const findTitle = (list: any[]): string | null => {
+    for (const m of list) {
+      if (m.path === route.path) return m.title
+      if (m.children) {
+        const t = findTitle(m.children)
+        if (t) return t
+      }
+    }
+    return null
+  }
+  return findTitle(menuItems.value) || '测试中台'
 })
 
 // 切换侧边栏
@@ -139,14 +155,26 @@ watch(() => store.isLoggedIn, (loggedIn) => {
         router
         class="sidebar-menu"
       >
-        <el-menu-item
-          v-for="item in menuItems"
-          :key="item.path"
-          :index="item.path"
-        >
-          <el-icon><component :is="item.icon" /></el-icon>
-          <template #title>{{ item.title }}</template>
-        </el-menu-item>
+        <template v-for="item in menuItems" :key="item.path">
+          <el-sub-menu v-if="item.children && item.children.length" :index="item.path">
+            <template #title>
+              <el-icon><component :is="item.icon" /></el-icon>
+              <span>{{ item.title }}</span>
+            </template>
+            <el-menu-item
+              v-for="child in item.children"
+              :key="child.path"
+              :index="child.path"
+            >
+              <el-icon><component :is="child.icon" /></el-icon>
+              <template #title>{{ child.title }}</template>
+            </el-menu-item>
+          </el-sub-menu>
+          <el-menu-item v-else :index="item.path">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <template #title>{{ item.title }}</template>
+          </el-menu-item>
+        </template>
       </el-menu>
     </el-aside>
 
