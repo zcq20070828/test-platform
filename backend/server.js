@@ -14203,6 +14203,136 @@ app.get('/api/compatibility/web/stats', authenticate, async (req, res) => {
   }
 });
 
+// 将兼容性报告组装为结构化 Markdown（同时作为 docx/xlsx 的源文档）
+// 表格均带前置标题，便于 md_to_xlsx 按标题分 sheet；圆角字符已规避。
+function buildCompatMarkdownReport(report) {
+  const r = report || {};
+  const url = r.url || '(未知)';
+  const createdAt = r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : '—';
+  const rows = Array.isArray(r.reportData) ? r.reportData : [];
+
+  const browsers = [];
+  const viewports = [];
+  for (const c of rows) {
+    if (c.browser && !browsers.includes(c.browser)) browsers.push(c.browser);
+    if (c.viewport && !viewports.includes(c.viewport)) viewports.push(c.viewport);
+  }
+  const bLabel = { chromium: 'Chromium', firefox: 'Firefox', webkit: 'Safari-WebKit' };
+  const vLabel = { 'desktop-lg': '大屏桌面', 'desktop-md': '笔记本', 'tablet': '平板', 'mobile-lg': '大屏手机', 'mobile-sm': '小屏手机' };
+  const cellMap = {};
+  for (const c of rows) cellMap[`${c.browser}|${c.viewport}`] = c;
+  const iconOf = (c) => !c ? '—'
+    : c.status === 'passed' ? '✅'
+    : c.status === 'error' ? '❌' : '⚠️';
+
+  const clean = (s) => String(s == null ? '' : s).replace(/\n/g, ' ').replace(/\|/g, '/').slice(0, 120);
+
+  const lines = [];
+  lines.push('# Web 兼容性测试报告');
+  lines.push('');
+  lines.push(`**被测URL**: ${url}`);
+  lines.push(`**执行时间**: ${createdAt}`);
+  lines.push(`**综合评分**: ${r.score ?? '—'} / 100`);
+  lines.push(`**通过**: ${r.passed || 0} / ${r.total || 0}`);
+  lines.push(`**失败**: ${r.failed || 0} | **错误**: ${r.errored || 0}`);
+  lines.push('');
+  lines.push('## 一、测试概览');
+  lines.push('');
+  lines.push('| 项目 | 值 |');
+  lines.push('|------|----|');
+  lines.push(`| 被测URL | ${clean(url)} |`);
+  lines.push(`| 执行时间 | ${createdAt} |`);
+  lines.push(`| 综合评分 | ${r.score ?? '—'} / 100 |`);
+  lines.push(`| 通过 / 总数 | ${r.passed || 0} / ${r.total || 0} |`);
+  lines.push(`| 失败 | ${r.failed || 0} |`);
+  lines.push(`| 错误 | ${r.errored || 0} |`);
+  lines.push('');
+  lines.push('## 二、兼容性矩阵');
+  lines.push('');
+  if (browsers.length && viewports.length) {
+    lines.push(`| 浏览器 | ` + viewports.map(v => (vLabel[v] || v)).join(' | ') + ' |');
+    lines.push(`|--------|` + viewports.map(() => '------').join('|') + '|');
+    for (const b of browsers) {
+      const cells = viewports.map(v => iconOf(cellMap[`${b}|${v}`]));
+      lines.push(`| ${bLabel[b] || b} | ` + cells.join(' | ') + ' |');
+    }
+  } else {
+    lines.push('（暂无矩阵数据）');
+  }
+  lines.push('');
+  const failures = rows.filter(c => c.status && c.status !== 'passed');
+  lines.push(`## 三、问题清单 (${failures.length})`);
+  lines.push('');
+  if (failures.length) {
+    lines.push('| 浏览器 | 视口 | 状态 | 控制台错误 / 异常 |');
+    lines.push('|--------|------|------|----------------|');
+    for (const c of failures) {
+      const v = vLabel[c.viewport] || c.viewport;
+      const b = bLabel[c.browser] || c.browser;
+      const st = c.status === 'error' ? '错误' : '失败';
+      let detail = clean(c.error);
+      if (Array.isArray(c.consoleErrors) && c.consoleErrors.length) {
+        const errs = c.consoleErrors.map(e => (e && e.text) ? e.text : '').filter(Boolean).map(clean).join('；');
+        detail = (detail ? detail + '；' : '') + errs;
+      }
+      lines.push(`| ${b} | ${v} | ${st} | ${detail || '—'} |`);
+    }
+  } else {
+    lines.push('无失败/错误项，全部通过 ✅');
+  }
+  lines.push('');
+  lines.push('## 四、结论');
+  lines.push('');
+  lines.push(`综合兼容性评分为 ${r.score ?? '—'} 分（满分 100）。`);
+  lines.push('');
+  return lines.join('\n');
+}
+
+// GET /api/compatibility/web/reports/:id/export?format=md|docx|xlsx — 三格式交付物导出
+// 复用全局 convertMarkdownToDocx(pandoc) / convertMarkdownTablesToXlsx(md_to_xlsx.py) 生成真实 Word/Excel
+app.get('/api/compatibility/web/reports/:id/export', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const format = String(req.query.format || 'md').toLowerCase();
+    if (!['md', 'docx', 'xlsx'].includes(format)) {
+      return res.status(400).json({ error: '不支持的格式，仅支持 md / docx / xlsx' });
+    }
+    const report = await getWebCompatById(id);
+    if (!report) return res.status(404).json({ error: '报告不存在' });
+
+    const md = buildCompatMarkdownReport(report);
+    const asciiName = `compat-report-${report.id}.${format}`;
+    const utfName = `兼容性测试报告_${report.id}.${format}`;
+    const disp = `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(utfName)}`;
+
+    if (format === 'md') {
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.setHeader('Content-Disposition', disp);
+      return res.send(md);
+    }
+
+    const outDir = path.join(__dirname, 'output', 'compat-export');
+    await fs.mkdir(outDir, { recursive: true });
+    const outPath = path.join(outDir, `${report.id}-${Date.now()}.${format}`);
+    let ok = false;
+    if (format === 'docx') ok = await convertMarkdownToDocx(md, outPath);
+    else if (format === 'xlsx') ok = await convertMarkdownTablesToXlsx(md, outPath);
+    if (!ok) {
+      return res.status(500).json({ error: `${format} 生成失败，请改下载 MD 版本` });
+    }
+    const mime = format === 'docx'
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', disp);
+    const buf = await fs.readFile(outPath);
+    res.send(buf);
+    fs.unlink(outPath, () => {});
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/performance-test/workflow — 7步串联 workflow 入口
 app.post('/api/performance-test/workflow', authenticate, async (req, res) => {
   try {

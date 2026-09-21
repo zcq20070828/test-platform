@@ -161,10 +161,21 @@
             <el-table-column prop="created_at" label="测试时间" width="160">
               <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="120" fixed="right">
+            <el-table-column label="操作" width="190" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" size="small" @click="viewReport(row)">详情</el-button>
-                <el-button link type="primary" size="small" @click="downloadReport(row)">下载</el-button>
+                <el-dropdown trigger="click" @command="(fmt: 'md' | 'docx' | 'xlsx') => exportReport(row, fmt)">
+                  <el-button link type="primary" size="small">
+                    导出交付物 <span style="font-size:10px">▾</span>
+                  </el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="md">Markdown（.md）</el-dropdown-item>
+                      <el-dropdown-item command="docx">Word 文档（.docx）</el-dropdown-item>
+                      <el-dropdown-item command="xlsx">Excel 表格（.xlsx）</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
               </template>
             </el-table-column>
           </el-table>
@@ -444,57 +455,14 @@ async function viewReport(row: Record<string, unknown>) {
   }
 }
 
-// 下载报告
-function downloadReport(row: Record<string, unknown>) {
-  compatApi.getReport(row.id as string).then(data => {
-    if (!data) return
-    const r = data as Record<string, unknown>
-    const lines = [
-      '# Web 兼容性测试报告',
-      `**被测URL**: ${r.url}`,
-      `**执行时间**: ${fmtTime(r.created_at as string)}`,
-      `**评分**: ${r.score ?? '—'} / 100`,
-      `**通过**: ${r.passed || 0} / ${r.total || 0}`,
-      `**失败**: ${r.failed || 0} | **错误**: ${r.errored || 0}`,
-      '',
-      '## 兼容性矩阵',
-      '',
-    ]
-    const vpKeys = ['desktop-lg', 'desktop-md', 'tablet', 'mobile-lg', 'mobile-sm']
-    const vpTitles = ['大屏桌面', '笔记本', '平板', '大屏手机', '小屏手机']
-    lines.push('| 浏览器 | ' + vpTitles.join(' | ') + ' |')
-    lines.push('|--------|' + vpTitles.map(() => '------').join('|') + '|')
-    const browsers = ['chromium', 'firefox', 'webkit']
-    const blabels = ['Chromium', 'Firefox', 'Safari/WebKit']
-    browsers.forEach((bKey, bi) => {
-      const cells = vpKeys.map(vp => {
-        const r = ((r.reportData as Record<string, unknown>[]) || []).find(x => x.browser === bKey && x.viewport === vp)
-        if (!r) return '—'
-        return r.status === 'passed' ? '✅' : r.status === 'error' ? '❌' : '⚠️'
-      })
-      lines.push(`| ${blabels[bi]} | ${cells.join(' | ')} |`)
-    })
-    lines.push('')
-    const failures = ((r.reportData as Record<string, unknown>[]) || []).filter(x => x.status !== 'passed')
-    if (failures.length) {
-      lines.push('## 问题清单')
-      failures.forEach((item, i) => {
-        lines.push(`${i + 1}. **${blabels[browsers.indexOf(item.browser as string)]} × ${VIEWPORT_LABEL_MAP[item.viewport as string] || item.viewport}** [${item.status}]`)
-        if (item.consoleErrors && (item.consoleErrors as Record<string, unknown>[]).length) {
-          (item.consoleErrors as Record<string, unknown>[]).forEach(e => {
-            lines.push(`   - ${e.text}`)
-          })
-        }
-        if (item.error) lines.push(`   - Error: ${item.error}`)
-      })
-    }
-    const blob = new Blob([lines.join('\n')], { type: 'text/markdown' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `compat-report-${r.id}.md`
-    a.click()
-    URL.revokeObjectURL(a.href)
-  }).catch(() => ElMessage.error('下载失败'))
+// 导出三格式交付物（md / docx / xlsx），由后端生成真实 Word/Excel
+async function exportReport(row: Record<string, unknown>, format: 'md' | 'docx' | 'xlsx') {
+  try {
+    await compatApi.exportReport(row.id as string, format)
+    ElMessage.success(`已导出${format === 'md' ? ' Markdown' : format === 'docx' ? ' Word' : ' Excel'}交付物`)
+  } catch (e: any) {
+    ElMessage.error('导出失败: ' + (e?.message || '未知错误'))
+  }
 }
 
 onMounted(() => {
