@@ -954,6 +954,26 @@ export const compatApi = {
     const res = await request<{ totalReports: number; avgScore: number; recentScores: Record<string, unknown>[] }>('/api/compatibility/web/stats')
     return res.success ? (res.data as any) : null
   },
+  // 导出三格式交付物（md / docx / xlsx），后端基于报告数据生成真实 Word/Excel
+  exportReport(id: string, format: 'md' | 'docx' | 'xlsx'): Promise<void> {
+    const token = localStorage.getItem('token') || ''
+    const url = `/api/compatibility/web/reports/${encodeURIComponent(id)}/export?format=${format}`
+    return fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.blob()
+      })
+      .then(blob => {
+        const objectUrl = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = objectUrl
+        a.download = `兼容性测试报告_${id}.${format}`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(objectUrl)
+      })
+  },
 }
 
 
