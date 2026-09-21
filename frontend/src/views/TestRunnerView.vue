@@ -8,13 +8,16 @@
       </div>
     </div>
 
-    <el-row :gutter="16">
-      <!-- 左侧:配置面板 -->
-      <el-col :span="14">
-        <el-card class="config-card">
-          <template #header>
-            <div class="card-header">
-              <span><el-icon><Setting /></el-icon> 测试配置</span>
+    <el-tabs v-model="activeTab" class="runner-tabs">
+      <!-- 原自动化测试执行（脚本运行） -->
+      <el-tab-pane label="🚀 测试执行" name="execute">
+        <el-row :gutter="16">
+          <!-- 左侧:配置面板 -->
+          <el-col :span="14">
+            <el-card class="config-card">
+              <template #header>
+                <div class="card-header">
+                  <span><el-icon><Setting /></el-icon> 测试配置</span>
               <el-button size="small" text @click="resetConfig">
                 <el-icon><Refresh /></el-icon> 重置
               </el-button>
@@ -326,8 +329,15 @@
           </div>
         </el-card>
 
-      </el-col>
-    </el-row>
+          </el-col>
+        </el-row>
+      </el-tab-pane>
+
+      <!-- 测试脚本生成（两栏：脚本类型+输入 / 实时处理过程与交付物） -->
+      <el-tab-pane label="📜 测试脚本生成" name="script" lazy>
+        <TestScriptExecutor />
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
@@ -336,6 +346,10 @@ import { ref, reactive, nextTick, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { request, testFrameworkApi, taskApi, getAuthHeaders } from '@/api'
 import { useMainStore } from '@/stores/main'
+import TestScriptExecutor from '@/components/TestScriptExecutor.vue'
+
+// 自动化测试页两个 tab：测试执行（原脚本运行）、测试脚本生成
+const activeTab = ref('execute')
 
 const store = useMainStore()
 const currentTaskId = ref<string>('')
