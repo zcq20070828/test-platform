@@ -11,6 +11,11 @@
       </div>
     </div>
 
+    <el-tabs v-model="activeTab">
+      <el-tab-pane label="🚀 测试执行" name="execute">
+        <CompatTestExecutor />
+      </el-tab-pane>
+      <el-tab-pane label="📋 兼容性报告" name="reports">
     <!-- 统计卡片 -->
     <el-row :gutter="12" class="stat-cards">
       <el-col :span="8">
@@ -156,6 +161,8 @@
         </el-card>
       </el-col>
     </el-row>
+      </el-tab-pane>
+    </el-tabs>
 
     <!-- 报告详情抽屉 -->
     <el-drawer v-model="detailDrawerVisible" title="兼容性测试报告" size="780px" direction="rtl">
@@ -244,6 +251,7 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, Loading } from '@element-plus/icons-vue'
 import { compatApi } from '@/api/index'
+import CompatTestExecutor from '@/components/CompatTestExecutor.vue'
 
 // 常量
 const DEFAULT_BROWSERS = [
@@ -288,6 +296,7 @@ const totalReports = ref(0)
 const selectedReport = ref<Record<string, unknown> | null>(null)
 const page = ref(1)
 const pageSize = 20
+const activeTab = ref('execute')
 
 const stats = reactive({
   totalReports: 0,

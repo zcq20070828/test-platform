@@ -70,6 +70,14 @@ export async function countByUser(userId) {
   return row?.total || 0;
 }
 
+// JSON 列安全解析：mysql2 对 JSON 类型列会自动解析为对象/数组，此时应原样返回；
+// 对 TEXT 类型列则返回字符串，需 JSON.parse。两种情况都兼容。
+function safeParseJSON(v, fallback) {
+  if (v == null) return fallback;
+  if (typeof v === 'object') return v;
+  try { return JSON.parse(v); } catch (_) { return fallback; }
+}
+
 // 读取报告详情
 export async function findById(id) {
   const [rows] = await pool.query(
@@ -80,7 +88,7 @@ export async function findById(id) {
   const r = rows[0];
   return {
     ...r,
-    matrixConfig: r.matrix_config ? JSON.parse(r.matrix_config) : null,
-    reportData: r.report_data ? JSON.parse(r.report_data) : [],
+    matrixConfig: safeParseJSON(r.matrix_config, null),
+    reportData: safeParseJSON(r.report_data, []),
   };
 }
