@@ -2848,6 +2848,53 @@ function canAccessTask(task, req) {
   return task.userId === userId || task.user_id === userId;
 }
 
+/**
+ * 解析任务的 artifact 解析上下文（内存优先，DB 回退）
+ * 修复：scan/workflow 完成后可能从内存 Map 清理（tasks.delete），或进程重启后
+ * 历史任务不在内存中，导致预览/下载 404。这里在内存缺失时从 MySQL tasks 表
+ * 读取 artifacts(JSON 列) + user_id + status，保证交付物可访问。
+ * @returns {{id:string, userId?:number, user_id?:number, status?:string, artifacts:Array}|null}
+ */
+async function resolveTaskForArtifact(taskId, req) {
+  const memTask = tasks.get(taskId);
+  if (memTask && Array.isArray(memTask.artifacts)) return memTask;
+  try {
+    const rows = await query(
+      'SELECT id, user_id, status, artifacts FROM tasks WHERE id = ?',
+      [taskId]
+    );
+    if (rows.length) {
+      const r = rows[0];
+      const arts = normalizeArtifactsField(r.artifacts);
+      return { id: r.id, userId: r.user_id, user_id: r.user_id, status: r.status, artifacts: arts };
+    }
+  } catch (e) {
+    console.error(`[ResolveArtifact] DB 回退失败: ${e.message}`);
+  }
+  return memTask || null;
+}
+
+/**
+ * 将 tasks 表的 artifacts 字段归一化为数组
+ * 关键：mysql2 对 longtext 中的 JSON 可能直接返回已解析的对象/数组（而非字符串），
+ * 若盲目 JSON.parse(对象) 会抛错并落入 []，导致交付物在 DB 回退路径下丢失。
+ * 这里同时兼容「已是对象/数组」「字符串」「null/空」三种情况。
+ */
+function normalizeArtifactsField(v) {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'object') return [v];
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (!s) return [];
+    try {
+      const p = JSON.parse(s);
+      return Array.isArray(p) ? p : [p];
+    } catch (_) { return []; }
+  }
+  return [];
+}
+
 // 获取单个任务（支持 DB 回退：历史任务重启后可能不在内存 Map 中，需从 MySQL 读取）
 // 修复：继续对话/查看历史任务时 GET /api/tasks/:id 对 DB 任务返回 404，导致面板无法加载历史信息与三格式交付物
 app.get('/api/tasks/:id', authenticate, async (req, res) => {
@@ -2872,8 +2919,7 @@ app.get('/api/tasks/:id', authenticate, async (req, res) => {
     if (raw.length > 0) {
       if (task.chat_history === undefined) task.chat_history = raw[0].chat_history || null;
       if (task.artifacts === undefined || task.artifacts === null) {
-        try { task.artifacts = raw[0].artifacts ? JSON.parse(raw[0].artifacts) : []; }
-        catch (_) { task.artifacts = []; }
+        task.artifacts = normalizeArtifactsField(raw[0].artifacts);
       }
     }
   } catch (_) { /* 补齐失败不影响主流程 */ }
@@ -2926,9 +2972,10 @@ app.get('/api/tasks/:id/output', authenticate, (req, res) => {
 });
 
 // 下载任务输出物文件
-app.get('/api/tasks/:taskId/artifacts/:artifactId/download', authenticate, (req, res) => {
+app.get('/api/tasks/:taskId/artifacts/:artifactId/download', authenticate, async (req, res) => {
   const { taskId, artifactId } = req.params;
-  const task = tasks.get(taskId);
+  // 内存优先，历史/已清理任务回退 DB
+  const task = await resolveTaskForArtifact(taskId, req);
 
   if (!task) {
     return res.status(404).json({ error: '任务不存在' });
@@ -2942,7 +2989,7 @@ app.get('/api/tasks/:taskId/artifacts/:artifactId/download', authenticate, (req,
     return res.status(400).json({ error: '任务已失败' });
   }
 
-  const artifact = task.artifacts?.find(a => a.id === artifactId);
+  const artifact = (task.artifacts || []).find(a => a.id === artifactId);
   if (!artifact) {
     return res.status(404).json({ error: '输出物不存在' });
   }
@@ -2971,12 +3018,13 @@ app.get('/api/tasks/:taskId/artifacts/:artifactId/download', authenticate, (req,
 // 输出物在线预览(docx/xlsx -> HTML),用于前端免下载直接查看
 app.get('/api/tasks/:taskId/artifacts/:artifactId/preview', authenticate, async (req, res) => {
   const { taskId, artifactId } = req.params;
-  const task = tasks.get(taskId);
+  // 内存优先，历史/已清理任务回退 DB（scan 完成后 tasks.delete，重启后内存无此任务）
+  const task = await resolveTaskForArtifact(taskId, req);
   if (!task) return res.status(404).json({ error: '任务不存在' });
   if (!canAccessTask(task, req)) return res.status(403).json({ error: '无权访问此任务' });
   if (task.status === 'failed') return res.status(400).json({ error: '任务已失败' });
 
-  const artifact = task.artifacts?.find(a => a.id === artifactId);
+  const artifact = (task.artifacts || []).find(a => a.id === artifactId);
   if (!artifact || !artifact.path) return res.status(404).json({ error: '输出物不存在' });
 
   const ext = (artifact.path.split('.').pop() || '').toLowerCase();
@@ -12336,9 +12384,39 @@ app.post('/api/security/scan', authenticate, async (req, res) => {
           summary: securityReport.summary || ''
         }
       });
-      await taskDAO.updateTask(taskId, { status: finalStatus, result: JSON.stringify(securityReport) || null, completedAt: new Date() });
+      // ===== 生成三格式交付物(md + docx + xlsx) 并登记为 artifacts，供预览/下载 =====
+      let secArtifacts = [];
+      let secManualHours = 0;
+      try {
+        // 用已落库的完整报告(含漏洞)渲染标准安全测试报告 md
+        const reportForMd = await securityDAO.getSecurityReportById(id);
+        const secMd = await renderSecurityReportMd(reportForMd, reportForMd.vulnerabilities || []);
+        const outDir = path.join(__dirname, 'output', taskId);
+        await fs.mkdir(outDir, { recursive: true });
+        const mdPath = path.join(outDir, '安全扫描报告.md');
+        await fs.writeFile(mdPath, secMd, 'utf-8');
+        try { await taskDAO.createTaskOutputFile(taskId, mdPath); } catch (_) {}
+        const extra = await deriveExtraFormats(taskId, '安全扫描报告', 'security-sentinel', secMd);
+        secArtifacts = buildWorkflowArtifacts(taskId, [mdPath, ...extra], 'sec');
+      } catch (artErr) {
+        console.error(`[SecurityScan] 生成交付物失败: ${artErr.message}`);
+      }
+      try {
+        secManualHours = await estimateManualEffort({ agent: 'security-sentinel', input: { scanType, testDomain } });
+      } catch (_) {}
+
+      await taskDAO.updateTask(taskId, {
+        status: finalStatus,
+        result: JSON.stringify(securityReport) || null,
+        completedAt: new Date(),
+        artifacts: secArtifacts,
+        manualHours: secManualHours
+      });
+      // 内存兜底(任务完成前前端可能已拉取)
+      const memTask = tasks.get(taskId);
+      if (memTask) { memTask.artifacts = secArtifacts; memTask.manualHours = secManualHours; }
+      sseBroadcast({ type: 'task_completed', data: { task: { id: taskId, type: 'security', status: finalStatus, result: JSON.stringify(securityReport) || null, agentId: 'security-sentinel', agentName: '🛡️ 安全测试', output: rawText || null, artifacts: secArtifacts, manualHours: secManualHours, createdAt: new Date().toISOString() } } });
       tasks.delete(taskId);
-      sseBroadcast({ type: 'task_completed', data: { task: { id: taskId, type: 'security', status: finalStatus, result: JSON.stringify(securityReport) || null, agentId: 'security-sentinel', agentName: '🛡️ 安全测试', output: rawText || null, createdAt: new Date().toISOString() } } });
       sseBroadcast({
         type: 'security_scan_completed',
         data: { id, scanId, status: finalStatus, securityScore: overall_score, userId }
@@ -13884,10 +13962,17 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
     executeSecurityWorkflow(workflowId, { target, scanType, domain: testDomain, description: maskedDesc }, userId)
       .then(async (wr) => {
         const status = wr && wr.status === 'completed' ? 'completed' : 'failed';
-        await taskDAO.updateTask(taskId, { status, completedAt: new Date() });
+        // 全工作流预估工时:基于域规模估算(全域/全量约为单域 2 倍)
+        let wfManualHours = 0;
+        try {
+          const base = await estimateManualEffort({ agent: 'security-sentinel', input: { scanType: 'full', testDomain } });
+          wfManualHours = (testDomain === 'all') ? Math.max(base * 2, 8) : (base || 4);
+        } catch (_) {}
         // 累积各阶段三格式交付物到 tasks Map,随 task_completed 下发(前端即可下载 md/docx/xlsx)
         const secArtifacts = wr?.allArtifacts || [];
-        tasks.set(taskId, { id: taskId, userId, status, type: 'security-test', agentId: 'security-sentinel', artifacts: secArtifacts });
+        tasks.set(taskId, { id: taskId, userId, status, type: 'security-test', agentId: 'security-sentinel', artifacts: secArtifacts, manualHours: wfManualHours });
+        // 落库:artifacts + manualHours，保证进程重启后仍能预览/下载(内存 Map 不持久)
+        await taskDAO.updateTask(taskId, { status, completedAt: new Date(), artifacts: secArtifacts, manualHours: wfManualHours });
         // 【修复】task_completed 同时下发平铺结构 + task 对象（前端 handleRealtimeEvent 依赖 data.task）
         // result 优先带完整报告正文（fullReportText），前端可直接渲染到聊天面板
         const reportText = (wr && (wr.fullReportText || wr.report?.content)) || '';
