@@ -51,8 +51,20 @@ const selected = computed<Entry | null>(() => entries.value.find((e) => e.key ==
 
 const input = ref('')
 const scanType = ref('full')
+const testDomain = ref('web')
 const files = ref<AttachmentFile[]>([])
 const submitting = ref(false)
+
+// 安全测试域：7 大测试域，与后端 security-sentinel 的 domain 路由对齐
+const SECURITY_DOMAINS = [
+  { value: 'web', label: 'Web 应用安全（OWASP Top 10）' },
+  { value: 'api', label: 'API / 接口安全（OWASP API Top 10）' },
+  { value: 'cloud', label: '云原生与基础设施（CIS / 等保2.0）' },
+  { value: 'mobile', label: '移动端应用（OWASP MASVS）' },
+  { value: 'data', label: '数据安全与隐私合规（等保2.0 / 个保法 / 数安法）' },
+  { value: 'supply', label: '软件供应链（SBOM / CVE）' },
+  { value: 'ai', label: 'AI / 大模型安全（OWASP LLM Top 10）' },
+]
 
 const mainStore = useMainStore()
 const currentWorkflowId = ref('')
@@ -310,6 +322,15 @@ async function run() {
               <el-select v-model="scanType" style="width: 100%">
                 <el-option v-for="s in SCAN_TYPES" :key="s.value" :label="s.label" :value="s.value" />
               </el-select>
+            </el-form-item>
+
+            <el-form-item v-if="selected && isSecurity" label="安全测试域">
+              <el-select v-model="testDomain" style="width: 100%">
+                <el-option v-for="d in SECURITY_DOMAINS" :key="d.value" :label="d.label" :value="d.value" />
+              </el-select>
+              <div class="stage-hint" style="margin-top: 8px">
+                <span class="stage-hint-text">选择本次测试的覆盖域；缺省 Web。域决定检测重点、合规基线（等保2.0 / 个保法 / 数安法 / CIS / OWASP）与专项用例。</span>
+              </div>
             </el-form-item>
 
             <template v-if="selected">

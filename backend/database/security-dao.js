@@ -70,6 +70,17 @@ export async function ensureSecurityTables() {
         updated_at   TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+
+    // ── 扩展列（幂等：列已存在则忽略）────────────────────────────
+    // 支持多域测试域(domain)、报告级扩展 JSON、漏洞级扩展 JSON
+    const alters = [
+      `ALTER TABLE security_reports ADD COLUMN test_domain VARCHAR(30) NOT NULL DEFAULT 'web'`,
+      `ALTER TABLE security_reports ADD COLUMN report_json MEDIUMTEXT NULL`,
+      `ALTER TABLE security_vulnerabilities ADD COLUMN ext_json MEDIUMTEXT NULL`,
+    ];
+    for (const sql of alters) {
+      try { await conn.query(sql); } catch (_) { /* 列已存在 */ }
+    }
   } finally {
     conn.release();
   }
@@ -79,12 +90,13 @@ export async function ensureSecurityTables() {
 export async function createSecurityReport(report) {
   const {
     scanId, target, scanType = 'full', status = 'running',
-    createdBy, scanner = 'security-sentinel'
+    createdBy, scanner = 'security-sentinel',
+    testDomain = 'web', reportJson = null
   } = report;
   const [result] = await pool.query(
-    `INSERT INTO security_reports (scan_id, target, scan_type, status, created_by, scanner)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [scanId, target, scanType, status, createdBy, scanner]
+    `INSERT INTO security_reports (scan_id, target, scan_type, status, created_by, scanner, test_domain, report_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [scanId, target, scanType, status, createdBy, scanner, testDomain, reportJson ? JSON.stringify(reportJson) : null]
   );
   return result.insertId;
 }
@@ -94,7 +106,8 @@ export async function updateSecurityReport(id, patch) {
   const vals = [];
   const allowed = [
     'status', 'overall_score', 'severity_dist',
-    'findings_count', 'recommendations', 'duration_ms'
+    'findings_count', 'recommendations', 'duration_ms',
+    'test_domain', 'report_json'
   ];
   for (const k of allowed) {
     if (patch[k] !== undefined) {
@@ -113,7 +126,7 @@ export async function updateSecurityReport(id, patch) {
 export async function getSecurityReports({ createdBy, limit = 50, offset = 0, status }) {
   let sql = `SELECT id, scan_id, target, scan_type, status, overall_score,
                     severity_dist, findings_count, recommendations,
-                    scanner, duration_ms, created_at, updated_at, created_by
+                    scanner, duration_ms, created_at, updated_at, created_by, test_domain
              FROM security_reports WHERE 1=1`;
   const params = [];
   if (createdBy) { sql += ` AND created_by = ?`; params.push(createdBy); }
@@ -127,6 +140,16 @@ export async function getSecurityReports({ createdBy, limit = 50, offset = 0, st
   }));
 }
 
+// 将漏洞行的 ext_json（bizRisk/compliance/codeFix/poc/verified/cvssScore/owaspCategory）解析并合并
+function parseVulnExt(v) {
+  let ext = {};
+  if (v.ext_json) {
+    try { ext = typeof v.ext_json === 'string' ? JSON.parse(v.ext_json) : v.ext_json; } catch (_) { ext = {}; }
+  }
+  const { ext_json, ...rest } = v;
+  return { ...rest, ...ext };
+}
+
 export async function getSecurityReportById(id) {
   const [[row]] = await pool.execute(
     `SELECT * FROM security_reports WHERE id = ?`, [id]
@@ -136,10 +159,16 @@ export async function getSecurityReportById(id) {
     `SELECT * FROM security_vulnerabilities WHERE report_id = ? ORDER BY
        FIELD(severity,'critical','high','medium','low','info'), id`, [id]
   );
+  let reportJson = {};
+  if (row.report_json) {
+    try { reportJson = typeof row.report_json === 'string' ? JSON.parse(row.report_json) : row.report_json; } catch (_) { reportJson = {}; }
+  }
   return {
     ...row,
+    test_domain: row.test_domain || 'web',
+    report_json: reportJson,
     severity_dist: typeof row.severity_dist === 'string' ? JSON.parse(row.severity_dist) : row.severity_dist,
-    vulnerabilities: vulns
+    vulnerabilities: vulns.map(parseVulnExt)
   };
 }
 
@@ -176,13 +205,14 @@ export async function createVulnerability(v) {
     cve_id     = v.cve || null,
     status     = 'open',
     location   = null,
-    cvss       = null
+    cvss       = null,
+    extJson    = null
   } = v;
   const [result] = await pool.query(
     `INSERT INTO security_vulnerabilities
-       (report_id, vuln_type, severity, title, description, location, evidence, remediation, cve, cwe, cvss, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [reportId, vuln_type, severity, title, description, location, evidence, recommendation, cve_id, cwe_id, cvss, status]
+       (report_id, vuln_type, severity, title, description, location, evidence, remediation, cve, cwe, cvss, status, ext_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [reportId, vuln_type, severity, title, description, location, evidence, recommendation, cve_id, cwe_id, cvss, status, extJson ? JSON.stringify(extJson) : null]
   );
   return result.insertId;
 }
@@ -195,14 +225,15 @@ export async function bulkCreateVulnerabilities(vulns) {
     for (const v of vulns) {
       await conn.execute(
         `INSERT INTO security_vulnerabilities
-           (report_id, vuln_type, severity, title, description, location, evidence, remediation, cve, cwe, cvss, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (report_id, vuln_type, severity, title, description, location, evidence, remediation, cve, cwe, cvss, status, ext_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           v.reportId, v.vuln_type || v.vulnType || '', v.severity || 'info',
           v.title || '', v.description || '',
           v.location || null, v.evidence || null, v.remediation || v.recommendation || null,
           v.cve_id || v.cve || null, v.cwe_id || v.cwe || null, v.cvss || null,
-          v.status || 'open'
+          v.status || 'open',
+          v.extJson ? JSON.stringify(v.extJson) : (v.ext_json ? JSON.stringify(v.ext_json) : null)
         ]
       );
     }
@@ -242,7 +273,7 @@ export async function getVulnerabilities({ createdBy, severity, vulnType, status
   if (status) params.push(status);
   params.push(limit, offset);
   const [rows] = await pool.execute(sql, params);
-  return rows;
+  return rows.map(parseVulnExt);
 }
 
 export async function countVulnerabilities(createdBy, severity, vulnType, status, reportId) {

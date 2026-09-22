@@ -760,8 +760,8 @@ export const adminApi = {
 
 // 安全测试 API
 export const securityApi = {
-  // 发起扫描
-  async startScan(payload: { target: string; scanType?: string; files?: Array<{ name: string; content: string }> }): Promise<{ id: number; scanId: string; target: string } | null> {
+  // 发起扫描（retestOf：复测时传入被复测报告 ID，形成复测闭环）
+  async startScan(payload: { target: string; scanType?: string; files?: Array<{ name: string; content: string }>; retestOf?: number | null }): Promise<{ id: number; scanId: string; target: string } | null> {
     const res = await request<{ id: number; scanId: string; target: string }>('/api/security/scan', {
       method: 'POST', body: JSON.stringify(payload)
     })
@@ -849,6 +849,26 @@ export const securityApi = {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  },
+  // 导出三格式交付物（md / docx / xlsx），后端基于安全报告数据生成真实 Word/Excel
+  exportReport(id: number, format: 'md' | 'docx' | 'xlsx'): Promise<void> {
+    const token = localStorage.getItem('token') || ''
+    const url = `/api/security/reports/${id}/export?format=${format}`
+    return fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.blob()
+      })
+      .then(blob => {
+        const objectUrl = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = objectUrl
+        a.download = `安全测试报告_${id}.${format}`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(objectUrl)
+      })
   },
 }
 // ══════════════════════════════════════════════════════════════════════
