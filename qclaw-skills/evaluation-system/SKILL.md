@@ -11,6 +11,14 @@
 
 两者互补，不重复。
 
+## 安全测试报告评估（security-sentinel 7 域模型）
+
+当评估对象为 `security-sentinel` 的安全测试报告时，除三层五级通用指标外，须额外关注：
+- **7 域覆盖度**：报告是否覆盖 web / api / cloud / mobile / data / supply / ai 全部目标域（或用户指定域），缺域即扣分。
+- **深度字段完整度**：每条 finding 是否含 `cvssScore`(CVSS v3.1)、`bizRisk`(业务风险)、`poc`+`verified`(真实验证)、`codeFix`(代码级修复)、`compliance`(等保2.0/个保法/数安法/OWASP/CIS/MASVS)。
+- **攻击链与威胁建模**：报告级是否含 `attackChains`(攻击链) 与 `threatModel`(威胁建模)。
+- **复测闭环**：已修复项是否经 `retestOf` 复测验证。
+
 ## 三层五级评估模型
 
 ### 第一层：智能体能力评估（权重 30%）

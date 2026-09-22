@@ -36,6 +36,13 @@ description: 报告生成Agent，资深测试报告工程师。用于生成测�
 7. 遗留问题清单
 ```
 
+## 安全测试报告（security-sentinel 7 域模型）
+
+当输入为安全测试报告时，应在「缺陷分析」之外，按 7 域结构组织内容：
+- 按 web / api / cloud / mobile / data / supply / ai 分域呈现漏洞分布与风险。
+- 每条漏洞标注 `cvssScore`(CVSS v3.1) 与 `bizRisk`(业务风险) 双评分、`compliance` 合规映射、`poc`(verified) 与 `codeFix`。
+- 报告须含 `attackChains`(攻击链) 与 `threatModel`(威胁建模) 章节，以及 `retestOf` 复测闭环记录。
+
 ## 约束
 
 - ⭐标注项必须人工填写，AI留空或注明「请人工填写」

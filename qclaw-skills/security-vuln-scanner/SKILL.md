@@ -2,6 +2,26 @@
 
 针对 Web 应用源码和 API 进行**静态安全扫描**，覆盖 OWASP Top 10，输出结构化漏洞报告。
 
+> 广度强化：本 Skill 的扫描视角须扩展到 security-sentinel 的 **7 大测试域**（web / api / cloud / mobile / data / supply / ai），各域检查项与合规基线见 security-sentinel-skill。
+
+## 🌐 扫描域覆盖（7 大域）
+
+| 域 | 静态扫描重点 | 合规基线 |
+|---|---|---|
+| web | 越权/注入/XSS/SSRF/CSRF/逻辑漏洞（OWASP Top 10） | OWASP Top 10 2021 |
+| api | JWT/鉴权绕过、越权(BOLA/BFLA)、参数污染、速率限制、批量分配 | OWASP API Security Top 10 |
+| cloud | 容器/镜像配置、IAM/RBAC 策略、密钥硬编码、公网暴露 | CIS Benchmark、等保2.0 |
+| mobile | 组件导出、不安全存储、WebView 桥接、证书绑定 | OWASP MASVS |
+| data | 敏感数据落库/传输、脱敏、留存、跨境 | 等保2.0、个保法、数安法 |
+| supply | 依赖 CVE、SBOM 缺失、恶意包、许可证风险 | SBOM/CVE |
+| ai | 提示注入/越狱检测、工具调用越权、输出有害（可复用 security-sentinel-skill） | OWASP LLM Top 10 |
+
+## 🔬 深度要求（每条 finding 必含）
+
+- `cvssScore`(CVSS v3.1)、`bizRisk`(业务风险高/中/低)、`owaspCategory`/`cwe`/`cve`
+- `poc`(真实可利用验证步骤) + `verified`(是否已真实验证)
+- `codeFix`(代码级修复示例)、`compliance`([{standard,clause,level}])
+
 ## 功能
 
 - **A01 失效的访问控制**：水平/垂直越权、IDOR、路径遍历

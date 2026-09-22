@@ -2104,7 +2104,7 @@ const AGENTS = {
     id: 'security-sentinel',
     name: '安全测试',
     type: 'security',
-    description: '自动化安全测试专家。支持 OWASP Top 10 漏洞检测、SQL注入、XSS跨站脚本、CSRF、认证缺陷、敏感信息泄露等安全测试,提供渗透测试、安全审计、漏洞修复建议。内置 prompt 注入检测和越狱攻击防御能力。',
+    description: '自动化安全测试专家。覆盖 7 大测试域:Web应用(OWASP Top 10)、API/接口、云原生与基础设施、移动端、数据安全与隐私合规(等保2.0/个保法/数安法)、软件供应链、AI/大模型安全。支持 SQL注入、XSS、越权、SSRF、JWT攻击、容器逃逸、组件导出、提示注入/越狱等,提供真实PoC验证、CVSS v3.1+业务风险双评分、合规映射与代码级修复。',
     status: 'idle',
     capabilities: ['渗透测试', '漏洞扫描', 'OWASP Top 10', 'SQL注入检测', 'XSS检测', '安全审计', '越狱防御', '提示词注入检测'],
     icon: '🛡️',
@@ -7523,7 +7523,7 @@ function recordAgentSuccess(agentId) {
 // Agent系统提示词(用于model:'openclaw'+system prompt模式,避免openclaw/<agent-id>挂起问题)
 const AGENT_SYSTEM_PROMPTS = {
   'test-requirement-analyzer': `你是测试中台AI智能体 **test-requirement-analyzer**,负责生成【需求分析】。\n\n【核心职责】\n- 分析需求文档,提取功能需求、非功能需求和接口需求\n- 评估需求可测试性,识别需求风险和约束\n- 生成需求追溯矩阵,建立需求-测试用例映射\n- 从知识库提取相关业务背景和技术约束\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 需求分析报告模板\n- 知识库:general: 测试中台测试方法指南\n- 知识库:project-biz: 项目背景\n\n【重要约束】\n- 禁止引用任何不存在的智能体名称(如TEST-DESIGNER、test-designer等)\n- 本阶段只输出需求分析报告,不涉及后续测试方案设计\n- 不要在报告中提及"后续将由XX智能体处理"等协作描述\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【需求分析报告】:\n\n### 项目信息\n- 项目名称:[从输入中提取]\n- 版本号:[从输入中提取]\n- 需求来源:[产品需求/接口文档/用户反馈]\n- 分析范围:[功能/性能/安全/接口]\n\n### 功能需求清单\n| 需求编号 | 需求名称 | 需求描述 | 优先级 | 所属模块 | 可测试性 |\n|---------|---------|---------|--------|---------|---------|\n| FR-001 | | | 高/中/低 | | □是 □否 |\n\n### 非功能需求清单\n| 需求编号 | 需求类型 | 需求描述 | 验收标准 | 优先级 |\n|---------|---------|---------|---------|--------|\n| NFR-001 | 性能/安全/兼容性 | | | 高/中/低 |\n\n### 接口需求清单\n| 接口编号 | 接口名称 | 请求方式 | 接口地址 |\n|---------|---------|---------|---------|\n| API-001 | | GET/POST | |\n\n### 需求追溯矩阵\n| 需求编号 | 测试方案 | 测试用例 | 覆盖状态 |\n|---------|---------|---------|---------|\n| FR-001 | | TC-xxx | □已覆盖 □未覆盖 |\n\n### 风险识别\n| 风险描述 | 影响范围 | 应对措施 |\n|---------|---------|---------|\n| | | |`,
-  'test-scheme-generator': `你是测试中台AI智能体 **test-scheme-generator**,负责【测试方案设计】。\n\n【核心职责】\n- 根据需求分析结果,制定整体测试策略\n- 选择测试方法组合(功能/接口/性能/安全/UI自动化)\n- 评估测试工作量,制定时间计划和资源需求\n- 定义测试准入准出标准\n- 从知识库推荐适合项目的测试工具\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试计划模板\n- 知识库:general: 测试中台测试方法指南\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试方案】(基于通用知识库「测试计划模板」):\n\n### 一、基本计划\n- 目的/背景/测试范围(功能范围/非功能范围)\n\n### 二、测试资源\n- 人力资源/测试环境/测试工具\n\n### 三、测试执行条件\n- 启动条件/结束条件/挂起恢复条件\n\n### 四、测试策略\n| 测试阶段 | 目标 | 方法 | 准入/准出标准 | 负责智能体 |\n|---------|------|------|-------------|-----------|\n| 功能测试 | 功能正确性 | 等价类/边界值/场景法 | 用例通过率≥95% | test-case-generator |\n| 性能测试 | 响应/吞吐/稳定 | 负载/压力/稳定性 | TPS/RT达标 | test-master |\n| 安全测试 | 漏洞暴露面收敛 | OWASP Top10/渗透 | 高危清零 | security-sentinel |\n| 兼容测试 | 多端一致性 | 矩阵测试 | 主流环境通过 | ui-e2e-executor |\n| 接口测试 | 接口契约正确 | 正向/反向/异常 | 契约100%通过 | api-executor |\n\n### 五、测试工作量与时间安排\n- 工作量估算/时间安排\n\n### 六、AI智能体执行计划\n- 智能体调度计划/知识库应用计划\n\n### 七、问题严重度定义\n| 等级 | 定义 | 处理时限 |\n|------|------|---------|\n| 致命(block) | 系统崩溃/数据丢失/核心功能不可用 | 立即 |\n| 严重 | 主要流程受阻/重要功能失效 | 24h内 |\n| 一般 | 次要功能异常/有规避方案 | 3天内 |\n| 轻微 | 界面/文案瑕疵 | 排期内 |\n| 建议 | 体验优化建议 | 排期内 |\n\n### 八、AI质量审核计划\n- 审核安排/一票否决项\n\n### 测试范围表\n| 测试模块 | 测试功能点 | 测试类型 | 优先级 | 测试方法/智能体 |\n|---------|-----------|---------|--------|----------------|\n| (模块名) | (功能点) | 功能/性能/安全/兼容/接口 | 高/中/低 | (方法)/(agent) |\n\n### 时间安排表\n| 阶段 | 开始时间 | 结束时间 | 负责人 | 里程碑 |\n|------|---------|---------|--------|--------|\n| 需求分析 | (d1) | (d2) | (人) | 需求基线 |\n| 用例设计 | (d3) | (d4) | (人) | 用例评审通过 |\n| 测试执行 | (d5) | (d6) | (人) | 执行完成 |\n| 报告生成 | (d7) | (d8) | (人) | 报告发布 |`,
+  'test-scheme-generator': `你是测试中台AI智能体 **test-scheme-generator**,负责【测试方案设计】。\n\n【核心职责】\n- 根据需求分析结果,制定整体测试策略\n- 选择测试方法组合(功能/接口/性能/安全/UI自动化)\n- 评估测试工作量,制定时间计划和资源需求\n- 定义测试准入准出标准\n- 从知识库推荐适合项目的测试工具\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试计划模板\n- 知识库:general: 测试中台测试方法指南\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试方案】(基于通用知识库「测试计划模板」):\n\n### 一、基本计划\n- 目的/背景/测试范围(功能范围/非功能范围)\n\n### 二、测试资源\n- 人力资源/测试环境/测试工具\n\n### 三、测试执行条件\n- 启动条件/结束条件/挂起恢复条件\n\n### 四、测试策略\n| 测试阶段 | 目标 | 方法 | 准入/准出标准 | 负责智能体 |\n|---------|------|------|-------------|-----------|\n| 功能测试 | 功能正确性 | 等价类/边界值/场景法 | 用例通过率≥95% | test-case-generator |\n| 性能测试 | 响应/吞吐/稳定 | 负载/压力/稳定性 | TPS/RT达标 | test-master |\n| 安全测试 | 多域暴露面收敛(7域) | Web/API/云原生/移动端/数据安全/供应链/AI 七域覆盖；CVSS v3.1+业务风险双评分、PoC真实验证、合规映射(等保2.0/个保法/数安法/OWASP/CIS/MASVS)、攻击链与威胁建模 | 高危清零+合规差距闭环 | security-sentinel |\n| 兼容测试 | 多端一致性 | 矩阵测试 | 主流环境通过 | ui-e2e-executor |\n| 接口测试 | 接口契约正确 | 正向/反向/异常 | 契约100%通过 | api-executor |\n\n### 五、测试工作量与时间安排\n- 工作量估算/时间安排\n\n### 六、AI智能体执行计划\n- 智能体调度计划/知识库应用计划\n\n### 七、问题严重度定义\n| 等级 | 定义 | 处理时限 |\n|------|------|---------|\n| 致命(block) | 系统崩溃/数据丢失/核心功能不可用 | 立即 |\n| 严重 | 主要流程受阻/重要功能失效 | 24h内 |\n| 一般 | 次要功能异常/有规避方案 | 3天内 |\n| 轻微 | 界面/文案瑕疵 | 排期内 |\n| 建议 | 体验优化建议 | 排期内 |\n\n### 八、AI质量审核计划\n- 审核安排/一票否决项\n\n### 测试范围表\n| 测试模块 | 测试功能点 | 测试类型 | 优先级 | 测试方法/智能体 |\n|---------|-----------|---------|--------|----------------|\n| (模块名) | (功能点) | 功能/性能/安全/兼容/接口 | 高/中/低 | (方法)/(agent) |\n\n### 时间安排表\n| 阶段 | 开始时间 | 结束时间 | 负责人 | 里程碑 |\n|------|---------|---------|--------|--------|\n| 需求分析 | (d1) | (d2) | (人) | 需求基线 |\n| 用例设计 | (d3) | (d4) | (人) | 用例评审通过 |\n| 测试执行 | (d5) | (d6) | (人) | 执行完成 |\n| 报告生成 | (d7) | (d8) | (人) | 报告发布 |`,
   'test-case-generator': `你是测试中台AI智能体 **test-case-generator**,负责【测试用例设计】。\n\n【核心职责】\n- 根据测试方案和需求,生成覆盖全面的测试用例\n- 使用九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性)设计用例,运用等价类划分、边界值分析、状态迁移、决策表等方法\n- 确保用例可操作、可重复执行\n- 用例包含前置条件、输入数据、预期结果、优先级\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试用例设计指南\n- 知识库:general: 测试中台测试方法指南-功能篇\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试用例集】:\n\n### 项目信息\n- 项目名称:[从输入中提取]\n- 版本号:[从输入中提取]\- 需求名称:[从输入中提取]\n- 设计方法:九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性),运用等价类划分、边界值、场景法、错误推测、Pairwise/N-wise组合\n\n### 测试用例清单\n\n| 用例编号 | 所属模块 | 用例名称 | 维度 | 层级 | 前置条件 | 输入数据 | 执行步骤 | 预期结果 | 优先级 | 关联需求 |\n|---------|---------|---------|------|------|---------|---------|---------|---------|---------|--------|----------|\n| TC-001 | | | | | | | 1.<br>2.<br>3. | | 高/中/低 | FR-xxx |\n| TC-002 | | | | | | | 1.<br>2.<br>3. | | 高/中/低 | FR-xxx |\n\n### 用例统计\n- 总计:[N] 个\n- 高优先级:[n] 个\n- 中优先级:[n] 个\n- 低优先级:[n] 个\n\n### 覆盖分析\n| 需求编号 | 覆盖用例数 | 覆盖状态 |\n|---------|-----------|---------|\n| FR-001 | TC-001,TC-002 | 已覆盖 |\n| FR-002 | TC-003 | 已覆盖 |\n\n### 九维推导说明（权重裁剪）\n- ① 用户 ●●：登录态/角色/数据隔离为刚性需求,越权即严重缺陷\n- ② 数据 ●●：业务数据、接口参数、LLM输出,适用BVA七点集\n- ③ 流程 ●●：多阶段状态机,合法+非法迁移必测\n- ④ 操作 ●：重复操作/中断恢复/幂等\n- ⑤ 安全 ●：鉴权、越权、敏感信息脱敏\n- ⑥ 性能 ●：超时、并发、大数据量、宕机恢复\n- ⑦ 网络环境 ●：弱网/断网/切网/SSE断流/超时重试\n- ⑧ 终端环境 ●：浏览器与系统级中断(切后台/锁屏)\n- ⑨ 兼容性 ●：浏览器矩阵/SSE EventSource/渲染布局一致性\n- 裁剪依据：终端与兼容性维度不穷举机型/浏览器,采用主流系统抽样覆盖95%真实流量\n\n### 九维覆盖矩阵（必填）\n- 需求类型:[从需求推断] | 适用维度:9/9(或标注豁免维度)\n\n| 维度 | 权重 | 正常层 | 边界层 | 异常层 | 对应用例 | 判定 |\n|------|------|--------|--------|--------|---------|------|\n| ① 用户 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ② 数据 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ③ 流程 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ④ 操作 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑤ 安全 | ● | — | ✅ | ✅ | | 覆盖 |\n| ⑥ 性能 | ● | — | ✅ | ✅ | | 覆盖 |\n| ⑦ 网络环境 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑧ 终端环境 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑨ 兼容性 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n\n### 豁免声明（权重为 --- 的维度必填）\n| 维度 | 不适用原因 | 风险影响 | 声明人 |\n|------|-----------|---------|--------|\n| (无/维度名) | (原因) | (影响) | AI测试智能体 test-case-generator |\n\n【重要】\n- 输出完整测试用例集后即完成任务\n- 不要输出"等待下一步指令"等额外信息\n- 不需要询问后续问题,专注生成高质量用例`,
   'test-data-generator': `你是测试中台AI智能体 **test-data-generator**,负责生成【测试数据准备】。\n\n【核心职责】\n- 根据测试用例需求,生成覆盖各场景的测试数据\n- 识别敏感数据,执行数据脱敏处理\n- 确保数据满足完整性、一致性、合法性要求\n- 记录数据来源、脱敏规则和使用说明\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试数据清单模板\n- 知识库:general: 数据脱敏记录模板\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试数据清单】:\n\n### 测试数据清单\n| 数据编号 | 数据名称 | 数据类型 | 数据来源 | 所属模块 | 数据量 | 脱敏状态 | 脱敏规则 |\n|---------|---------|---------|---------|---------|--------|---------|---------|\n| TD-001 | | 文本/数值/日期 | AI生成/数据库 | | | □已脱敏 □未脱敏 | |\n\n### 常用脱敏规则\n| 数据类型 | 脱敏方式 | 示例 |\n|---------|---------|------|\n| 手机号 | 掩码(前3后4) | 138****1234 |\n| 身份证号 | 掩码 | 110**********1234 |\n| 邮箱 | 掩码 | z***@example.com |\n| 密码 | 不可逆哈希 | \$2b\$10\$xxx |\n| 银行卡号 | 掩码(后4位) | ****1234 |\n\n### 数据完整性校验\n□ 通过 □ 不通过`,
   'defect-analyzer': `你是测试中台AI智能体 **defect-analyzer**,负责生成【缺陷分析与分类】。\n\n【核心职责】\n- 分析测试执行结果,自动识别和分类缺陷\n- 评估缺陷严重程度和优先级\n- 分析缺陷根因,给出修复建议\n- 生成缺陷趋势图,识别测试阶段\n- 从知识库匹配历史缺陷,辅助分类\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 缺陷报告模板\n- 知识库:general: 测试中台软件缺陷管理流程\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【缺陷报告】:\n\n### 缺陷基本信息\n- 缺陷ID:BUG-[序号]\n- 缺陷概要:[一句话描述]\n- 严重程度:□1-致命 □2-严重 □3-一般 □4-轻微 □5-建议\n- 优先级:□紧急 □重要 □次要 □无关紧要\n- 缺陷类型:□代码错误 □功能问题 □兼容性 □安全 □性能 □界面\n- 状态:□进行中 □待验证 □关闭\n- 所属模块:[从输入中提取]\n\n### 环境描述\n- 操作系统:[从输入中提取]\n- 测试环境:□测试 □预发 □生产\n\n### 复现步骤\n| 步骤 | 操作 | 预期结果 | 实际结果 |\n|------|------|---------|---------|\n| 1 | | | |\n| 2 | | | |\n| 3 | | | |\n\n### 根因分析\n- 根因类型:□代码缺陷 □需求不明确 □环境问题 □数据问题\n- 根因描述:[分析说明]\n- 修复建议:[建议]`,
@@ -7582,7 +7582,14 @@ const AGENT_SYSTEM_PROMPTS = {
   'security-sentinel': `你是测试中台AI智能体 **security-sentinel**,是平台唯一的【安全测试智能体】。所有安全测试相关工作(生成方案、生成用例、执行扫描、执行手工渗透、生成报告)都只由你这一个智能体按工作流顺序调用对应Skill完成,不拆分给其他安全子智能体。
 
 【核心职责】
-你负责Web应用的安全测试,覆盖OWASP Top 10漏洞检测,包括:SQL注入、NoSQL注入、XSS(反射/存储/DOM)、CSRF、认证与会话缺陷、敏感信息泄露、不安全反序列化、XXE、安全配置错误、访问控制缺陷等。
+你负责**多域安全测试**,支持以下测试域(domain):
+- web:Web应用安全(OWASP Top 10):SQL注入、NoSQL注入、XSS(反射/存储/DOM)、CSRF、认证与会话缺陷、敏感信息泄露、不安全反序列化、XXE、安全配置错误、访问控制缺陷。
+- api:API/接口安全:BOLA/BOPLA(对象级/功能级越权)、失效认证与JWT攻击、过度数据暴露、限流与配额缺失、GraphQL滥用、SSRF、参数污染。
+- cloud:云原生与基础设施安全:K8s/容器逃逸、IAM权限过大、存储桶公开、安全组/防火墙误配、基线核查(可复用 openclaw-vps-hardening 方法论)。
+- mobile:移动端应用安全(Android/iOS):组件导出、WebView漏洞、本地存储明文、通信未加密(中间人)、权限过度申请、签名/完整性校验缺失。
+- data:数据安全与隐私合规:敏感个人信息识别、加密合规、日志脱敏、等保2.0/《个人信息保护法》/《数据安全法》条款映射与合规差距分析。
+- supply:软件供应链安全:第三方组件漏洞(SBOM比对CVE)、依赖投毒、开源协议合规、构建流水线安全。
+- ai:AI/大模型安全:提示注入(prompt injection)、越狱(jailbreak)、训练/推理数据泄露、输出有害内容、工具调用越权(可复用 security-sentinel-skill 的注入/越狱检测方法论)。
 
 【工作流阶段与Skill调用】
 你按以下工作流顺序完成任务,每个阶段调用对应Skill(不要跳过,Skill提供专业方法论):
@@ -7602,7 +7609,13 @@ const AGENT_SYSTEM_PROMPTS = {
 - sql: 专注SQL注入
 - os: 操作系统/主机层(nmap端口/服务/sslscan证书)
 - network: 网络层(nuclei漏洞/端口/服务)
-- business: 业务逻辑漏洞(越权/参数篡改/流程绕过)
+  - business: 业务逻辑漏洞(越权/参数篡改/流程绕过)
+
+【domain 与 scanType 路由】
+- domain 决定测试域(见核心职责),缺省 all;取值 all|web|api|cloud|mobile|data|supply|ai。
+- domain=all 表示全量覆盖:必须逐一覆盖全部 7 大域(Web应用/API接口/云原生基础设施/移动端/数据安全与隐私合规/软件供应链/AI大模型),每个域都要有检测项与 findings,不得偷懒只测单域。
+- domain=web 时 scanType 决定细粒度重点(full/xss/sql/os/network/business);domain 为其它时 scanType 可传 full,聚焦该域专项检测。
+- 任何 domain 都必须覆盖:信息收集→漏洞发现→**真实利用验证(PoC)**→风险评级(CVSS v3.1 + 业务风险)→合规映射(等保2.0/个保法/数安法/OWASP)→代码级修复。
 
 【必须调用的Skill】
 - 方案/用例/报告阶段:分别调用 security-scheme-generator / security-case-generator / security-report-generator
@@ -7621,7 +7634,11 @@ const AGENT_SYSTEM_PROMPTS = {
   "scanTimestamp": "<ISO8601时间>",
   "durationMs": <整数毫秒>,
   "securityScore": <0-100整数,无漏洞时传95>,
+  "cvssScore": <0.0-10.0 整体CVSS v3.1,无漏洞传0>,
+  "bizRiskScore": <0-100 业务风险分,无漏洞传0>,
   "severityDist": {"critical":0,"high":0,"medium":0,"low":0,"info":0},
+  "attackChains": [{"name":"<攻击链名称>","steps":["<步骤1>","<步骤2>"],"impact":"<影响>"}],
+  "threatModel": "<威胁建模摘要(资产/威胁/薄弱点/风险)>",
   "findings": [
     {
       "title": "<漏洞标题>",
@@ -7629,17 +7646,23 @@ const AGENT_SYSTEM_PROMPTS = {
       "vulnType": "<漏洞类型,如 SQL注入/XSS/CSRF>",
       "description": "<漏洞描述>",
       "evidence": "<证据/请求示例>",
+      "poc": "<可复现的验证步骤或Payload,或空字符串>",
+      "verified": <true|false 是否已真实验证可利用>,
       "recommendation": "<修复建议>",
+      "codeFix": "<代码级修复示例(伪代码/补丁),或空字符串>",
       "cweId": "<如 CWE-89>",
       "cveId": "<如 CVE-xxxx-xxxxx 或 空字符串>",
-      "owaspCategory": "<如 A03:2021-Injection>",
+      "owaspCategory": "<如 A03:2021-Injection / OWASP API Top 10 API1:2023>",
+      "cvssScore": <0.0-10.0 单漏洞CVSS v3.1>,
+      "bizRisk": "<严重|高|中|低 业务影响>",
+      "compliance": [{"standard":"等保2.0","clause":"8.1.4 入侵防范","level":"三级"},{"standard":"个人信息保护法","clause":"第51条"}],
       "status": "open"
     }
   ],
   "summary": "<一段话总结风险>",
   "riskLevel": "<critical|high|medium|low|info|none>"
 }
-评分标准:无漏洞=95(none);info=85;low=75;medium=55;high=35;critical=15。findings 为空数组时 securityScore 传 95 且 riskLevel 传 none。`,
+评分标准:无漏洞=95(none);info=85;low=75;medium=55;high=35;critical=15。findings 为空数组时 securityScore 传 95 且 riskLevel 传 none。每个 finding 必须尽量给出 cvssScore、bizRisk 业务风险、compliance 合规映射与 codeFix 代码级修复;attackChains 与 threatModel 用于呈现攻击路径与威胁建模。`,
   'test-script-generator': `你是测试中台AI智能体 **test-script-generator**,负责【自动化测试脚本生成】。
 
 【核心职责】
@@ -12131,7 +12154,7 @@ app.delete('/api/defects/:id', authenticate, requireAdmin, async (req, res) => {
 // 发起安全扫描（创建报告记录）
 app.post('/api/security/scan', authenticate, async (req, res) => {
   try {
-    const { target, scanType = 'full', files } = req.body;
+    const { target, scanType = 'full', testDomain = 'web', files, retestOf = null } = req.body;
     if (!target) return res.status(400).json({ success: false, error: '缺少扫描目标' });
     const userId = req.user?.id || req.user?.userId;
     const scanId = `scan-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -12144,14 +12167,14 @@ app.post('/api/security/scan', authenticate, async (req, res) => {
 
     // 注入上传文档内容（前端传入的文件内容）
     const enrichedInput = await injectFilesToInput(
-      `## 安全扫描目标\n请对以下目标进行全面的安全测试:\n${target}\n\n## 扫描类型\n${scanType}\n\n` +
+      `## 安全扫描目标\n请对以下目标进行全面的安全测试:\n${target}\n\n## 扫描类型\n${scanType}\n\n## 测试域(domain)\n${testDomain}\n\n` +
       `## 安全测试方案模板\n${schemeTemplate}\n\n## 安全测试报告模板\n${reportTemplate}\n\n`,
       files || []
     );
 
     // 创建安全报告记录
     const id = await securityDAO.createSecurityReport({
-      scanId, target, scanType, status: 'running', createdBy: userId
+      scanId, target, scanType, testDomain, status: 'running', createdBy: userId
     });
 
     // 通过 SSE 推送扫描开始事件
@@ -12256,7 +12279,17 @@ app.post('/api/security/scan', authenticate, async (req, res) => {
               recommendation: f.recommendation || f.remediation || '',
               cwe: f.cweId || f.cwe_id || null,
               cve: f.cveId || f.cve_id || null,
-              status: 'open'
+              status: 'open',
+              extJson: {
+                domain: f.domain || testDomain || 'web',
+                poc: f.poc || '',
+                verified: !!f.verified,
+                codeFix: f.codeFix || '',
+                owaspCategory: f.owaspCategory || '',
+                cvssScore: f.cvssScore != null ? Number(f.cvssScore) : null,
+                bizRisk: f.bizRisk || '',
+                compliance: Array.isArray(f.compliance) ? f.compliance : []
+              }
             });
           } catch (vulnErr) {
             console.warn(`[SecurityScan] Failed to insert vulnerability: ${vulnErr.message}`);
@@ -12290,7 +12323,18 @@ app.post('/api/security/scan', authenticate, async (req, res) => {
           ? securityReport.severityDist : null,
         findings_count: findingsCount,
         recommendations: recommendationsText,
-        duration_ms: securityReport.durationMs ? Number(securityReport.durationMs) : undefined
+        duration_ms: securityReport.durationMs ? Number(securityReport.durationMs) : undefined,
+        test_domain: testDomain || 'web',
+        report_json: {
+          domain: securityReport.domain || testDomain || 'web',
+          retestOf: retestOf ? Number(retestOf) : null,
+          cvssScore: securityReport.cvssScore != null ? Number(securityReport.cvssScore) : 0,
+          bizRiskScore: securityReport.bizRiskScore != null ? Number(securityReport.bizRiskScore) : 0,
+          attackChains: Array.isArray(securityReport.attackChains) ? securityReport.attackChains : [],
+          threatModel: securityReport.threatModel || '',
+          riskLevel: securityReport.riskLevel || 'none',
+          summary: securityReport.summary || ''
+        }
       });
       await taskDAO.updateTask(taskId, { status: finalStatus, result: JSON.stringify(securityReport) || null, completedAt: new Date() });
       tasks.delete(taskId);
@@ -12308,7 +12352,7 @@ app.post('/api/security/scan', authenticate, async (req, res) => {
       sseBroadcast({ type: 'security_scan_completed', data: { id, scanId, status: 'failed', userId } });
     });
 
-    res.json({ success: true, data: { id, scanId, target, scanType } });
+    res.json({ success: true, data: { id, scanId, target, scanType, testDomain } });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -12369,6 +12413,45 @@ app.get('/api/security/reports/:id/markdown', authenticate, async (req, res) => 
   } catch (err) {
     console.error('[SecurityMarkdown] Error:', err.message);
     res.status(500).json({ success:false, error: err.message });
+  }
+});
+
+// GET /api/security/reports/:id/export?format=md|docx|xlsx — 三格式交付物导出(对齐兼容性测试)
+app.get('/api/security/reports/:id/export', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const format = String(req.query.format || 'md').toLowerCase();
+    if (!['md', 'docx', 'xlsx'].includes(format)) {
+      return res.status(400).json({ error: '不支持的格式，仅支持 md / docx / xlsx' });
+    }
+    const report = await securityDAO.getSecurityReportById(parseInt(id));
+    if (!report) return res.status(404).json({ error: '报告不存在' });
+    const md = await renderSecurityReportMd(report, report.vulnerabilities || []);
+    const asciiName = `security-report-${report.id}.${format}`;
+    const utfName = `安全测试报告_${report.id}.${format}`;
+    const disp = `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(utfName)}`;
+    if (format === 'md') {
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.setHeader('Content-Disposition', disp);
+      return res.send(md);
+    }
+    const outDir = path.join(__dirname, 'output', 'security-export');
+    await fs.mkdir(outDir, { recursive: true });
+    const outPath = path.join(outDir, `${report.id}-${Date.now()}.${format}`);
+    let ok = false;
+    if (format === 'docx') ok = await convertMarkdownToDocx(md, outPath);
+    else if (format === 'xlsx') ok = await convertMarkdownTablesToXlsx(md, outPath);
+    if (!ok) return res.status(500).json({ error: `${format} 生成失败，请改下载 MD 版本` });
+    const mime = format === 'docx'
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', disp);
+    const buf = await fs.readFile(outPath);
+    res.send(buf);
+    fs.unlink(outPath, () => {});
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -13410,7 +13493,7 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
   console.error('[SecurityWorkflow] START workflowId=' + workflowId + ' target=' + (taskInput?.target || '?'));
   // 写入 workflows Map,供 sseBroadcast 的 workflow userId 查找兜底(security workflow 不走 syncWorkflow)
   workflows.set(workflowId, { id: workflowId, userId, status: 'running', scenario: '安全测试', mode: 'security', startedAt: new Date().toISOString() });
-  const { target, scanType = 'full', description = '' } = taskInput;
+  const { target, scanType = 'full', description = '', testDomain = 'web' } = taskInput;
   const startTime = Date.now();
   const results = { stages: [], status: 'running', findings: [], allArtifacts: [] };
 
@@ -13456,10 +13539,11 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
     const schemeInput = {
       target,
       scanType,
+      domain: testDomain,
       description,
       techStack: description || '未知',
-      businessScenario: 'Web应用',
-      complianceRequirements: ['OWASP Top 10'],
+      businessScenario: ({ all:'全测试域(Web/API/云原生/移动端/数据/供应链/AI)', web:'Web应用', api:'API/接口', cloud:'云原生/基础设施', mobile:'移动端', data:'数据安全与隐私合规', supply:'软件供应链', ai:'AI/大模型' })[testDomain] || '全测试域',
+      complianceRequirements: ({ all:['OWASP Top 10','OWASP API Security Top 10','CIS Benchmark','等保2.0','个人信息保护法','数据安全法','OWASP MASVS','SBOM/CVE','OWASP LLM Top 10'], web:['OWASP Top 10'], api:['OWASP API Security Top 10'], cloud:['CIS Benchmark','等保2.0'], mobile:['OWASP MASVS'], data:['等保2.0','个人信息保护法','数据安全法'], supply:['SBOM/CVE'], ai:['OWASP LLM Top 10'] })[testDomain] || ['OWASP Top 10'],
       template: schemeTemplate
     };
 
@@ -13482,6 +13566,7 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
     const caseInput = {
       schemeId: scheme?.schemeId || 'SEC-SCH-001',
       target,
+      domain: testDomain,
       attackSurface: scheme?.attackSurface || {},
       owaspCoverage: scheme?.owaspCoverage || {},
       threatModel: scheme?.threatModel || {},
@@ -13508,6 +13593,7 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
     const scanInput = {
       target,
       scanType,
+      domain: testDomain,
       description,
       scheme: scheme || {},
       testCases: testCases?.testCases || [],
@@ -13538,6 +13624,7 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
     const pentestInput = {
       target,
       scanType,
+      domain: testDomain,
       description: '手工渗透测试 - 侦查和漏洞验证',
       phase: 'pentest',
       reconnaissance: true,
@@ -13575,6 +13662,7 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
     const reportInput = {
       target,
       scanType,
+      domain: testDomain,
       scanTimestamp: new Date().toISOString(),
       durationMs: Date.now() - startTime,
       securityScore: scanOutput?.overallScore || pentestOutput?.overallScore || 0,
@@ -13620,6 +13708,7 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
         scanId: workflowId,
         target,
         scanType,
+        testDomain,
         status: 'completed',
         createdBy: userId
       });
@@ -13629,7 +13718,17 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
         severity_dist: typeof report?.vulnerabilityOverview === 'object' ? JSON.stringify(report.vulnerabilityOverview) : null,
         findings_count: results.findings.length,
         recommendations: typeof report?.conclusion === 'string' ? report.conclusion : null,
-        duration_ms: Date.now() - startTime
+        duration_ms: Date.now() - startTime,
+        test_domain: testDomain,
+        report_json: {
+          domain: testDomain,
+          cvssScore: report?.cvssScore != null ? Number(report.cvssScore) : 0,
+          bizRiskScore: report?.bizRiskScore != null ? Number(report.bizRiskScore) : 0,
+          attackChains: Array.isArray(report?.attackChains) ? report.attackChains : [],
+          threatModel: report?.threatModel || '',
+          riskLevel: report?.riskLevel || 'none',
+          summary: report?.summary || ''
+        }
       });
 
       // 漏洞入库
@@ -13644,7 +13743,17 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
           recommendation: f.remediation || f.recommendation || null,
           cve_id: f.cve || f.cveId || null,
           cwe_id: f.cwe || f.cweId || null,
-          cvss: f.cvss || null
+          cvss: f.cvss || null,
+          extJson: {
+            domain: f.domain || testDomain || 'web',
+            poc: f.poc || '',
+            verified: !!f.verified,
+            codeFix: f.codeFix || '',
+            owaspCategory: f.owaspCategory || '',
+            cvssScore: f.cvssScore != null ? Number(f.cvssScore) : null,
+            bizRisk: f.bizRisk || '',
+            compliance: Array.isArray(f.compliance) ? f.compliance : []
+          }
         }));
         await securityDAO.bulkCreateVulnerabilities(vulns);
         console.error('[SecurityWorkflow] bulkCreateVulnerabilities OK, count=' + vulns.length);
@@ -13674,7 +13783,7 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
 // POST /api/security/workflow
 app.post('/api/security/workflow', authenticate, async (req, res) => {
   try {
-    const { target, scanType = 'full', description = '' } = req.body;
+    const { target, scanType = 'full', description = '', testDomain = 'web' } = req.body;
     const stageIdx = parseInt(req.query.stage);
     if (!target) return res.status(400).json({ error: '缺少 target 参数' });
 
@@ -13686,7 +13795,7 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
       const phaseMap = ['scheme','cases','scan','pentest','report'];
       const phase = phaseMap[stageIdx];
       const stageName = SECURITY_STAGES[stageIdx];
-      const phaseInput = { target, scanType, description, phase, agentId: 'security-sentinel' };
+      const phaseInput = { target, scanType, description, domain: testDomain, phase, agentId: 'security-sentinel' };
 
       // 临时 workflowId 用于 SSE 广播
       const singleWfId = `sec-single-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -13756,12 +13865,12 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
       .replace(/[\u201c\u201d'"](?:password|pwd|secret)[\u201c\u201d'"]\s*:\s*[^,}\s]+/gi, '"password":"***"');
     await taskDAO.createTask({
       id: taskId,
-      name: `安全测试: ${target}`,
+      name: `安全测试(${({ all:'全域', web:'Web', api:'API', cloud:'云原生', mobile:'移动端', data:'数据安全', supply:'供应链', ai:'AI' })[testDomain] || '全域'}): ${target}`,
       type: 'security-test',
       status: 'running',
       userId,
       agentId: 'security-sentinel',
-      input: JSON.stringify({ target, scanType, description: maskedDesc }),
+      input: JSON.stringify({ target, scanType, domain: testDomain, description: maskedDesc }),
       priority: 'high'
     });
 
@@ -13772,7 +13881,7 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
     sseBroadcast({ type: 'workflow_stage_started', workflowId, stage: '安全测试', agentId: 'security-sentinel', userId });
     res.json({ success: true, workflowId, taskId, target, scanType, message: '安全智能体正在执行完整测试，请等待...' });
 
-    executeSecurityWorkflow(workflowId, { target, scanType, description: maskedDesc }, userId)
+    executeSecurityWorkflow(workflowId, { target, scanType, domain: testDomain, description: maskedDesc }, userId)
       .then(async (wr) => {
         const status = wr && wr.status === 'completed' ? 'completed' : 'failed';
         await taskDAO.updateTask(taskId, { status, completedAt: new Date() });
@@ -13919,7 +14028,56 @@ async function renderSecurityReportMd(report, vulns) {
   for (const [k, v] of Object.entries(replacements)) out = out.split(k).join(v);
   // 清理未匹配的占位符
   out = out.replace(/\{\{[A-Z_][A-Z0-9_]*\}\}\}/g, 'N/A');
-  return out;
+
+  // ── 深度章节：测试域 / CVSS+业务风险双评分 / 威胁建模 / 攻击链 / 漏洞明细(合规+代码级修复+PoC) ──
+  const domain = report.test_domain || 'web';
+  const DOMAIN_LABELS = { web:'Web应用', api:'API/接口', cloud:'云原生/基础设施', mobile:'移动端', data:'数据安全与隐私合规', supply:'软件供应链', ai:'AI/大模型' };
+  const reportJson = (report.report_json && typeof report.report_json === 'object') ? report.report_json : {};
+  const cvssScore = reportJson.cvssScore != null ? reportJson.cvssScore : 'N/A';
+  const bizRiskScore = reportJson.bizRiskScore != null ? reportJson.bizRiskScore : 'N/A';
+  const attackChains = Array.isArray(reportJson.attackChains) ? reportJson.attackChains : [];
+  const threatModel = reportJson.threatModel || '';
+  const dLines = [];
+  dLines.push('## 五、测试域与综合评分');
+  dLines.push('');
+  dLines.push('| 项目 | 值 |');
+  dLines.push('|------|----|');
+  dLines.push(`| 测试域(domain) | ${DOMAIN_LABELS[domain] || domain} (${domain}) |`);
+  dLines.push(`| 安全评分 | ${score} / 100 |`);
+  dLines.push(`| 整体 CVSS v3.1 | ${cvssScore} / 10.0 |`);
+  dLines.push(`| 业务风险分 | ${bizRiskScore} / 100 |`);
+  dLines.push(`| 扫描类型 | ${scanType} |`);
+  dLines.push(`| 耗时 | ${durSec} |`);
+  dLines.push('');
+  if (threatModel) { dLines.push('## 六、威胁建模'); dLines.push(''); dLines.push(threatModel); dLines.push(''); }
+  if (attackChains.length) {
+    dLines.push('## 七、攻击链'); dLines.push('');
+    attackChains.forEach((ac, i) => {
+      dLines.push(`### 攻击链 ${i+1}：${ac.name || '未命名'}`); dLines.push('');
+      dLines.push(`**影响**：${ac.impact || '—'}`); dLines.push('');
+      dLines.push('**步骤**：'); (Array.isArray(ac.steps) ? ac.steps : []).forEach((s, j) => dLines.push(`${j+1}. ${s}`)); dLines.push('');
+    });
+  }
+  if (vulnList.length) {
+    dLines.push(`## 八、漏洞明细（${vulnList.length}）`); dLines.push('');
+    vulnList.forEach((v, i) => {
+      const cv = v.cvssScore != null ? v.cvssScore : (v.cvss != null ? v.cvss : '—');
+      dLines.push(`### ${i+1}. 【${v.severity||'未知'}】${v.title||''}`); dLines.push('');
+      dLines.push(`- **类型**：${v.vuln_type||'—'}　**CVSS**：${cv}　**业务风险**：${v.bizRisk || '—'}`);
+      dLines.push(`- **CWE/CVE**：${v.cwe||'—'} / ${v.cve||'—'}　**OWASP**：${v.owaspCategory || '—'}`);
+      dLines.push(`- **描述**：${v.description||'无'}`);
+      if (v.evidence) dLines.push(`- **证据**：${v.evidence}`);
+      if (v.poc) dLines.push(`- **PoC/验证**：${v.poc}　（已验证可利用：${v.verified ? '是' : '否'}）`);
+      if (v.remediation || v.recommendation) dLines.push(`- **修复建议**：${v.remediation || v.recommendation}`);
+      if (v.codeFix) dLines.push(`- **代码级修复**：\n\n\`\`\`\n${v.codeFix}\n\`\`\``);
+      if (Array.isArray(v.compliance) && v.compliance.length) {
+        dLines.push(`- **合规映射**：`);
+        v.compliance.forEach(c => dLines.push(`  - ${c.standard||''} ${c.clause||''}${c.level ? '（'+c.level+'）' : ''}`));
+      }
+      dLines.push('');
+    });
+  }
+  return out + '\n' + dLines.join('\n');
 }
 
 // ══════════════════════════════════════════════════════════════════════

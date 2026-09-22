@@ -29,6 +29,10 @@ If you want full setup:
 
 ---
 
+## 在 security-sentinel 7 域模型中的定位
+
+本 Skill 是 `security-sentinel` 在 **ai** 域（运行时护栏）与 **supply** 域（依赖/工具调用越权）的运行时防护方法论补充，聚焦提示注入/越权/凭证泄露/成本失控的运行时护栏，与上述 7 域模型的 `ai` 域（`security-sentinel-skill`）与 `supply` 域方法论互补。
+
 ## Operating modes
 
 Two modes. Research stays fast, execution stays safe.

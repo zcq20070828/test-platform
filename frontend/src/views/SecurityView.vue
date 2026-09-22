@@ -4,7 +4,7 @@
     <div class="view-header">
       <div>
         <h2 class="view-title">🛡️ 安全测试</h2>
-        <p class="view-subtitle">漏洞扫描 · 渗透测试 · OWASP Top 10</p>
+        <p class="view-subtitle">7 大测试域 · 漏洞扫描 · 手工渗透 · CVSS+业务风险双评分 · 合规映射</p>
       </div>
       <div class="header-actions">
         <el-button @click="loadStats" :icon="Refresh" circle />
@@ -97,10 +97,22 @@
               </template>
             </el-table-column>
             <el-table-column prop="created_at" label="时间" width="160" />
-            <el-table-column label="操作" width="180" fixed="right">
+            <el-table-column label="操作" width="280" fixed="right">
               <template #default="{ row }">
                 <el-button size="small" link type="primary" @click="viewReport(row)">详情</el-button>
-                <el-button size="small" link type="success" @click="downloadReport(row)" title="下载通用模板化 Markdown 报告">下载</el-button>
+                <el-dropdown trigger="click" @command="(cmd: string) => exportReport(row, cmd as 'md' | 'docx' | 'xlsx')">
+                  <el-button size="small" link type="success">
+                    导出交付物<el-icon><ArrowDown /></el-icon>
+                  </el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="md">📄 Markdown（通用模板）</el-dropdown-item>
+                      <el-dropdown-item command="docx">📝 Word（docx）</el-dropdown-item>
+                      <el-dropdown-item command="xlsx">📊 Excel（xlsx）</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+                <el-button size="small" link type="warning" @click="retestReport(row)" title="基于本报告发起复测，验证修复效果">复测</el-button>
                 <el-button size="small" link type="danger" @click="delReport(row)">删除</el-button>
               </template>
             </el-table-column>
@@ -177,10 +189,10 @@
           />
         </el-tab-pane>
 
-        <!-- OWASP Top 10 知识库 -->
-        <el-tab-pane label="📚 OWASP 知识库" name="owasp">
+        <!-- 安全测试知识库（覆盖 7 大测试域 + 合规基线） -->
+        <el-tab-pane label="📚 安全测试知识库" name="owasp">
           <div class="owasp-intro">
-            <p>基于 <strong>OWASP Top 10 (2021)</strong> 的漏洞检测规则库，为安全扫描提供检测依据。</p>
+            <p>覆盖 <strong>7 大安全测试域</strong> 的检测能力与合规基线：OWASP Top 10 / API Security Top 10 / CIS / 等保2.0 / OWASP MASVS / 个保法 / 数安法。</p>
             <div class="owasp-actions">
               <el-button type="primary" :icon="Refresh" :loading="owaspUpdating" @click="updateOwaspKb" size="small">
                 🔄 一键更新
@@ -191,6 +203,16 @@
               </span>
             </div>
           </div>
+
+          <!-- 7 大测试域 × 合规基线 总览 -->
+          <el-table :data="securityDomains" size="small" border class="domain-table" style="margin-bottom: 8px">
+            <el-table-column prop="domain" label="测试域" width="150" />
+            <el-table-column prop="focus" label="检测重点" min-width="240" show-overflow-tooltip />
+            <el-table-column prop="standard" label="合规 / 标准基线" width="220" />
+            <el-table-column prop="examples" label="典型漏洞" min-width="180" show-overflow-tooltip />
+          </el-table>
+
+          <h4 class="detail-section-title" style="margin-top: 16px">📌 Web 应用 · OWASP Top 10 (2021) 检测细则</h4>
           <el-collapse v-model="owaspActive" accordion>
             <el-collapse-item name="A01">
               <template #title>
@@ -381,6 +403,120 @@
           </el-collapse>
         </el-tab-pane>
 
+        <!-- 手工渗透测试 -->
+        <el-tab-pane label="🛠 手工渗透" name="pentest">
+          <div class="pentest-layout">
+            <!-- 左栏：AI 辅助生成 + 工具箱 -->
+            <div class="pentest-left">
+              <!-- AI 辅助生成命令 -->
+              <div class="pentest-ai-section">
+                <div class="pentest-ai-header">🤖 AI 辅助生成命令</div>
+                <div class="pentest-ai-inputs">
+                  <el-input v-model="pentestTargetInput" placeholder="目标（如 https://example.com 或 192.168.1.10）" size="small" />
+                  <el-input v-model="pentestGoalInput" placeholder="测试目标/场景（可选，如 信息收集、SQL 注入验证）" size="small" style="margin-top:8px" />
+                  <el-button :loading="pentestAiLoading" type="primary" size="small" @click="generatePentestCommands" style="margin-top:8px">
+                    ⚡ 生成渗透命令
+                  </el-button>
+                </div>
+                <div v-if="aiGeneratedCommands.length" class="ai-commands-list">
+                  <div class="ai-commands-header">
+                    <span>生成结果（{{ aiGeneratedCommands.length }} 条）</span>
+                    <el-button size="small" type="success" @click="executeSelectedCommands">执行选中</el-button>
+                  </div>
+                  <div v-for="(c, idx) in aiGeneratedCommands" :key="idx" class="ai-cmd-item" :class="{ 'ai-cmd-selected': c.selected !== false }">
+                    <div>
+                      <el-checkbox v-model="c.selected" size="small" />
+                      <span class="ai-cmd-tool">{{ c.tool }}</span>
+                      <span class="ai-cmd-desc">{{ c.desc }}</span>
+                    </div>
+                    <div class="ai-cmd-text">{{ c.cmd }}</div>
+                    <div class="ai-cmd-actions">
+                      <el-button size="small" :loading="c.running" @click="executeAiCommand(c, idx)">执行</el-button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 工具箱筛选 -->
+              <div class="pentest-filter">
+                <el-radio-group v-model="pentestFilter" size="small">
+                  <el-radio-button value="all">全部</el-radio-button>
+                  <el-radio-button v-for="cat in pentestCategories" :key="cat" :value="cat">{{ cat }}</el-radio-button>
+                </el-radio-group>
+              </div>
+              <div v-if="pentestLoading" v-loading="true" class="pentest-tools-empty" style="min-height:120px">加载工具中...</div>
+              <div v-else-if="filteredPentestTools.length === 0" class="pentest-tools-empty">暂无可用工具</div>
+              <div v-else class="pentest-tools">
+                <div
+                  v-for="(t, key) in filteredPentestTools"
+                  :key="key"
+                  class="tool-card"
+                  :class="{ 'tool-high-risk': t.riskLevel === 'high', 'tool-not-installed': !toolInstallStatus[t.name]?.installed }"
+                  @click="useTool(t)"
+                >
+                  <div class="tool-name">
+                    <span>{{ t.name }}</span>
+                    <el-tag v-if="t.riskLevel === 'high'" size="small" type="danger" class="tool-tag-inline">高危</el-tag>
+                  </div>
+                  <div class="tool-desc">{{ t.desc }}</div>
+                  <div class="tool-status">
+                    <template v-if="toolInstallStatus[t.name]?.installed">
+                      <el-tag size="small" type="success">已安装</el-tag>
+                      <span class="tool-version">{{ toolInstallStatus[t.name]?.version }}</span>
+                    </template>
+                    <template v-else>
+                      <el-tag size="small" type="warning">未安装</el-tag>
+                    </template>
+                  </div>
+                  <div class="tool-actions">
+                    <el-button
+                      v-if="!toolInstallStatus[t.name]?.installed"
+                      size="small"
+                      :disabled="installingTool === t.name"
+                      @click.stop="installPentestTool(t.name, 'install')"
+                    >安装</el-button>
+                    <el-button v-else size="small" @click.stop="installPentestTool(t.name, 'upgrade')">升级</el-button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 右栏：手动输入 + 执行历史 -->
+            <div class="pentest-right">
+              <div class="pentest-input-area">
+                <el-input
+                  v-model="pentestInput"
+                  type="textarea"
+                  :rows="3"
+                  placeholder="直接输入渗透命令（Enter 执行，高危命令需二次确认）"
+                  @keydown.enter.exact.prevent="executePentest"
+                />
+                <div style="text-align:right; margin-top:8px">
+                  <el-button :loading="pentestRunning" type="primary" size="small" @click="executePentest">▶ 执行命令</el-button>
+                </div>
+              </div>
+              <div class="pentest-history-header">
+                <span>执行历史</span>
+                <el-button size="small" text @click="loadPentestHistory">刷新</el-button>
+              </div>
+              <div class="pentest-history">
+                <div v-if="!pentestCommands.length" class="pentest-empty">暂无执行记录</div>
+                <div v-for="rec in pentestCommands" :key="rec.id" class="cmd-item" :class="`cmd-${rec.status}`">
+                  <div class="cmd-meta">
+                    <span class="cmd-time">{{ formatTime(rec.timestamp) }}</span>
+                    <span v-if="rec.riskLevel" class="text-cve">风险:{{ rec.riskLevel }}</span>
+                    <span v-if="rec.status === 'rejected'" class="cmd-rejected">已拒绝</span>
+                    <span v-if="rec.status === 'timeout'" class="cmd-timeout">超时</span>
+                  </div>
+                  <div class="cmd-text">{{ rec.command }}</div>
+                  <pre v-if="rec.output" class="cmd-output">{{ rec.output }}</pre>
+                  <div class="cmd-exit">exit: {{ rec.exitCode }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+
       </el-tabs>
     </el-card>
 
@@ -403,6 +539,15 @@
             <el-descriptions-item label="扫描引擎">{{ detailReport.scanner }}</el-descriptions-item>
             <el-descriptions-item label="耗时">{{ detailReport.duration_ms ? (detailReport.duration_ms / 1000).toFixed(1) + 's' : '—' }}</el-descriptions-item>
             <el-descriptions-item label="创建时间" :span="2">{{ detailReport.created_at }}</el-descriptions-item>
+            <el-descriptions-item v-if="detailReport.test_domain" label="测试域">
+              <el-tag size="small" type="primary">{{ securityDomainLabel(detailReport.test_domain) }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item v-if="detailReport.report_json && detailReport.report_json.riskLevel" label="综合风险等级">
+              <el-tag size="small" :type="riskLevelTagType(detailReport.report_json.riskLevel)">{{ detailReport.report_json.riskLevel }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item v-if="detailReport.report_json && detailReport.report_json.retestOf" label="复测来源" :span="2">
+              本报告为 #{{ detailReport.report_json.retestOf }} 的复测验证
+            </el-descriptions-item>
           </el-descriptions>
         </div>
 
@@ -418,15 +563,39 @@
               <span class="vuln-title">{{ v.title }}</span>
               <code class="vuln-type-code">{{ v.vuln_type }}</code>
             </div>
+            <!-- 深度：CVSS v3.1 + 业务风险 + OWASP 双评分 -->
+            <div class="vuln-score-row" v-if="v.cvssScore != null || v.cvss != null || v.bizRisk || v.owaspCategory">
+              <span v-if="v.cvssScore != null" class="vuln-chip vuln-chip--cvss">CVSS v3.1：{{ v.cvssScore }}</span>
+              <span v-else-if="v.cvss != null" class="vuln-chip vuln-chip--cvss">CVSS：{{ v.cvss }}</span>
+              <span v-if="v.bizRisk" class="vuln-chip vuln-chip--biz">业务风险：{{ v.bizRisk }}</span>
+              <span v-if="v.owaspCategory" class="vuln-chip vuln-chip--owasp">{{ v.owaspCategory }}</span>
+              <span v-if="v.verified != null" class="vuln-chip" :class="v.verified ? 'vuln-chip--verified' : 'vuln-chip--unverified'">
+                PoC {{ v.verified ? '已验证' : '待验证' }}
+              </span>
+            </div>
             <div v-if="v.description" class="vuln-desc">{{ v.description }}</div>
             <div v-if="v.location" class="vuln-location">📍 {{ v.location }}</div>
             <div v-if="v.evidence" class="vuln-evidence">
               <div class="evidence-label">证据:</div>
               <pre class="evidence-pre">{{ v.evidence }}</pre>
             </div>
+            <div v-if="v.poc" class="vuln-evidence">
+              <div class="evidence-label">PoC（{{ v.verified ? '已验证' : '待验证' }}）:</div>
+              <pre class="evidence-pre">{{ v.poc }}</pre>
+            </div>
             <div v-if="v.remediation" class="vuln-remediation">
               <div class="remediation-label">修复建议:</div>
               <div>{{ v.remediation }}</div>
+            </div>
+            <div v-if="v.codeFix" class="vuln-evidence">
+              <div class="evidence-label">代码级修复:</div>
+              <pre class="evidence-pre">{{ v.codeFix }}</pre>
+            </div>
+            <div v-if="v.compliance && v.compliance.length" class="vuln-compliance">
+              <div class="remediation-label">合规映射:</div>
+              <el-tag v-for="(c, ci) in v.compliance" :key="ci" size="small" type="info" class="compliance-tag">
+                {{ c.standard }} · {{ c.clause }}（{{ c.level }}）
+              </el-tag>
             </div>
             <div class="vuln-footer">
               <span v-if="v.cve" class="text-cve">{{ v.cve }}</span>
@@ -434,6 +603,24 @@
               <span v-if="v.cvss" class="text-cvss">CVSS {{ v.cvss }}</span>
             </div>
           </div>
+        </div>
+
+        <!-- 深度：攻击链 -->
+        <div v-if="detailReport.report_json && detailReport.report_json.attackChains && detailReport.report_json.attackChains.length" class="detail-attack-chains">
+          <h4 class="detail-section-title">🎯 攻击链</h4>
+          <div v-for="(ac, i) in detailReport.report_json.attackChains" :key="i" class="attack-chain-item">
+            <div class="attack-chain-name">{{ i + 1 }}. {{ ac.name }}</div>
+            <ol class="attack-chain-steps">
+              <li v-for="(s, j) in (ac.steps || [])" :key="j">{{ s }}</li>
+            </ol>
+            <div v-if="ac.impact" class="attack-chain-impact">影响：{{ ac.impact }}</div>
+          </div>
+        </div>
+
+        <!-- 深度：威胁建模 -->
+        <div v-if="detailReport.report_json && detailReport.report_json.threatModel" class="detail-threat-model">
+          <h4 class="detail-section-title">🛡 威胁建模</h4>
+          <div class="threat-model-content">{{ detailReport.report_json.threatModel }}</div>
         </div>
 
         <div v-if="detailReport.recommendations" class="detail-recommendations">
@@ -485,7 +672,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, reactive, computed } from 'vue'
+import { ref, onMounted, onUnmounted, reactive, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { securityApi, toolsApi } from '@/api'
@@ -503,11 +690,20 @@ const detailReport = ref<Record<string, any> | null>(null)
 // 筛选 & 分页
 const pentestRunning = ref(false)
 const pentestInput = ref('')
-const pentestFilter = ref('recon')
+const pentestFilter = ref('all')
 const filteredPentestTools = computed(() => {
   const tools = Object.values(pentestToolTips.value)
   if (pentestFilter.value === 'all') return tools
   return tools.filter((t: any) => t.category === pentestFilter.value)
+})
+// 工具分类（从后端返回的工具集动态派生，用于筛选）
+const pentestCategories = computed(() => {
+  const set = new Set<string>()
+  for (const t of Object.values(pentestToolTips.value)) {
+    const cat = (t as any).category
+    if (cat) set.add(cat)
+  }
+  return Array.from(set)
 })
 
 const pentestToolTips = ref<Record<string, any>>({})
@@ -525,6 +721,17 @@ const vulnTotal = ref(0)
 const owaspActive = ref('A01')
 const owaspMeta = ref<{ lastUpdated: string; size: number; chunks: number } | null>(null)
 const owaspUpdating = ref(false)
+
+// 7 大安全测试域 × 合规基线 总览（与后端 security-sentinel domain 路由对齐）
+const securityDomains = [
+  { domain: 'Web 应用', focus: 'OWASP Top 10：越权、注入、XSS、配置错误、SSRF', standard: 'OWASP Top 10 (2021) · 等保2.0', examples: 'A01 失效访问控制 / A03 注入 / A10 SSRF' },
+  { domain: 'API / 接口', focus: 'OWASP API Top 10：BOLA、BFLA、未受限资源、SSRF、批量分配', standard: 'OWASP API Security Top 10', examples: 'BOLA 越权对象、未鉴权接口、限流缺失' },
+  { domain: '云原生 / 基础设施', focus: '容器逃逸、K8s RBAC、IAM 权限、元数据服务、存储桶公开', standard: 'CIS Benchmark · 等保2.0', examples: '169.254.169.254 元数据泄露、特权容器' },
+  { domain: '移动端', focus: '组件导出、明文存储、弱签名校验、WebView 注入', standard: 'OWASP MASVS', examples: 'Android 组件导出、iOS 越狱检测绕过' },
+  { domain: '数据安全 / 隐私合规', focus: '敏感数据脱敏、加密传输、隐私收集告知、跨境传输', standard: '等保2.0 · 个保法 · 数安法', examples: '明文存储身份证、超范围收集' },
+  { domain: '软件供应链', focus: '依赖组件 CVE、SBOM 完整性、CI/CD 投毒、SRI 缺失', standard: 'SBOM (CycloneDX/SPDX) · CVE', examples: 'Log4j CVE-2021-44228、依赖混淆' },
+  { domain: 'AI / 大模型', focus: '提示注入、越狱、训练数据泄露、有害内容、模型窃取', standard: 'OWASP LLM Top 10', examples: 'Prompt Injection、系统提示泄露' },
+]
 
 // 获取知识库状态
 async function loadOwaspMeta() {
@@ -586,6 +793,23 @@ function scoreClass(score: number) {
   if (score >= 80) return 'score-good'
   if (score >= 60) return 'score-mid'
   return 'score-bad'
+}
+// 测试域编码 → 中文标签
+const DOMAIN_LABELS: Record<string, string> = {
+  web: 'Web 应用', api: 'API / 接口', cloud: '云原生 / 基础设施',
+  mobile: '移动端', data: '数据安全 / 隐私合规', supply: '软件供应链', ai: 'AI / 大模型',
+}
+function securityDomainLabel(d: string): string {
+  return DOMAIN_LABELS[d] || d || 'Web 应用'
+}
+// 综合风险等级 → Tag 类型
+function riskLevelTagType(level?: string) {
+  if (!level) return 'info'
+  const l = level.toLowerCase()
+  if (l.includes('高') || l.includes('high') || l.includes('critical')) return 'danger'
+  if (l.includes('中') || l.includes('medium')) return 'warning'
+  if (l.includes('低') || l.includes('low')) return 'success'
+  return 'info'
 }
 
 // 加载统计数据
@@ -654,6 +878,36 @@ async function downloadReport(row: Record<string, any>) {
     await securityApi.downloadReportMd(row.id)
   } catch (e: any) {
     ElMessage.error(`下载失败: ${e.message}`)
+  }
+}
+
+// 导出三格式交付物（md / docx / xlsx）
+async function exportReport(row: Record<string, any>, format: 'md' | 'docx' | 'xlsx') {
+  try {
+    await securityApi.exportReport(row.id, format)
+    ElMessage.success(`已导出 ${format.toUpperCase()} 交付物：${row.target}`)
+  } catch (e: any) {
+    ElMessage.error(`导出失败: ${e?.message || e}`)
+  }
+}
+
+// 复测闭环：基于本报告（相同目标）重新发起扫描，retestOf 关联原报告
+async function retestReport(row: Record<string, any>) {
+  try {
+    const r = await securityApi.startScan({
+      target: row.target,
+      scanType: row.scan_type || 'full',
+      retestOf: row.id,
+    })
+    if (r) {
+      ElMessage.success(`已发起复测（关联报告 #${row.id}），可关注「扫描报告」列表新条目`)
+      reportPage.value = 1
+      loadReports()
+    } else {
+      ElMessage.error('复测发起失败')
+    }
+  } catch (e: any) {
+    ElMessage.error('复测失败: ' + (e?.message || e))
   }
 }
 
@@ -920,41 +1174,38 @@ async function executePentest() {
   pentestRunning.value = true
   try {
     const res = await pentestApi.execute(cmd, false)
-    if (!res.ok && res.needConfirm) {
-      // 需要二次确认
+    if (res.success && res.data?.record) {
+      const rec = res.data.record
+      pentestCommands.value.unshift(rec)
+      if (rec.status === 'rejected') ElMessage.warning('命令被拒绝: ' + (res.data.reason || ''))
+      else if (rec.status === 'timeout') ElMessage.warning('命令执行超时（30s）')
+      else if (rec.status === 'success') ElMessage.success(`执行成功（exit ${rec.exitCode}）`)
+      else ElMessage.error(`执行失败（exit ${rec.exitCode}）`)
+    } else if (res.data?.needConfirm) {
+      // 高危命令需二次确认
       const confirmed = await ElMessageBox.confirm(
-        `${res.desc || res.tool} 属于高危操作，是否确认执行？`,
+        `${res.data.desc || res.data.tool || cmd} 属于高危操作，是否确认执行？`,
         '高危命令确认',
         { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
       ).then(() => true).catch(() => false)
       if (confirmed) {
         const retryRes = await pentestApi.execute(cmd, true)
-        handlePentestResult(retryRes)
+        if (retryRes.success && retryRes.data?.record) {
+          const rec = retryRes.data.record
+          pentestCommands.value.unshift(rec)
+          ElMessage.success(`执行完成（exit ${rec.exitCode}）`)
+        } else {
+          ElMessage.error(retryRes.data?.reason || retryRes.error || '执行失败')
+        }
       }
     } else {
-      handlePentestResult(res)
+      ElMessage.error(res.error || res.data?.reason || '执行失败')
     }
+  } catch (e: any) {
+    ElMessage.error('执行失败: ' + (e.message || ''))
   } finally {
     pentestRunning.value = false
     pentestInput.value = ''
-  }
-}
-
-function handlePentestResult(res: any) {
-  if (!res.record) {
-    ElMessage.error(res.reason || '执行失败')
-    return
-  }
-  const rec = res.record
-  pentestCommands.value.unshift(rec)
-  if (rec.status === 'rejected') {
-    ElMessage.warning('命令被拒绝: ' + res.reason)
-  } else if (rec.status === 'timeout') {
-    ElMessage.warning('命令执行超时（30s）')
-  } else if (rec.status === 'success') {
-    ElMessage.success(`执行成功（exit ${rec.exitCode}）`)
-  } else {
-    ElMessage.error(`执行失败（exit ${rec.exitCode}）`)
   }
 }
 
@@ -1003,6 +1254,16 @@ onMounted(() => {
   loadVulns()
   connectSSE()
   loadOwaspMeta()
+})
+
+// 首次进入「手工渗透」tab 时懒加载工具与执行历史
+let pentestLoaded = false
+watch(activeTab, (tab) => {
+  if (tab === 'pentest' && !pentestLoaded) {
+    pentestLoaded = true
+    loadPentestTools()
+    loadPentestHistory()
+  }
 })
 
 onUnmounted(() => {
@@ -1138,6 +1399,46 @@ function copyInstallScript() {
 .vuln-remediation { background: #f0f9eb; border-radius: 4px; padding: 6px 8px; font-size: 12px; color: #4a7c59; margin-top: 6px; }
 .vuln-footer { display: flex; gap: 12px; margin-top: 6px; }
 .detail-recommendations { margin-top: 16px; background: #fff8e6; border-radius: 6px; padding: 12px; font-size: 13px; }
+
+/* 漏洞深度字段：双评分 / 合规映射 */
+.vuln-score-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.vuln-chip {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid #dcdfe6;
+  color: #606266;
+  background: #f5f7fa;
+}
+.vuln-chip--cvss { color: #c0392b; border-color: #f0c4c0; background: #fdf0ef; font-family: monospace; }
+.vuln-chip--biz { color: #b06a00; border-color: #f0d8a8; background: #fdf6e6; }
+.vuln-chip--owasp { color: #409eff; border-color: #b3d8ff; background: #ecf5ff; }
+.vuln-chip--verified { color: #67c23a; border-color: #c2e7b0; background: #f0f9eb; }
+.vuln-chip--unverified { color: #909399; border-color: #dcdfe6; background: #f4f4f5; }
+.vuln-compliance { margin-top: 6px; }
+.compliance-tag { margin-right: 6px; margin-bottom: 4px; }
+.detail-attack-chains, .detail-threat-model { margin-top: 16px; }
+.attack-chain-item {
+  border: 1px solid #e8e8e8;
+  border-left: 4px solid #c0392b;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: #fff;
+}
+.attack-chain-name { font-weight: 600; font-size: 13px; color: #c0392b; margin-bottom: 4px; }
+.attack-chain-steps { margin: 4px 0 4px 18px; font-size: 12px; color: #555; line-height: 1.6; }
+.attack-chain-impact { font-size: 12px; color: #b06a00; }
+.threat-model-content {
+  background: #f5f7fa;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #333;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+.domain-table { font-size: 12px; }
 .sev-tag--critical { font-weight: 700; }
 .owasp-intro { padding: 12px 16px; background: #f0f7ff; border-radius: 6px; margin-bottom: 16px; font-size: 13px; color: #333; }
 .owasp-intro strong { color: #409eff; }
