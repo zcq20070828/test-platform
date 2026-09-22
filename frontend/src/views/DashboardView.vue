@@ -11,8 +11,8 @@ import { getAuthHeaders, request, taskApi } from '@/api'
 const store = useMainStore()
 const router = useRouter()
 // ===== 智能体下拉列表配置 =====
-// 排除:test-master(主控)、ai-quality-reviewer-1/2/3(审核智能体)
-const EXCLUDED_AGENTS = ['test-master', 'ai-quality-reviewer-1', 'ai-quality-reviewer-2', 'ai-quality-reviewer-3', 'security-sentinel', 'performance-tester', 'test-script-generator', 'compatibility-coordinator']
+// 排除:test-master(主控)、ai-quality-reviewer-1/2/3(审核智能体)、ai-evaluation-agent(AI评估,改由「智能评估」菜单承载)、test-script-generator(改由自动化测试tab承载)、compatibility-coordinator(改由兼容性测试菜单承载)
+const EXCLUDED_AGENTS = ['test-master', 'ai-quality-reviewer-1', 'ai-quality-reviewer-2', 'ai-quality-reviewer-3', 'security-sentinel', 'performance-tester', 'test-script-generator', 'compatibility-coordinator', 'ai-evaluation-agent']
 
 // 智能体中文名称映射
 const AGENT_NAME_MAP: Record<string, string> = {
