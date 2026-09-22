@@ -1,11 +1,32 @@
 ---
 name: security-scanner
-description: 深度安全扫描技能。通过 AI 分析 + 正则匹配对目标 URL 执行 DAST，覆盖端口扫描、漏洞识别、SSL 检测、渗透测试各阶段。触发词：安全扫描、渗透测试、漏洞检测、OWASP、pentest、nmap、nuclei。
+description: 深度安全扫描技能。通过 AI 分析 + 正则匹配对目标执行 DAST，覆盖 7 大测试域（Web/API/云原生/移动端/数据安全合规/供应链/AI），含端口扫描、漏洞识别、SSL 检测、渗透测试各阶段。触发词：安全扫描、渗透测试、漏洞检测、OWASP、pentest、nmap、nuclei。
 ---
 
 # Security Scanner（深度安全扫描）
 
-本 skill 指导 AI 对 Web 目标执行**深度安全评估**，涵盖信息收集→漏洞识别→风险评级→修复建议全流程。
+本 skill 指导 AI 对目标执行**深度安全评估**，涵盖信息收集→漏洞识别→风险评级→修复建议全流程。
+
+> 广度强化：评估目标须按 security-sentinel 的 **7 大测试域**（web / api / cloud / mobile / data / supply / ai）展开，各域重点与合规基线见 security-sentinel-skill。
+
+## 🌐 扫描域覆盖（7 大域）
+
+| 域 | DAST/探测重点 | 合规基线 |
+|---|---|---|
+| web | URL/表单/接口：注入、XSS、越权、SSRF、CORS、安全头 | OWASP Top 10 2021 |
+| api | REST/GraphQL：JWT 绕过、越权、参数污染、限速缺失 | OWASP API Security Top 10 |
+| cloud | 公网暴露面、云元数据(169.254.169.254)、存储桶、IAM 越权 | CIS Benchmark、等保2.0 |
+| mobile | 移动端接口/深链/组件暴露、证书绑定 | OWASP MASVS |
+| data | 明文传输、敏感接口越权获取、脱敏失效 | 等保2.0、个保法、数安法 |
+| supply | 第三方组件 CVE、SBOM 缺失、依赖投毒 | SBOM/CVE |
+| ai | 提示注入/越狱探测、工具调用越权 | OWASP LLM Top 10 |
+
+## 🔬 深度要求（每条 finding 必含）
+
+- `cvssScore`(CVSS v3.1)、`bizRisk`(业务风险)、`owaspCategory`/`cwe`/`cve`
+- `poc`(真实可利用验证步骤) + `verified`(是否已真实验证)
+- `codeFix`(代码级修复)、`compliance`([{standard,clause,level}])
+- 报告级须给出 `attackChains`(攻击链) 与 `threatModel`(威胁建模)
 
 ## 扫描阶段（对应 pentest-workbench 五阶段）
 

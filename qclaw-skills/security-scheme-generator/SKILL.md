@@ -1,15 +1,40 @@
 ---
 name: security-scheme-generator
-description: 安全测试方案生成Skill。攻击面分析、威胁建模、OWASP覆盖规划、工具选型方法论。基于通用知识库「XX系统安全测试方案」模板生成结构化安全测试方案。
+description: 安全测试方案生成Skill。覆盖 7 大测试域（Web/API/云原生/移动端/数据安全合规/供应链/AI），攻击面分析、威胁建模、合规基线规划、工具选型方法论。基于通用知识库「XX系统安全测试方案」模板生成结构化安全测试方案。
 metadata:
   openclaw:
     emoji: "🛡️"
-    version: "1.0.0"
+    version: "2.0.0"
 ---
 
 # 安全测试方案生成 Skill
 
 当 security-sentinel 进入 **scheme（方案）** 阶段时调用本 Skill，生成结构化安全测试方案。
+
+> 本 Skill 须与 security-sentinel 的 7 大测试域 + 深度要求保持一致（详见 security-sentinel-skill / server.js 内嵌 prompt）。
+
+## 🌐 测试域覆盖（7 大域，方案阶段必须明确本次覆盖哪些域）
+
+| 域(domain) | 覆盖重点 | 合规 / 标准基线 |
+|---|---|---|
+| web | Web 应用：XSS / SQLi / 越权 / SSRF / CSRF / 逻辑漏洞 | OWASP Top 10 2021 |
+| api | REST/GraphQL 接口：JWT/鉴权绕过、越权、参数污染、速率限制、批量分配 | OWASP API Security Top 10 |
+| cloud | 云原生与基础设施：容器逃逸、K8s RBAC/IAM 越权、公网暴露、镜像/CVE、配置错误 | CIS Benchmark、等保2.0 |
+| mobile | Android/iOS/HarmonyOS：组件导出、不安全存储、WebView、证书绑定、权限滥用 | OWASP MASVS |
+| data | 数据安全与隐私合规：敏感数据落库/传输、脱敏、留存、跨境、权限最小化 | 等保2.0、个人信息保护法、数据安全法 |
+| supply | 软件供应链：依赖 CVE、SBOM、恶意包、构建投毒、许可证风险 | SBOM/CVE、OWASP Top 10 for LLM(供应链) |
+| ai | AI/大模型安全：提示注入、越狱、训练/推理数据泄露、工具调用越权、输出有害 | OWASP LLM Top 10 |
+
+- `domain=all`（默认）：必须逐一覆盖全部 7 大域，每个域都要有检测项与 findings，不得只测单域。
+- `domain=web|api|cloud|mobile|data|supply|ai`：聚焦该域专项检测，但方案仍须标注合规基线。
+
+## 🔬 深度要求（方案阶段须规划，落地于后续用例/扫描/报告）
+
+1. **攻击面与威胁建模**：每个域给出攻击面清单 + 威胁建模（STRIDE/攻击树），输出 `threatModel`。
+2. **攻击链（attackChains）**：规划跨域/单域的攻击路径（name/steps/impact），供报告阶段呈现。
+3. **合规映射**：每个域对应的等保2.0/个保法/数安法/CIS/MASVS/OWASP 条款，填入 findings 的 `compliance`。
+4. **复测闭环**：若 `retestOf` 指向历史报告，方案须说明仅验证已修复项并给出「已修复/未修复」判定标准。
+5. **双评分基线**：方案中预估采用 CVSS v3.1 + 业务风险双维度评级（高危及以上必附业务影响说明）。
 
 ## 必须遵循的【安全测试方案】模板结构（基于通用知识库「XX系统安全测试方案」）
 
@@ -30,7 +55,10 @@ metadata:
 - **十三、AI质量审核结果**：审核摘要 / 一票否决项
 - **十四、人工审核与审批**
 
-### 各检查项详细测试方法（OWASP Top 10 2021）
+### 各检查项详细测试方法（Web 域 · OWASP Top 10 2021 基线）
+
+> 下表为 **web 域**基线；`api/cloud/mobile/data/supply/ai` 域须按上方「测试域覆盖」表的对应标准（OWASP API Top 10 / CIS / MASVS / 等保2.0·个保法·数安法 / SBOM-CVE / LLM Top 10）补充专项检查项。
+
 | 检查项(OWASP) | 测试方法 | 工具 | 负责智能体 |
 |--------------|---------|------|-----------|
 | A01 失效的访问控制 | 越权/水平垂直越权测试 | security-vuln-scanner | security-sentinel |

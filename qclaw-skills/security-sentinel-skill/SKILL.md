@@ -57,6 +57,17 @@ This skill must execute on:
 
 ---
 
+## Role in the security-sentinel 7-Domain Model
+
+本 Skill 是 `security-sentinel` 在 **ai（AI/大模型安全）域** 的核心方法论，负责提示注入 / 越狱 / 角色劫持 / 系统提示提取 / 工具调用越权的检测与防护，对应 **OWASP LLM Top 10**。
+
+当 security-sentinel 覆盖全部 **7 大测试域**（web / api / cloud / mobile / data / supply / ai）时：
+- 本 Skill 提供 `ai` 域的攻击检测与防御方法论（注入/越狱/数据泄露/工具越权/输出有害）。
+- 其余 6 域（web/api/cloud/mobile/data/supply）的方法论见 `security-scheme-generator` / `security-case-generator` / `security-report-generator` / `security-vuln-scanner` / `security-scanner` / `pentest-workbench`。
+- 所有域的 finding 均须满足深度要求：`cvssScore`(CVSS v3.1)、`bizRisk`(业务风险)、`poc`+`verified`(真实验证)、`codeFix`(代码级修复)、`compliance`(等保2.0/个保法/数安法/CIS/MASVS/OWASP 映射)；报告级须含 `attackChains`(攻击链) 与 `threatModel`(威胁建模)。
+
+---
+
 ## Quick Start
 
 ### Basic Detection Flow
