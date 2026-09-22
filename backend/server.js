@@ -7612,7 +7612,8 @@ const AGENT_SYSTEM_PROMPTS = {
   - business: 业务逻辑漏洞(越权/参数篡改/流程绕过)
 
 【domain 与 scanType 路由】
-- domain 决定测试域(见核心职责),缺省 web;取值 web|api|cloud|mobile|data|supply|ai。
+- domain 决定测试域(见核心职责),缺省 all;取值 all|web|api|cloud|mobile|data|supply|ai。
+- domain=all 表示全量覆盖:必须逐一覆盖全部 7 大域(Web应用/API接口/云原生基础设施/移动端/数据安全与隐私合规/软件供应链/AI大模型),每个域都要有检测项与 findings,不得偷懒只测单域。
 - domain=web 时 scanType 决定细粒度重点(full/xss/sql/os/network/business);domain 为其它时 scanType 可传 full,聚焦该域专项检测。
 - 任何 domain 都必须覆盖:信息收集→漏洞发现→**真实利用验证(PoC)**→风险评级(CVSS v3.1 + 业务风险)→合规映射(等保2.0/个保法/数安法/OWASP)→代码级修复。
 
@@ -13541,8 +13542,8 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
       domain: testDomain,
       description,
       techStack: description || '未知',
-      businessScenario: ({ web:'Web应用', api:'API/接口', cloud:'云原生/基础设施', mobile:'移动端', data:'数据安全与隐私合规', supply:'软件供应链', ai:'AI/大模型' })[testDomain] || 'Web应用',
-      complianceRequirements: ({ web:['OWASP Top 10'], api:['OWASP API Security Top 10'], cloud:['CIS Benchmark','等保2.0'], mobile:['OWASP MASVS'], data:['等保2.0','个人信息保护法','数据安全法'], supply:['SBOM/CVE'], ai:['OWASP LLM Top 10'] })[testDomain] || ['OWASP Top 10'],
+      businessScenario: ({ all:'全测试域(Web/API/云原生/移动端/数据/供应链/AI)', web:'Web应用', api:'API/接口', cloud:'云原生/基础设施', mobile:'移动端', data:'数据安全与隐私合规', supply:'软件供应链', ai:'AI/大模型' })[testDomain] || '全测试域',
+      complianceRequirements: ({ all:['OWASP Top 10','OWASP API Security Top 10','CIS Benchmark','等保2.0','个人信息保护法','数据安全法','OWASP MASVS','SBOM/CVE','OWASP LLM Top 10'], web:['OWASP Top 10'], api:['OWASP API Security Top 10'], cloud:['CIS Benchmark','等保2.0'], mobile:['OWASP MASVS'], data:['等保2.0','个人信息保护法','数据安全法'], supply:['SBOM/CVE'], ai:['OWASP LLM Top 10'] })[testDomain] || ['OWASP Top 10'],
       template: schemeTemplate
     };
 
@@ -13864,7 +13865,7 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
       .replace(/[\u201c\u201d'"](?:password|pwd|secret)[\u201c\u201d'"]\s*:\s*[^,}\s]+/gi, '"password":"***"');
     await taskDAO.createTask({
       id: taskId,
-      name: `安全测试(${({ web:'Web', api:'API', cloud:'云原生', mobile:'移动端', data:'数据安全', supply:'供应链', ai:'AI' })[testDomain] || 'Web'}): ${target}`,
+      name: `安全测试(${({ all:'全域', web:'Web', api:'API', cloud:'云原生', mobile:'移动端', data:'数据安全', supply:'供应链', ai:'AI' })[testDomain] || '全域'}): ${target}`,
       type: 'security-test',
       status: 'running',
       userId,
