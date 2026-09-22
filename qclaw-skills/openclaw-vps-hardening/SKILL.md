@@ -14,6 +14,10 @@ description: >
 Seven-layer defense-in-depth strategy for OpenClaw agents on Hostinger VPS. Built around
 Cloudflare Tunnel + Access as the primary access layer — port 18789 is never exposed to the internet.
 
+## 在 security-sentinel 7 域模型中的定位
+
+本 Skill 是 `security-sentinel` 在 **cloud（云原生与基础设施）域** 的加固方法论来源，已被主提示词点名复用：K8s/容器逃逸、IAM 权限过大、存储桶公开、安全组/防火墙误配、基线核查。在 7 域模型中对应 cloud 域的安全基线核查与加固验证。
+
 ## The Strategy (Cloudflare-Based)
 
 ```

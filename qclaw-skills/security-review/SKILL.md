@@ -21,6 +21,10 @@ No exceptions. "Open source" is not a security clearance.
 ## What This Skill Does
 Spawns a security review sub-agent that performs a world-class, current-intelligence security assessment and produces a GO / NO-GO / CONDITIONAL verdict.
 
+## 在 security-sentinel 7 域模型中的定位
+
+本 Skill 是 `security-sentinel` 在 **supply（软件供应链）域** 的第三方组件/依赖评审方法论：安装前 GO/NO-GO 评审、CVE 检索、数据流审查。在 7 域模型中对应 supply 域的 SBOM 比对 CVE、开源协议合规、构建流水线安全。
+
 ## How to Use
 
 ### 1. Spawn the review agent

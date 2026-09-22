@@ -8,6 +8,10 @@ metadata: {"clawdbot":{"emoji":"🔒","requires":{"anyBins":["npm","pip","git","
 
 Scan, detect, and fix security issues in codebases and infrastructure. Covers dependency vulnerabilities, secret detection, OWASP top 10, SSL/TLS verification, file permissions, and secure coding patterns.
 
+## 在 security-sentinel 7 域模型中的定位
+
+本 Skill 是 `security-sentinel` 在 **web / api / data** 域的代码与依赖安全审计方法论基础：OWASP Top 10、硬编码密钥/凭证检测、依赖漏洞（npm audit / pip-audit）、SSL/TLS 校验、文件权限、注入与鉴权缺陷。在 7 域模型中，其发现须升级为深度字段：`cvssScore`(CVSS v3.1)、`bizRisk`(业务风险)、`poc`+`verified`(真实验证)、`codeFix`(代码级修复)、`compliance`(等保2.0/个保法/数安法/OWASP/CIS)。
+
 ## When to Use
 
 - Scanning project dependencies for known vulnerabilities
