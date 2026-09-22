@@ -2857,7 +2857,8 @@ function canAccessTask(task, req) {
  */
 async function resolveTaskForArtifact(taskId, req) {
   const memTask = tasks.get(taskId);
-  if (memTask && Array.isArray(memTask.artifacts)) return memTask;
+  // 优先用 DB 中“真实落盘”的 artifacts（含正确 path）；
+  // 内存中的 artifacts 可能是启动重载时 extractArtifacts(result) 派生的占位（无 path/预览会 404）。
   try {
     const rows = await query(
       'SELECT id, user_id, status, artifacts FROM tasks WHERE id = ?',
@@ -2866,11 +2867,14 @@ async function resolveTaskForArtifact(taskId, req) {
     if (rows.length) {
       const r = rows[0];
       const arts = normalizeArtifactsField(r.artifacts);
-      return { id: r.id, userId: r.user_id, user_id: r.user_id, status: r.status, artifacts: arts };
+      if (arts.length) {
+        return { id: r.id, userId: r.user_id, user_id: r.user_id, status: r.status, artifacts: arts };
+      }
     }
   } catch (e) {
     console.error(`[ResolveArtifact] DB 回退失败: ${e.message}`);
   }
+  if (memTask && Array.isArray(memTask.artifacts)) return memTask;
   return memTask || null;
 }
 
@@ -2910,17 +2914,34 @@ app.get('/api/tasks/:id', authenticate, async (req, res) => {
   if (!task) {
     return res.status(404).json({ error: 'Task not found' });
   }
-  // 统一补齐 chat_history / artifacts：
+  // 统一补齐 chat_history / artifacts / 成本字段：
   // - 内存任务（重启后由注册表重建）可能未加载 chat_history；
-  // - DB 任务经 formatTask 未映射 chat_history / artifacts（但表中有这两列）。
-  // 仅当内存已有值才保留，避免覆盖实时数据。
+  // - DB 任务经 formatTask 未映射 chat_history / artifacts（但表中有这两列）；
+  // - 成本字段(manualHours 等)以 DB 持久化值为权威源：历史/回填任务内存快照可能仍为 0，
+  //   会导致「报告无预估工时」。运行中任务内存与 DB 均为 0，覆盖无副作用。
   try {
-    const raw = await query('SELECT chat_history, artifacts FROM tasks WHERE id = ?', [id]);
+    const raw = await query(
+      'SELECT chat_history, artifacts, manual_hours, labor_cost, estimated_cost, saved_cost, actual_cost, token_cost, input_tokens, output_tokens FROM tasks WHERE id = ?',
+      [id]
+    );
     if (raw.length > 0) {
-      if (task.chat_history === undefined) task.chat_history = raw[0].chat_history || null;
-      if (task.artifacts === undefined || task.artifacts === null) {
-        task.artifacts = normalizeArtifactsField(raw[0].artifacts);
+      const r = raw[0];
+      if (task.chat_history === undefined) task.chat_history = r.chat_history || null;
+      // artifacts 优先采用 DB 中真实落盘的记彔（含正确 path）；内存中可能为启动重载时派生的占位
+      const dbArts = normalizeArtifactsField(r.artifacts);
+      if (dbArts.length) {
+        task.artifacts = dbArts;
+      } else if (task.artifacts === undefined || task.artifacts === null) {
+        task.artifacts = dbArts;
       }
+      task.manualHours = Number(r.manual_hours) || 0;
+      task.laborCost = Number(r.labor_cost) || 0;
+      task.estimatedCost = Number(r.estimated_cost) || 0;
+      task.savedCost = Number(r.saved_cost) || 0;
+      task.actualCost = Number(r.actual_cost) || 0;
+      task.tokenCost = Number(r.token_cost) || 0;
+      task.inputTokens = Number(r.input_tokens) || 0;
+      task.outputTokens = Number(r.output_tokens) || 0;
     }
   } catch (_) { /* 补齐失败不影响主流程 */ }
   if (!canAccessTask(task, req)) {
