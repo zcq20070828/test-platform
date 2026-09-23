@@ -10032,6 +10032,18 @@ async function deriveExtraFormats(workflowId, baseName, agentId, mdContent) {
   return generated;
 }
 
+// 清洗文件名中的路径非法字符(避免 agent 输出里的 '/' 等被当成目录分隔符导致 ENOENT)
+// macOS/Windows/Linux 通用非法字符:/ \ : * ? " < > |;同时限制长度防止 ENAMETOOLONG
+function sanitizeFileName(name) {
+  if (!name) return 'output';
+  return name
+    .replace(/[\/\\:*?"<>|]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 180) || 'output';
+}
+
 async function saveDeliverableToFile(workflowId, stage, agentId, deliverableContent, format = 'md') {
   try {
     // 创建输出目录(如果不存在)
@@ -10054,6 +10066,7 @@ async function saveDeliverableToFile(workflowId, stage, agentId, deliverableCont
     } else {
       fileName = `${projectInfo.projectName}${deliverableName}${fileExt}`;
     }
+    fileName = sanitizeFileName(fileName);
 
     const filePath = path.join(outputDir, fileName);
 
@@ -10118,6 +10131,7 @@ async function saveDeliverablesToFiles(workflowId, stage, agentId, deliverables)
       } else {
         fileName = `${baseName}_${i + 1}${fileExt}`;
       }
+      fileName = sanitizeFileName(fileName);
 
       const filePath = path.join(outputDir, fileName);
 
