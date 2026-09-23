@@ -1,5 +1,5 @@
 /**
- * 5dem-executor 单元测试
+ * 9dem-executor 单元测试
  * 测试数据维度穷举算法
  */
 
@@ -24,7 +24,7 @@ function assert(condition, testName) {
 }
 
 async function runTests() {
-  console.log('=== 5dem-executor 单元测试 ===\n');
+  console.log('=== 9dem-executor 单元测试 ===\n');
   
   // 测试1：等价类划分
   console.log('【测试组1：等价类划分】');

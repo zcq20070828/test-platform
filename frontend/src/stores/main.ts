@@ -655,7 +655,9 @@ export const useMainStore = defineStore('main', () => {
 
   // 加载最近已完成任务的完整结果到 messages（用于刷新页面后恢复历史）
   // 解决：刷新后 chat panel 空白、或流式中断导致 agent 消息只显示部分内容的问题
-  async function loadRecentTaskResults(limit: number = 5) {
+  // 【串台修复-草案A】仅加载当前选中智能体(agentId)的任务；切换智能体时由调用方传入新 agentId 重新加载。
+  // 避免把其它智能体(如安全测试 scan-*、性能测试)的最近任务混进当前智能体对话流，造成"串台"。
+  async function loadRecentTaskResults(limit: number = 5, agentId?: string) {
     try {
       const allTasks = await taskApi.getAll()
       // 【修复】过滤掉"测试流水线"（workflow）运行记录，避免分步测试页面显示"测试流水线"消息
@@ -663,6 +665,8 @@ export const useMainStore = defineStore('main', () => {
       // 这些是工作流场景，dashboard 是分步测试入口，不需要显示
       const completed = (allTasks || [])
         .filter((t: any) => t.status === 'completed' && !t.isWorkflow && t.source !== 'workflow' && (t.result || t.output))
+        // 【串台修复】按当前选中智能体过滤：只恢复本智能体自己的最近任务
+        .filter((t: any) => !agentId || (t.agentId || t.agent) === agentId)
         .sort((a: any, b: any) => {
           const ta = new Date(a.completedAt || a.updatedAt || a.createdAt || 0).getTime()
           const tb = new Date(b.completedAt || b.updatedAt || b.createdAt || 0).getTime()
@@ -1178,6 +1182,14 @@ export const useMainStore = defineStore('main', () => {
             tasks.value[idx] = { ...tasks.value[idx], ...taskData, username: tasks.value[idx].username }
           } else {
             tasks.value.unshift(taskData)
+          }
+
+          // 【串台修复-草案A】实时完成事件仅同步到当前选中智能体的对话流：
+          // 其它智能体(如安全测试 scan-*)的任务完成时，不要混入当前智能体对话，避免"串台"。
+          // 注意：上面的 tasks.value 更新是全局任务列表，对所有用户都保留；此处仅跳过聊天面板写入。
+          const taskAgent = taskData.agentId || taskData.agent
+          if (currentAgent.value && taskAgent && taskAgent !== currentAgent.value.id) {
+            break
           }
 
           // 将任务输出和输出物同步到 messages，供聊天面板显示

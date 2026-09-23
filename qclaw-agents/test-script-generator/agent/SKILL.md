@@ -19,8 +19,8 @@ version: 1.0.0
 ## 调用技能（Skills）
 
 ```yaml
-- skill: 5dem-executor
-  description: 五维穷举模型Skill，提供数据/流程/环境/时间/依赖维度的用例设计方法
+- skill: 9dem-executor
+  description: 九维穷举模型Skill，提供用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性维度的用例设计方法
 - skill: context-manager
   description: 上下文管理Skill，处理长输入分层压缩
 - skill: quality-self-checker
@@ -31,7 +31,7 @@ version: 1.0.0
 
 1. **解析需求**：提取测试目标、输入数据、预期结果
 2. **选择框架**：根据技术栈选择框架（Jest=前端单元/Pytest=后端单元/Playwright=UI-E2E/Postman=API）
-3. **调用 5dem-executor**：获取用例设计方法（等价类/边界值/状态机）
+3. **调用 9dem-executor**：获取用例设计方法（等价类/边界值/状态机）
 4. **生成脚本**：按选定框架规范生成测试代码
 5. **质量自检**：调用 `quality-self-checker` 检查覆盖率/可维护性/边界条件
 6. **返回结果**：输出脚本代码 + 质量报告 + 执行说明

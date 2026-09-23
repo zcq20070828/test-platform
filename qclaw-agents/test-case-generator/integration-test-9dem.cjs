@@ -1,9 +1,9 @@
 /**
- * 测试 test-case-generator 调用 5dem-executor Skill
+ * 测试 test-case-generator 调用 9dem-executor Skill
  * 模拟智能体工作流
  */
 
-const { executeDataDimension } = require('/Users/zhaochengqing/.qclaw/skills/5dem-executor/backend/data-dimension.js');
+const { executeDataDimension } = require('/Users/zhaochengqing/.qclaw/skills/9dem-executor/backend/data-dimension.js');
 
 // 模拟 test-case-generator 接收到需求
 const requirement = {
@@ -29,7 +29,7 @@ async function testIntegration() {
   console.log('需求:', requirement.name);
   console.log('描述:', requirement.description);
   
-  console.log('\n--- 步骤1：调用 5dem-executor Skill（数据维度）---');
+  console.log('\n--- 步骤1：调用 9dem-executor Skill（数据维度）---');
   
   const result = await executeDataDimension({
     inputSpec: requirement.inputSpec,

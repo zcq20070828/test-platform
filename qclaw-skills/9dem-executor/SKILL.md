@@ -1,5 +1,5 @@
 ---
-name: 5dem-executor
+name: 9dem-executor
 description: 九维穷举模型执行器。基于用户、数据、流程、操作、安全、性能、网络环境、终端环境、兼容性九个维度（9DEM）的穷举测试，生成高覆盖率测试用例。数据维度具备等价类划分、边界值分析、Pairwise 自动化计算；其余维度提供结构化方法论引导。V2.0集成PICT工具、测试脚本生成器、测试框架集成。
 version: 2.1.0
 ---
@@ -70,8 +70,8 @@ const inputSpec = {
 };
 
 // 九维调用示例：仅计算 data；或传入全部九维键获取各维度引导
-const result = execute5DEM({ inputSpec, dimensions: ['data'] });
-const resultAll = execute5DEM({ inputSpec, dimensions: ['user','data','process','operation','security','performance','network','terminal','compatibility'] });
+const result = execute9DEM({ inputSpec, dimensions: ['data'] });
+const resultAll = execute9DEM({ inputSpec, dimensions: ['user','data','process','operation','security','performance','network','terminal','compatibility'] });
 ```
 
 ### 测试脚本生成输入
@@ -260,9 +260,9 @@ console.log(results.coverage);
 ## 文件结构
 
 ```
-5dem-executor/
+9dem-executor/
 ├── SKILL.md                    # 本文档
-├── executor.js                 # 九维穷举主入口（execute5DEM）
+├── executor.js                 # 九维穷举主入口（execute9DEM）
 ├── backend/
 │   ├── data-dimension.js       # 数据维度（等价类/边界值/Pairwise 自动化计算）
 │   ├── pict-integration.js     # PICT集成
@@ -276,8 +276,8 @@ console.log(results.coverage);
 
 ### V2.1（2026-09-20）
 - ✅ 五维穷举模型升级为九维穷举模型（9DEM）：用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性
-- ✅ execute5DEM 维度键扩展为九维，未实现的维度返回结构化方法论引导（不再静默丢弃）
-- ✅ 5dem-invoker 动态返回所有请求维度的结果
+- ✅ execute9DEM 维度键扩展为九维，未实现的维度返回结构化方法论引导（不再静默丢弃）
+- ✅ 9dem-invoker 动态返回所有请求维度的结果
 
 ### V2.0（2026-07-05）
 - ✅ 集成PICT工具（性能提升1142倍）
@@ -331,7 +331,7 @@ console.log(results.coverage);
 
 ### 2026-09-20
 - 五维穷举模型升级为九维穷举模型（9DEM）
-- execute5DEM 维度键扩展，未实现维度返回结构化引导
+- execute9DEM 维度键扩展，未实现维度返回结构化引导
 
 ### 2026-07-05
 - 完成M3里程碑：测试框架集成

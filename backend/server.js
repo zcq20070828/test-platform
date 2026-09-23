@@ -2014,7 +2014,7 @@ const AGENTS = {
     icon: '✍️',
     workflow: [],
     knowledgeBases: ['general', 'project-test', 'project-biz'],
-    skills: ['5dem-executor', 'context-manager', 'quality-self-checker']
+    skills: ['9dem-executor', 'context-manager', 'quality-self-checker']
   },
   'ui-e2e-executor': {
     id: 'ui-e2e-executor',
@@ -7741,7 +7741,7 @@ const AGENT_SYSTEM_PROMPTS = {
 - 对生成的脚本进行质量自查,确保语法正确和逻辑完整
 
 【Skill工具】
-- **5dem-executor**:九维穷举(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性维度)执行器,确保测试场景全面
+- **9dem-executor**:九维穷举(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性维度)执行器,确保测试场景全面
 - **context-manager**:管理生成长脚本时的上下文
 - **quality-self-checker**:生成后自动检查代码质量
 
@@ -8564,8 +8564,8 @@ const SKILL_EXECUTORS = {
     },
   },
   // V2.0 核心技能:九维穷举模型
-  '5dem-executor': {
-    modulePath: path.join(SKILLS_DIR, '5dem-executor', 'backend', '5dem-invoker.js'),
+  '9dem-executor': {
+    modulePath: path.join(SKILLS_DIR, '9dem-executor', 'backend', '9dem-invoker.js'),
     main: 'invoke',
     description: '九维穷举模型执行器:基于用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性九维,生成等价类划分、边界值分析、Pairwise 组合等专业测试设计。',
     parameters: {
@@ -8663,7 +8663,7 @@ const AGENT_EXECUTABLE_SKILLS = {
   'ui-e2e-executor': ['ui-test-tool-invoker', 'mobile-e2e-invoker'],
   'api-executor': ['api-test-tool-invoker'],
   // V1.0 核心智能体:强制调用专业技能
-  'test-case-generator': ['5dem-executor'],  // 用例生成必须走九维穷举
+  'test-case-generator': ['9dem-executor'],  // 用例生成必须走九维穷举
   'test-reporter': ['result-aggregator', 'quality-metrics-calculator'],  // 报告生成必须聚合+度量
   'ai-evaluation-agent': ['evaluation-system', 'quality-metrics-calculator'],  // 智能评估必须调用评估系统和质量度量
   'performance-tester': ['execute_perf_script'],  // 性能测试必须调用 JMeter/k6 执行器
@@ -8826,17 +8826,17 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
       }
     },
     'test-case-generator': {
-      autoInvoke: '接到用例生成任务时,必须先调用5dem-executor Skill获取专业方法;调用5dem-planner规划覆盖策略;长文档调用context-manager压缩。',
+      autoInvoke: '接到用例生成任务时,必须先调用9dem-executor Skill获取专业方法;调用9dem-planner规划覆盖策略;长文档调用context-manager压缩。',
       skillHints: {
-        '5dem-executor': 'qclaw-skills/5dem-executor/SKILL.md - 九维穷举模型执行器,基于用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性九维,提供等价类划分、边界值分析、状态迁移、决策表等专业测试设计方法。',
-        '5dem-planner': 'qclaw-skills/5dem-planner/SKILL.md - 九维规划Skill,按N-wise/正交/全对偶规划九维最优覆盖组合。',
+        '9dem-executor': 'qclaw-skills/9dem-executor/SKILL.md - 九维穷举模型执行器,基于用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性九维,提供等价类划分、边界值分析、状态迁移、决策表等专业测试设计方法。',
+        '9dem-planner': 'qclaw-skills/9dem-planner/SKILL.md - 九维规划Skill,按N-wise/正交/全对偶规划九维最优覆盖组合。',
         'context-manager': 'qclaw-skills/context-manager/SKILL.md - 上下文管理Skill,处理长需求/大量数据时分层的压缩与淘汰。'
       }
     },
     'test-data-generator': {
-      autoInvoke: '接到数据生成任务时,优先调用test-data-generator-skill反向生成测试数据;涉及敏感数据时调用data-masking脱敏;参考5dem-executor数据维度。',
+      autoInvoke: '接到数据生成任务时,优先调用test-data-generator-skill反向生成测试数据;涉及敏感数据时调用data-masking脱敏;参考9dem-executor数据维度。',
       skillHints: {
-        '5dem-executor': 'qclaw-skills/5dem-executor/SKILL.md - 九维穷举模型执行器的数据维度模块(等价类/边界值/Pairwise)。',
+        '9dem-executor': 'qclaw-skills/9dem-executor/SKILL.md - 九维穷举模型执行器的数据维度模块(等价类/边界值/Pairwise)。',
         'data-masking': 'qclaw-skills/data-masking/SKILL.md - 数据脱敏Skill,对敏感字段做识别与脱敏替换。',
         'test-data-generator-skill': 'qclaw-skills/test-data-generator-skill/SKILL.md - 测试数据生成Skill,边界值/手机号/邮箱/身份证/银行卡等自动生成。'
       }
@@ -8889,9 +8889,9 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
       }
     },
     'test-script-generator': {
-      autoInvoke: '接到脚本生成任务时,先调用5dem-executor获取用例设计方法;调用context-manager压缩上下文;调用quality-self-checker自检脚本质量。',
+      autoInvoke: '接到脚本生成任务时,先调用9dem-executor获取用例设计方法;调用context-manager压缩上下文;调用quality-self-checker自检脚本质量。',
       skillHints: {
-        '5dem-executor': 'qclaw-skills/5dem-executor/SKILL.md - 九维穷举模型Skill,提供用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性维度的用例设计。',
+        '9dem-executor': 'qclaw-skills/9dem-executor/SKILL.md - 九维穷举模型Skill,提供用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性维度的用例设计。',
         'context-manager': 'qclaw-skills/context-manager/SKILL.md - 上下文管理Skill,处理长输入分层压缩。',
         'quality-self-checker': 'qclaw-skills/quality-self-checker/SKILL.md - 脚本自检Skill,覆盖率/可维护性/边界条件检查。'
       }
