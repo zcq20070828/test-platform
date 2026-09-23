@@ -1,10 +1,10 @@
-# 5dem-planner
+# 9dem-planner
 
-> 五维穷举测试规划与执行调度引擎
+> 九维穷举测试规划与执行调度引擎
 
 ## 职责
 
-协调五维穷举模型（数据 / 流程 / 环境 / 时间 / 依赖）各维度的测试规划与执行调度，基于依赖关系拓扑排序实现最优并行，在最大化覆盖率的同时控制用例规模，输出可直接交给各维度生成器的可执行任务计划。
+协调九维穷举模型（用户 / 数据 / 流程 / 操作 / 安全 / 性能 / 网络环境 / 终端环境 / 兼容性）各维度的测试规划与执行调度，基于依赖关系拓扑排序实现最优并行，在最大化覆盖率的同时控制用例规模，输出可直接交给各维度生成器的可执行任务计划。
 
 ## 五维定义
 
@@ -52,7 +52,7 @@
 | 导出函数 | 说明 |
 |----------|------|
 | `scheduleExecution(plan, resourceLimit?)` | 基于规划结果生成调度序列与并行组 |
-| `estimateTotalDuration(dimensions, caseCounts?)` | 估算五维穷举总耗时（天） |
+| `estimateTotalDuration(dimensions, caseCounts?)` | 估算九维穷举总耗时（天） |
 | `suggestPriorities(plan)` | 基于风险/复杂度/依赖度给出优先级建议 |
 
 ## 工作流程
@@ -83,8 +83,8 @@
 
 ```js
 // 导入
-import { planDimensions, getDimensionDependencies } from '~/.qclaw/skills/5dem-planner/backend/dimension-planner.js';
-import { scheduleExecution, suggestPriorities } from '~/.qclaw/skills/5dem-planner/backend/execution-scheduler.js';
+import { planDimensions, getDimensionDependencies } from '~/.qclaw/skills/9dem-planner/backend/dimension-planner.js';
+import { scheduleExecution, suggestPriorities } from '~/.qclaw/skills/9dem-planner/backend/execution-scheduler.js';
 
 // Step 1: 规划
 const requirement = {

@@ -1,6 +1,6 @@
 /**
  * 数据维度穷举 - 等价类划分、边界值分析、组合测试
- * 5DEM Executor - Data Dimension
+ * 9DEM Executor - Data Dimension
  */
 
 const fs = require('fs');

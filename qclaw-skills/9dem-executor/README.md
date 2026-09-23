@@ -1,17 +1,17 @@
-# 5DEM Executor Skill
+# 9DEM Executor Skill
 
-五维穷举模型执行器，用于生成高覆盖率测试用例。
+九维穷举模型执行器，用于生成高覆盖率测试用例。
 
 ## 安装
 
-将此Skill复制到 `~/.qclaw/skills/5dem-executor/` 目录。
+将此Skill复制到 `~/.qclaw/skills/9dem-executor/` 目录。
 
 ## 使用方法
 
 ### 1. 作为独立Skill调用
 
 ```javascript
-const { execute5DEM } = require('./executor.js');
+const { execute9DEM } = require('./executor.js');
 
 const inputSpec = {
   username: { type: 'string', minLength: 3, maxLength: 20 },
@@ -19,7 +19,7 @@ const inputSpec = {
   role: { type: 'enum', values: ['admin', 'user', 'guest'] }
 };
 
-const result = execute5DEM({ inputSpec, dimensions: ['data'] });
+const result = execute9DEM({ inputSpec, dimensions: ['data'] });
 console.log(JSON.stringify(result, null, 2));
 ```
 
@@ -29,7 +29,7 @@ console.log(JSON.stringify(result, null, 2));
 
 ```markdown
 ## 技能
-- 5dem-executor：五维穷举模型执行器
+- 9dem-executor：九维穷举模型执行器
 ```
 
 ## 功能说明

@@ -1,7 +1,7 @@
 /**
  * 数据维度穷举 - 流程维度
  * 状态机建模、决策表生成
- * 5DEM Executor - Process Dimension
+ * 9DEM Executor - Process Dimension
  */
 
 const fs = require('fs');
