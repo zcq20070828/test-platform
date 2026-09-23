@@ -160,6 +160,9 @@ watch(selectedAgentId, async (newAgentId) => {
   // 加载新智能体的历史(仅补充,不覆盖已恢复的消息)
   if (newAgentId) {
     await store.loadConversationHistory(newAgentId, 50)
+    // 【串台修复-草案A】切换智能体时，重新加载该智能体自己的最近任务结果
+    // （只过滤本智能体，不再把安全/性能等其它智能体任务混进当前对话流）
+    await store.loadRecentTaskResults(5, newAgentId)
   }
 })
 
@@ -639,7 +642,8 @@ onMounted(async () => {
   await store.loadConversationHistory(selectedAgentId.value, 50)
 
   // 加载最近已完成任务的完整结果到 messages（刷新页面后恢复历史）
-  await store.loadRecentTaskResults(5)
+  // 【串台修复-草案A】只加载当前选中智能体的最近任务，避免混进其它智能体(如安全测试)的交付物
+  await store.loadRecentTaskResults(5, selectedAgentId.value)
 
   // 【方案A】任务完成后自动进入对话模式：检查 localStorage 中的 autoChatMode 标记
   // 由 main.ts task_completed handler 写入，view 读取后自动跳入 chatMode
