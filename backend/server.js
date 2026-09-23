@@ -8695,21 +8695,25 @@ function getAgentToolSchemas(agentId) {
 }
 
 // ============================================================================
-// 上下文预算护栏
-// 问题背景:部分任务(如 test-case-generator 工作流步骤)会把上传的需求文档
-// (.docx 全文)嵌入 user 消息,并在 agent 工具循环中累积多轮 assistant/tool
-// 消息。当总 token 超过模型上下文上限(本环境 deepseek-v4-pro 约 1,048,576
-// tokens)时,网关直接返回 400 "maximum context length",任务失败且无法进入
-// 审核流程。
-// 修复:在每次真正下发网关前,估算 messages 总规模,超过安全预算则按优先级裁剪,
-// 避免硬 400。裁剪策略(不破坏 tool_call/tool_result 配对):
-//   1) 丢弃最旧对话历史(位于 system 之前),保留 system / 最后 user / 当前轮;
-//   2) 仍超限则截断最大的 user 消息(需求文档)——保留头部 + 标记;
-//   3) 极端情况再截断 system 提示词。
+// 上下文预算护栏(统一入口:全部 18 个智能体 / 所有 skill 的任务调用都经由
+//   callOpenClawAPI 下发 Deepseek,故在唯一出口做护栏即可覆盖全局,无需逐智能体改造)
+// 设计目标:
+//   ① 不让请求因超出模型上下文窗口(本环境 deepseek-v4-pro 约 1,048,576 tokens)
+//      而硬失败 400(网关对超限直接拒绝,导致任务 failed 且无法进入审核流程);
+//   ② 不损害交付物质量 —— 系统提示词与"用户需求"消息始终完整保留,
+//      只压缩"可再生成"的工具循环历史 / 旧对话。
 // 中文为主场景约 1.5 tokens/字符,故以 ~600K 字符(≈900K tokens)为安全预算,
-// 留出约 148K tokens 余量。
+// 预留约 148K tokens 余量。
+// 裁剪优先级(绝不破坏 tool_call/tool_result 配对,且绝不截断需求):
+//   1) 丢弃最旧对话历史(位于 system 之前);
+//   2) 压缩工具结果(tool 消息):超限时把较大的 tool 结果截断到 TOOL_RESULT_CAP
+//      (保留头部 + 标记,工具结论多在头部);
+//   3) 仍超限则丢弃最旧的 工具调用/结果 配对(保留最近若干轮,连带其前置
+//      assistant(tool_calls)一并移除,保证配对完整);
+//   4) 极端情况(需求本身超预算)才截断需求 user 消息(带明确标记,极少见)。
 // ============================================================================
 const MAX_CONTEXT_CHARS = 600000;
+const TOOL_RESULT_CAP = 4000;          // 单个工具结果超过此长度则截断(保留头部)
 const CTX_TRUNCATE_MARK = '\n\n…[上下文已截断:为适配模型上下文窗口,超出部分已被裁剪,原长度 ';
 
 function msgContentChars(m) {
@@ -8717,46 +8721,72 @@ function msgContentChars(m) {
   return typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length;
 }
 
+const isSystemMsg = (m) => m && m.role === 'system';
+const isUserReqMsg = (m) => m && m.role === 'user';   // 用户需求,受保护,不截断
+const isToolMsg = (m) => m && m.role === 'tool';       // 工具结果,可压缩
+
 function enforceContextBudget(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return messages;
-  const totalChars = () => messages.reduce((s, m) => s + msgContentChars(m), 0);
-
-  if (totalChars() <= MAX_CONTEXT_CHARS) return messages;
-
-  console.warn(`[CtxBudget] messages 总字符 ${totalChars()} 超过预算 ${MAX_CONTEXT_CHARS},开始裁剪`);
   const out = messages.map(m => ({ ...m })); // 浅拷贝,避免改动原数组
+  // 注意:totalChars 必须统计正在被裁剪的 out(而非原 messages),
+  // 否则裁剪后的缩减无法被预算检查感知,会过度裁剪甚至误伤需求。
+  const totalChars = () => out.reduce((s, m) => s + msgContentChars(m), 0);
 
-  // 1) 丢弃最旧历史消息(位于 system 之前),保留 system 及之后
-  while (out.length > 3 && out[0] && out[0].role !== 'system') {
+  if (totalChars() <= MAX_CONTEXT_CHARS) return out;
+
+  console.warn(`[CtxBudget] messages 总字符 ${totalChars()} 超过预算 ${MAX_CONTEXT_CHARS},开始裁剪(保需求/系统,压工具历史)`);
+
+  // 1) 丢弃最旧历史(位于 system 之前),保留 system 及之后
+  while (out.length > 3 && out[0] && !isSystemMsg(out[0])) {
     if (totalChars() <= MAX_CONTEXT_CHARS) break;
     out.shift();
   }
 
-  // 2) 仍超限:截断最后一个 user 消息(需求文档),保留头部 + 标记
+  // 2) 压缩工具结果(tool 消息):把较大的 tool 结果截断到 TOOL_RESULT_CAP
   if (totalChars() > MAX_CONTEXT_CHARS) {
     for (let i = out.length - 1; i >= 0; i--) {
-      if (out[i].role === 'user') {
-        const overBy = totalChars() - MAX_CONTEXT_CHARS;
-        const allowed = Math.max(2000, msgContentChars(out[i]) - overBy);
-        if (allowed < 2000) break; // 实在裁不动,交给第3步
-        const originalLen = msgContentChars(out[i]);
-        const head = String(out[i].content).slice(0, allowed);
-        out[i] = { ...out[i], content: head + `${CTX_TRUNCATE_MARK}${originalLen} 字符]` };
-        console.warn(`[CtxBudget] 截断 user 消息至 ${allowed} 字符 (原 ${originalLen})`);
-        break;
+      if (!isToolMsg(out[i])) continue;
+      const c = msgContentChars(out[i]);
+      if (c > TOOL_RESULT_CAP) {
+        out[i] = { ...out[i], content: String(out[i].content).slice(0, TOOL_RESULT_CAP) + `${CTX_TRUNCATE_MARK}${c} 字符]` };
       }
+      if (totalChars() <= MAX_CONTEXT_CHARS) break;
     }
   }
 
-  // 3) 极端情况:system + 截断后 user 仍超限,截断 system 提示词
+  // 3) 仍超限:从最旧的工具结果开始,成组丢弃 (assistant(tool_calls) + 其全部 tool 结果),
+  //    保证 tool_call / tool_result 配对完整;保留最近若干轮。
+  if (totalChars() > MAX_CONTEXT_CHARS) {
+    let loopGuard = 0;
+    while (totalChars() > MAX_CONTEXT_CHARS && loopGuard++ < 300) {
+      const ti = out.findIndex(isToolMsg);
+      if (ti < 0) break;
+      let ai = ti - 1;
+      while (ai >= 0 && !(out[ai] && out[ai].role === 'assistant' && Array.isArray(out[ai].tool_calls) && out[ai].tool_calls.length)) ai--;
+      const removeSet = new Set([ti]);
+      if (ai >= 0) {
+        const ids = out[ai].tool_calls.map(tc => tc.id).filter(Boolean);
+        removeSet.add(ai);
+        for (let j = 0; j < out.length; j++) {
+          if (isToolMsg(out[j]) && ids.includes(out[j].tool_call_id)) removeSet.add(j);
+        }
+      }
+      const filtered = out.filter((_, idx) => !removeSet.has(idx));
+      out.length = 0; out.push(...filtered);
+    }
+    console.warn(`[CtxBudget] 工具历史裁剪后总字符 ${totalChars()}`);
+  }
+
+  // 4) 极端:需求本身超预算(system + user 已 > 预算),才截断需求 user 消息(带标记)
   if (totalChars() > MAX_CONTEXT_CHARS) {
     for (let i = 0; i < out.length; i++) {
-      if (out[i].role === 'system') {
+      if (isUserReqMsg(out[i])) {
         const overBy = totalChars() - MAX_CONTEXT_CHARS;
-        const allowed = Math.max(500, msgContentChars(out[i]) - overBy);
-        if (allowed < 500) break;
-        out[i] = { ...out[i], content: String(out[i].content).slice(0, allowed) + '\n…[system 已截断]' };
-        console.warn(`[CtxBudget] 截断 system 提示词至 ${allowed} 字符`);
+        const allowed = Math.max(2000, msgContentChars(out[i]) - overBy);
+        if (allowed < 2000) break;
+        const originalLen = msgContentChars(out[i]);
+        out[i] = { ...out[i], content: String(out[i].content).slice(0, allowed) + `${CTX_TRUNCATE_MARK}${originalLen} 字符]` };
+        console.warn(`[CtxBudget] 极端:截断需求 user 消息至 ${allowed} 字符 (原 ${originalLen})`);
         break;
       }
     }
