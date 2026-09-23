@@ -8694,6 +8694,78 @@ function getAgentToolSchemas(agentId) {
   return tools;
 }
 
+// ============================================================================
+// 上下文预算护栏
+// 问题背景:部分任务(如 test-case-generator 工作流步骤)会把上传的需求文档
+// (.docx 全文)嵌入 user 消息,并在 agent 工具循环中累积多轮 assistant/tool
+// 消息。当总 token 超过模型上下文上限(本环境 deepseek-v4-pro 约 1,048,576
+// tokens)时,网关直接返回 400 "maximum context length",任务失败且无法进入
+// 审核流程。
+// 修复:在每次真正下发网关前,估算 messages 总规模,超过安全预算则按优先级裁剪,
+// 避免硬 400。裁剪策略(不破坏 tool_call/tool_result 配对):
+//   1) 丢弃最旧对话历史(位于 system 之前),保留 system / 最后 user / 当前轮;
+//   2) 仍超限则截断最大的 user 消息(需求文档)——保留头部 + 标记;
+//   3) 极端情况再截断 system 提示词。
+// 中文为主场景约 1.5 tokens/字符,故以 ~600K 字符(≈900K tokens)为安全预算,
+// 留出约 148K tokens 余量。
+// ============================================================================
+const MAX_CONTEXT_CHARS = 600000;
+const CTX_TRUNCATE_MARK = '\n\n…[上下文已截断:为适配模型上下文窗口,超出部分已被裁剪,原长度 ';
+
+function msgContentChars(m) {
+  if (!m || m.content == null) return 0;
+  return typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length;
+}
+
+function enforceContextBudget(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  const totalChars = () => messages.reduce((s, m) => s + msgContentChars(m), 0);
+
+  if (totalChars() <= MAX_CONTEXT_CHARS) return messages;
+
+  console.warn(`[CtxBudget] messages 总字符 ${totalChars()} 超过预算 ${MAX_CONTEXT_CHARS},开始裁剪`);
+  const out = messages.map(m => ({ ...m })); // 浅拷贝,避免改动原数组
+
+  // 1) 丢弃最旧历史消息(位于 system 之前),保留 system 及之后
+  while (out.length > 3 && out[0] && out[0].role !== 'system') {
+    if (totalChars() <= MAX_CONTEXT_CHARS) break;
+    out.shift();
+  }
+
+  // 2) 仍超限:截断最后一个 user 消息(需求文档),保留头部 + 标记
+  if (totalChars() > MAX_CONTEXT_CHARS) {
+    for (let i = out.length - 1; i >= 0; i--) {
+      if (out[i].role === 'user') {
+        const overBy = totalChars() - MAX_CONTEXT_CHARS;
+        const allowed = Math.max(2000, msgContentChars(out[i]) - overBy);
+        if (allowed < 2000) break; // 实在裁不动,交给第3步
+        const originalLen = msgContentChars(out[i]);
+        const head = String(out[i].content).slice(0, allowed);
+        out[i] = { ...out[i], content: head + `${CTX_TRUNCATE_MARK}${originalLen} 字符]` };
+        console.warn(`[CtxBudget] 截断 user 消息至 ${allowed} 字符 (原 ${originalLen})`);
+        break;
+      }
+    }
+  }
+
+  // 3) 极端情况:system + 截断后 user 仍超限,截断 system 提示词
+  if (totalChars() > MAX_CONTEXT_CHARS) {
+    for (let i = 0; i < out.length; i++) {
+      if (out[i].role === 'system') {
+        const overBy = totalChars() - MAX_CONTEXT_CHARS;
+        const allowed = Math.max(500, msgContentChars(out[i]) - overBy);
+        if (allowed < 500) break;
+        out[i] = { ...out[i], content: String(out[i].content).slice(0, allowed) + '\n…[system 已截断]' };
+        console.warn(`[CtxBudget] 截断 system 提示词至 ${allowed} 字符`);
+        break;
+      }
+    }
+  }
+
+  console.warn(`[CtxBudget] 裁剪后总字符 ${totalChars()}`);
+  return out;
+}
+
 async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverride = null, userId = null, forceToolCall = false) {
   // 添加详细入口日志
   console.log(`[GatewayAPI] ===== ENTRY: callOpenClawAPI =====`);
@@ -8882,10 +8954,11 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
         headers: deepseekHeaders,
         body: JSON.stringify({
           model: deepseekModel,
-          messages: messagesOverride || [
+          // 上下文预算护栏:下发前裁剪,避免触发模型 "maximum context length" 400
+          messages: enforceContextBudget(messagesOverride || [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: taskInput }
-          ],
+          ]),
           ...toolChoiceConfig,
           stream: true,  // 启用流式输出
           stream_options: { include_usage: true }  // 流式响应末尾返回 usage(token 统计)
