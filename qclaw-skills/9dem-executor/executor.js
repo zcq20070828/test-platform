@@ -146,7 +146,7 @@ function generatePairwiseCombinations(factors) {
     let values = factors[factorName];
 
     // 兼容对象格式 {type, min, max, values, minLength, maxLength}
-    // （5dem-invoker 的 buildInputSpecFromFields 输出对象格式，
+    // （9dem-invoker 的 buildInputSpecFromFields 输出对象格式，
     //  与 generateEquivalenceClasses / generateBoundaryValues 保持一致）
     if (!Array.isArray(values) && values && typeof values === 'object') {
       const spec = values;
@@ -216,7 +216,7 @@ function computeDimension(dim, inputSpec) {
  * @param {Array<string>} [options.dimensions] - 维度列表，默认 ['data']
  * @returns {Object} 各维度计算结果（仅包含请求的维度）
  */
-function execute5DEM(options) {
+function execute9DEM(options) {
   const { inputSpec, dimensions = ['data'] } = options;
 
   const result = {};
@@ -230,7 +230,7 @@ function execute5DEM(options) {
 }
 
 module.exports = {
-  execute5DEM,
+  execute9DEM,
   generateEquivalenceClasses,
   generateBoundaryValues,
   generatePairwiseCombinations,

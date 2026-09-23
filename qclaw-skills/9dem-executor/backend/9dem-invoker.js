@@ -1,12 +1,12 @@
 'use strict';
 
 /**
- * 5DEM Invoker - 供 LLM tool-call 调用的统一入口
- * 封装九维穷举模型执行器，将易填的参数映射到 execute5DEM 所需格式
+ * 9DEM Invoker - 供 LLM tool-call 调用的统一入口
+ * 封装九维穷举模型执行器，将易填的参数映射到 execute9DEM 所需格式
  */
 
 const {
-  execute5DEM,
+  execute9DEM,
   generateEquivalenceClasses,
   generateBoundaryValues,
   generatePairwiseCombinations
@@ -110,7 +110,7 @@ async function invoke(params) {
   if (!spec) {
     // 兜底：返回方法论提示
     return {
-      skill: '5dem-executor',
+      skill: '9dem-executor',
       success: false,
       error: '请提供 task（需求文本）、inputSpec（结构化规范）或 fields（字段列表）参数之一',
       hint: '九维穷举模型需要定义输入字段（字段名、类型、边界值等）才能生成等价类/边界值测试设计。'
@@ -118,11 +118,11 @@ async function invoke(params) {
   }
 
   try {
-    const result = execute5DEM({ inputSpec: spec, dimensions });
+    const result = execute9DEM({ inputSpec: spec, dimensions });
 
     // 附加上下文，帮助 LLM 理解结果
     return {
-      skill: '5dem-executor',
+      skill: '9dem-executor',
       success: true,
       dimensions,
       inputSpec: spec,
@@ -137,7 +137,7 @@ async function invoke(params) {
     };
   } catch (e) {
     return {
-      skill: '5dem-executor',
+      skill: '9dem-executor',
       success: false,
       error: e.message,
       inputSpec: spec

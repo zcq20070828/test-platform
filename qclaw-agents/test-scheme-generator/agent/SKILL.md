@@ -20,6 +20,6 @@ version: 1.0.0
 ```yaml
 - skill: test-strategy-designer
   description: 测试策略设计Skill，W模型/测试四象限/风险分析策略
-- skill: 5dem-executor
-  description: 五维穷举模型Skill，数据/流程/环境/时间/依赖维度穷举方法
+- skill: 9dem-executor
+  description: 九维穷举模型Skill，用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性维度穷举方法
 ```

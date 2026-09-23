@@ -1,7 +1,7 @@
 /**
  * 时间维度（Time Dimension）
  * 时序依赖分析、并发冲突检测、时间窗口分析
- * Time Dimension for 5DEM (Five-Dimensional Exhaustive Method)
+ * Time Dimension for 9DEM (Nine-Dimensional Exhaustive Method)
  */
 
 /**

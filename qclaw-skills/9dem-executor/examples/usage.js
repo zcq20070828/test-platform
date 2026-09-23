@@ -1,6 +1,6 @@
 /**
  * 数据维度穷举示例
- * 5DEM Executor - Data Dimension Examples
+ * 9DEM Executor - Data Dimension Examples
  */
 
 const { executeDataDimension } = require('../backend/data-dimension.js');

@@ -1,7 +1,7 @@
 /**
  * 依赖维度（Dependency Dimension）
  * 服务依赖图、故障注入点识别、依赖路径分析
- * Dependency Dimension for 5DEM (Five-Dimensional Exhaustive Method)
+ * Dependency Dimension for 9DEM (Nine-Dimensional Exhaustive Method)
  */
 
 /**

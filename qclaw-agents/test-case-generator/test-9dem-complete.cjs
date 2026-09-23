@@ -2,7 +2,7 @@
  * 完整集成测试：含numeric字段
  */
 
-const { executeDataDimension } = require('/Users/zhaochengqing/.qclaw/skills/5dem-executor/backend/data-dimension.js');
+const { executeDataDimension } = require('/Users/zhaochengqing/.qclaw/skills/9dem-executor/backend/data-dimension.js');
 
 async function runCompleteTest() {
   // 完整的输入规格（含numeric字段）
@@ -60,7 +60,7 @@ async function runCompleteTest() {
   console.log('✅ 等价类划分：覆盖所有字段的有效/无效等价类');
   console.log('✅ 边界值分析：识别numeric字段的边界点');
   console.log('✅ Pairwise组合：100% 2-way覆盖率');
-  console.log('✅ 集成链路：test-case-generator → 5dem-executor Skill');
+  console.log('✅ 集成链路：test-case-generator → 9dem-executor Skill');
 }
 
 runCompleteTest().catch(console.error);

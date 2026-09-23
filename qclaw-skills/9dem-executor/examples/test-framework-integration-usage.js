@@ -19,7 +19,7 @@ console.log('=== 测试框架集成模块使用示例 ===\n');
 console.log('示例1：检测测试框架');
 console.log('--------------------------------------');
 
-const testPath1 = '/Users/zhaochengqing/.qclaw/skills/5dem-executor';
+const testPath1 = '/Users/zhaochengqing/.qclaw/skills/9dem-executor';
 const framework1 = detectTestFramework(testPath1);
 console.log(`测试路径: ${testPath1}`);
 console.log(`检测到的框架: ${framework1 || '未检测到'}`);

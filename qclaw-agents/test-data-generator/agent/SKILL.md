@@ -18,8 +18,8 @@ version: 1.0.0
 ## 调用技能（Skills）
 
 ```yaml
-- skill: 5dem-executor
-  description: 五维穷举模型Skill，数据维度穷举和等价类划分方法
+- skill: 9dem-executor
+  description: 九维穷举模型Skill，数据维度（等价类/边界值/Pairwise）穷举和等价类划分方法
 - skill: data-masking
   description: 数据脱敏Skill，覆盖姓名/手机/身份证/邮箱/银行卡等敏感信息
 - skill: test-data-generator-skill

@@ -1,7 +1,7 @@
 /**
  * 环境维度（Environment Dimension）
  * 正交设计、资源约束分析、环境组合优化
- * Environment Dimension for 5DEM (Five-Dimensional Exhaustive Method)
+ * Environment Dimension for 9DEM (Nine-Dimensional Exhaustive Method)
  */
 
 /**
