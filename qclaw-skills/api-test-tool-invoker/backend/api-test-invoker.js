@@ -100,6 +100,52 @@ function selectBestTool(available, testScript = null, forcedTool = null) {
   );
 }
 
+/**
+ * 当 testScript 不是真实文件路径,而是直接传入的内联脚本内容时,
+ * 根据内容推断框架并落临时文件,返回该文件路径(供后续按扩展名识别框架)。
+ * 无法识别则返回 null(交由上层按路径逻辑报错)。
+ * @param {string} content
+ * @returns {string|null}
+ */
+function detectInlineScript(content) {
+  if (!content || typeof content !== 'string') return null;
+  const c = content.trim();
+  if (!c) return null;
+  let ext = null;
+  let ok = false;
+  // 1) Postman / Newman 集合(JSON)
+  if (c.startsWith('{') || c.startsWith('[')) {
+    try {
+      const j = JSON.parse(c);
+      if (j && (j.item || j.info || j._postman_id || j.collections)) {
+        ext = 'json';
+        ok = true;
+      }
+    } catch (_) {}
+  }
+  // 2) pytest 脚本
+  if (!ok && /(^|\n)\s*(import\s+pytest|def\s+test_|@pytest|from\s+requests)/.test(c)) {
+    ext = 'py';
+    ok = true;
+  }
+  // 3) RestAssured / Java
+  if (!ok && /RestAssured|import\s+io\.restassured|@Test\s|public\s+class/.test(c)) {
+    ext = 'java';
+    ok = true;
+  }
+  if (!ok) return null;
+  try {
+    const dir = path.join(os.tmpdir(), 'api-invoker-inline');
+    fs.mkdirSync(dir, { recursive: true });
+    const outPath = path.join(dir, `inline-script-${Date.now()}.${ext}`);
+    fs.writeFileSync(outPath, content, 'utf-8');
+    return outPath;
+  } catch (e) {
+    console.error(`[api-test-invoker] 内联脚本落盘失败: ${e.message}`);
+    return null;
+  }
+}
+
 // ─── 命令执行 ────────────────────────────────────────────────────────────────
 
 /**
@@ -1024,6 +1070,14 @@ async function invoke(params) {
 
   if (!testScript) {
     throw new Error('testScript is required');
+  }
+
+  // 支持直接传入内联脚本内容(非文件路径):推断框架并落临时文件,使"脚本文档模式"可直接执行
+  if (typeof testScript === 'string' && !fs.existsSync(testScript)) {
+    const inlinePath = detectInlineScript(testScript);
+    if (inlinePath) {
+      testScript = inlinePath;
+    }
   }
 
   // 检测可用工具
