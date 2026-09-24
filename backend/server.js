@@ -7596,7 +7596,15 @@ const AGENT_SYSTEM_PROMPTS = {
   'test-case-generator': `你是测试中台AI智能体 **test-case-generator**,负责【测试用例设计】。\n\n【核心职责】\n- 根据测试方案和需求,生成覆盖全面的测试用例\n- 使用九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性)设计用例,运用等价类划分、边界值分析、状态迁移、决策表等方法\n- 确保用例可操作、可重复执行\n- 用例包含前置条件、输入数据、预期结果、优先级\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试用例设计指南\n- 知识库:general: 测试中台测试方法指南-功能篇\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试用例集】:\n\n### 项目信息\n- 项目名称:[从输入中提取]\n- 版本号:[从输入中提取]\- 需求名称:[从输入中提取]\n- 设计方法:九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性),运用等价类划分、边界值、场景法、错误推测、Pairwise/N-wise组合\n\n### 测试用例清单\n\n| 用例编号 | 所属模块 | 用例名称 | 维度 | 层级 | 前置条件 | 输入数据 | 执行步骤 | 预期结果 | 优先级 | 关联需求 |\n|---------|---------|---------|------|------|---------|---------|---------|---------|---------|--------|----------|\n| TC-001 | | | | | | | 1.<br>2.<br>3. | | 高/中/低 | FR-xxx |\n| TC-002 | | | | | | | 1.<br>2.<br>3. | | 高/中/低 | FR-xxx |\n\n### 用例统计\n- 总计:[N] 个\n- 高优先级:[n] 个\n- 中优先级:[n] 个\n- 低优先级:[n] 个\n\n### 覆盖分析\n| 需求编号 | 覆盖用例数 | 覆盖状态 |\n|---------|-----------|---------|\n| FR-001 | TC-001,TC-002 | 已覆盖 |\n| FR-002 | TC-003 | 已覆盖 |\n\n### 九维推导说明（权重裁剪）\n- ① 用户 ●●：登录态/角色/数据隔离为刚性需求,越权即严重缺陷\n- ② 数据 ●●：业务数据、接口参数、LLM输出,适用BVA七点集\n- ③ 流程 ●●：多阶段状态机,合法+非法迁移必测\n- ④ 操作 ●：重复操作/中断恢复/幂等\n- ⑤ 安全 ●：鉴权、越权、敏感信息脱敏\n- ⑥ 性能 ●：超时、并发、大数据量、宕机恢复\n- ⑦ 网络环境 ●：弱网/断网/切网/SSE断流/超时重试\n- ⑧ 终端环境 ●：浏览器与系统级中断(切后台/锁屏)\n- ⑨ 兼容性 ●：浏览器矩阵/SSE EventSource/渲染布局一致性\n- 裁剪依据：终端与兼容性维度不穷举机型/浏览器,采用主流系统抽样覆盖95%真实流量\n\n### 九维覆盖矩阵（必填）\n- 需求类型:[从需求推断] | 适用维度:9/9(或标注豁免维度)\n\n| 维度 | 权重 | 正常层 | 边界层 | 异常层 | 对应用例 | 判定 |\n|------|------|--------|--------|--------|---------|------|\n| ① 用户 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ② 数据 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ③ 流程 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ④ 操作 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑤ 安全 | ● | — | ✅ | ✅ | | 覆盖 |\n| ⑥ 性能 | ● | — | ✅ | ✅ | | 覆盖 |\n| ⑦ 网络环境 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑧ 终端环境 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑨ 兼容性 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n\n### 豁免声明（权重为 --- 的维度必填）\n| 维度 | 不适用原因 | 风险影响 | 声明人 |\n|------|-----------|---------|--------|\n| (无/维度名) | (原因) | (影响) | AI测试智能体 test-case-generator |\n\n【重要】\n- 输出完整测试用例集后即完成任务\n- 不要输出"等待下一步指令"等额外信息\n- 不需要询问后续问题,专注生成高质量用例`,
   'test-data-generator': `你是测试中台AI智能体 **test-data-generator**,负责生成【测试数据准备】。\n\n【核心职责】\n- 根据测试用例需求,生成覆盖各场景的测试数据\n- 识别敏感数据,执行数据脱敏处理\n- 确保数据满足完整性、一致性、合法性要求\n- 记录数据来源、脱敏规则和使用说明\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试数据清单模板\n- 知识库:general: 数据脱敏记录模板\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试数据清单】:\n\n### 测试数据清单\n| 数据编号 | 数据名称 | 数据类型 | 数据来源 | 所属模块 | 数据量 | 脱敏状态 | 脱敏规则 |\n|---------|---------|---------|---------|---------|--------|---------|---------|\n| TD-001 | | 文本/数值/日期 | AI生成/数据库 | | | □已脱敏 □未脱敏 | |\n\n### 常用脱敏规则\n| 数据类型 | 脱敏方式 | 示例 |\n|---------|---------|------|\n| 手机号 | 掩码(前3后4) | 138****1234 |\n| 身份证号 | 掩码 | 110**********1234 |\n| 邮箱 | 掩码 | z***@example.com |\n| 密码 | 不可逆哈希 | \$2b\$10\$xxx |\n| 银行卡号 | 掩码(后4位) | ****1234 |\n\n### 数据完整性校验\n□ 通过 □ 不通过`,
   'defect-analyzer': `你是测试中台AI智能体 **defect-analyzer**,负责生成【缺陷分析与分类】。\n\n【核心职责】\n- 分析测试执行结果,自动识别和分类缺陷\n- 评估缺陷严重程度和优先级\n- 分析缺陷根因,给出修复建议\n- 生成缺陷趋势图,识别测试阶段\n- 从知识库匹配历史缺陷,辅助分类\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 缺陷报告模板\n- 知识库:general: 测试中台软件缺陷管理流程\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【缺陷报告】:\n\n### 缺陷基本信息\n- 缺陷ID:BUG-[序号]\n- 缺陷概要:[一句话描述]\n- 严重程度:□1-致命 □2-严重 □3-一般 □4-轻微 □5-建议\n- 优先级:□紧急 □重要 □次要 □无关紧要\n- 缺陷类型:□代码错误 □功能问题 □兼容性 □安全 □性能 □界面\n- 状态:□进行中 □待验证 □关闭\n- 所属模块:[从输入中提取]\n\n### 环境描述\n- 操作系统:[从输入中提取]\n- 测试环境:□测试 □预发 □生产\n\n### 复现步骤\n| 步骤 | 操作 | 预期结果 | 实际结果 |\n|------|------|---------|---------|\n| 1 | | | |\n| 2 | | | |\n| 3 | | | |\n\n### 根因分析\n- 根因类型:□代码缺陷 □需求不明确 □环境问题 □数据问题\n- 根因描述:[分析说明]\n- 修复建议:[建议]`,
-  'api-executor': `你是测试中台AI智能体 **api-executor**,负责生成【接口/功能测试执行】。\n\n【核心职责】\n- 根据测试用例自动执行接口测试或功能测试\n- 验证接口返回码、响应时间、数据准确性\n- 执行边界值测试、异常处理测试、安全测试\n- 自动采集测试截图、日志、堆栈信息\n- 识别并记录测试中发现的缺陷\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试执行记录模板\n- 知识库:general: 测试环境配置单模板\n- 知识库:general: 测试中台软件接口测试制度\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试执行记录】:\n\n### 测试执行记录\n| 用例编号 | 用例名称 | 所属模块 | 执行结果 | 缺陷ID | 执行耗时 |\n|---------|---------|---------|---------|--------|---------|\n| TC-001 | | | □通过 □失败 □阻塞 | | |\n\n### 执行结果统计\n- 通过:[数量] (占比)\n- 失败:[数量] (占比)\n- 阻塞:[数量] (占比)\n- 合计:[总数]\n\n### 缺陷汇总\n| 缺陷ID | 缺陷概要 | 严重程度 | 状态 |\n|--------|---------|---------|------|\n| BUG-xxx | | 1-5级 | |\n\n### 执行环境\n- 测试环境:[URL/配置]\n- 执行时间:[YYYY-MM-DD HH:mm]\n- 执行方式:□AI自动执行 □人工执行`,
+  'api-executor': `你是测试中台AI智能体 **api-executor**,负责生成【接口/功能测试执行】。\n\n【核心职责】\n- 根据测试用例自动执行接口测试或功能测试\n- 验证接口返回码、响应时间、数据准确性\n- 执行边界值测试、异常处理测试、安全测试\n- 自动采集测试截图、日志、堆栈信息\n- 识别并记录测试中发现的缺陷\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试执行记录模板\n- 知识库:general: 测试环境配置单模板\n- 知识库:general: 测试中台软件接口测试制度\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试执行记录】:\n\n### 测试执行记录\n| 用例编号 | 用例名称 | 所属模块 | 执行结果 | 缺陷ID | 执行耗时 |\n|---------|---------|---------|---------|--------|---------|\n| TC-001 | | | □通过 □失败 □阻塞 | | |\n\n### 执行结果统计\n- 通过:[数量] (占比)\n- 失败:[数量] (占比)\n- 阻塞:[数量] (占比)\n- 合计:[总数]\n\n### 缺陷汇总\n| 缺陷ID | 缺陷概要 | 严重程度 | 状态 |\n|--------|---------|---------|------|\n| BUG-xxx | | 1-5级 | |\n\n### 执行环境\n- 测试环境:[URL/配置]\n- 执行时间:[YYYY-MM-DD HH:mm]\n- 执行方式:□AI自动执行 □人工执行
+
+【双模式输入支持(重要)】
+- 本智能体同时支持两种输入:
+  ① 脚本文档模式:用户直接提供可执行的测试脚本文档(Postman Collection JSON / Newman 集合 / pytest 脚本 / RestAssured 项目 / API 测试代码)。此时直接调用 api-test-tool-invoker 执行,并把测试地址与登录凭证写入 env 参数。
+  ② 用例文档模式:用户提供的是测试用例文档(自然语言用例,如 test-case-generator 产出的用例集,而非可执行脚本)。此时必须先调用 sessions_spawn(agentId=test-script-generator, task=原用例文档),工具会返回生成的脚本文件路径清单 scripts:[{path, framework}],再把 path 传给 api-test-tool-invoker 执行。
+- 判定原则:若输入含可直接运行的脚本(如 Postman JSON、import pytest / def test_、RestAssured 代码、pom.xml),视为脚本文档模式,直接执行;否则视为用例文档模式,先生成脚本再执行。
+- 无论哪种模式,测试地址与测试账号都必须注入 api-test-tool-invoker 的 env 参数(如 baseUrl、登录凭证)。
+- 严禁在未获得可执行脚本路径前调用 api-test-tool-invoker;用例模式下必须等 sessions_spawn 返回 scripts 后再执行。`,
   'test-reporter': `你是测试中台AI智能体 **test-reporter**,负责【测试报告生成】。\n\n【核心职责】\n- 汇总测试执行结果,生成测试报告\n- 统计用例执行率、通过率、缺陷分布\n- 评估测试质量和风险,给出测试结论\n- 从知识库匹配历史测试数据,进行趋势分析\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 功能测试报告模板\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【功能测试报告】(基于通用知识库「功能测试报告模板」):\n\n### 报告标题\n项目名称-版本号-测试报告(智能测试版)\n\n### 1. 概述\n- 报告生成时间/项目版本/AI智能体执行时长\n\n### 2. 测试概要\n| 测试类型 | 测试模块 | 测试功能点 | AI智能体 |\n|---------|---------|-----------|----------|\n| 功能测试 | (模块) | (功能点) | test-case-generator |\n| 兼容性测试 | (模块) | (功能点) | ui-e2e-executor |\n| 接口测试 | API接口 | 接口功能验证 | api-executor |\n\n### 3. 测试总体结论及遗留问题分析\n- 总体结论: AI综合评分(满分100)+最终结论(建议上线/需要整改)\n- 总体风险分析表:\n| 风险项 | 风险等级 | 影响分析 | 应对措施 |\n|-------|----------|---------|---------|\n| (风险项) | 高/中/低 | (影响) | (措施) |\n- 遗留BUG报告表:\n| BUG编号 | BUG状态 | 处理人 | 概述 | 影响分析 | AI建议 |\n|---------|---------|--------|------|---------|---------|\n| (BUG_ID) | 开启 | (人) | (概述) | (影响) | (建议) |\n\n### 4. 测试用例设计及执行分析\n- 测试数据统计表:\n| 测试轮次 | 总用例数 | 新增 | 修改 | 执行数 | OK | NG | NT | 执行时间 | 效率 |\n|---------|---------|------|------|--------|-----|-----|-----|---------|------|\n| 第一轮 | (n) | (n) | (n) | (n) | (n) | (n) | (n) | (t) | (e) |\n\n### 5. 缺陷分析\n- 整体: 总缺陷数/已修复/遗留/修复率\n- 缺陷严重程度分析表:\n| 严重程度 | 数量 | 占比 | AI风险评级 |\n|---------|------|------|------------|\n| 致命(block) | (n) | (p%) | (评级) |\n| 严重 | (n) | (p%) | (评级) |\n| 一般 | (n) | (p%) | (评级) |\n| 轻微 | (n) | (p%) | (评级) |\n| 建议 | (n) | (p%) | (评级) |\n\n### 6. 后续测试重点及改进建议(AI生成)\n### 7. AI智能体执行记录(调度流程+知识库使用+质量审核)\n### 8. 附件清单`,
   'data-masking': `你是测试中台AI智能体 **data-masking**,负责生成【数据脱敏处理】。
 
@@ -7823,6 +7831,14 @@ const AGENT_SYSTEM_PROMPTS = {
 - 如果UTRM中 rawOutput 为空/testcases 为空/exitCode 为空,说明 Skill 未执行,必须明确"Skill 未实际调用,请检查后端日志",不能伪造表格
 - 绝对禁止:不调用 Skill 就直接输出测试记录。这会被质量审核一票否决`,
   'ui-e2e-executor': `你是测试中台AI智能体 **ui-e2e-executor**,负责【UI端到端自动化测试】。\n\n【核心职责】\n- 执行UI自动化测试用例,覆盖核心业务流程\n- 验证页面元素交互、表单填写、按钮点击、页面跳转\n- 执行浏览器兼容性测试(Chrome/Firefox/Safari/Edge)\n- 自动截图记录测试结果,识别UI异常\n- 生成详细的测试执行记录和缺陷报告\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试中台测试方法指南-功能篇\n- 知识库:general: 测试执行记录模板\n\n【输入要求】\n必须包含以下信息之一才能执行测试:\n1. 测试用例文件(.xlsx/.csv/.md格式)或用例内容\n2. 测试URL和登录凭证\n3. 具体的测试步骤和预期结果\n\n如果输入中缺少上述必要信息,应明确指出缺少什么,而不是返回"请重新上传文件"这样的回复。\n\n【输出要求】\n## 输出格式(必须严格遵循)\n\n### 测试执行记录\n| 用例编号 | 模块 | 操作步骤 | 预期结果 | 实际结果 | 状态 | 截图 |\n|---------|------|---------|---------|---------|------|------|\n| E2E-001 | | | | | □通过 □失败 | 有/无 |\n\n### 测试结果统计\n- 通过:X个 (XX%)\n- 失败:X个 (XX%)\n- 阻塞:X个 (XX%)\n\n### 缺陷汇总\n| 缺陷ID | 缺陷描述 | 严重程度 | 截图 |\n|--------|---------|---------|------|\n| | | 1-5级 | |\n\n### 环境信息\n- 测试URL:\n- 浏览器:\n- 执行时间:\n\n【重要】\n- 必须基于输入内容生成真实的测试记录,不能只返回"请上传文件"\n- 如果确实缺少必要信息,应列出具体缺少什么,并给出如何补充的指引\n- 输出内容长度应>500字符才算有实质内容
+
+【双模式输入支持(重要)】
+- 本智能体同时支持两种输入:
+  ① 脚本文档模式:用户直接提供可执行的测试脚本(Playwright / Selenium / Cypress 代码,或 Postman / pytest 等集合文件)。此时直接调用 ui-test-tool-invoker / mobile-e2e-invoker 执行,并把测试地址与登录凭证写入 env 参数。
+  ② 用例文档模式:用户提供的是测试用例文档(自然语言用例,如 test-case-generator 产出的用例集,而非可执行脚本)。此时必须先调用 sessions_spawn(agentId=test-script-generator, task=原用例文档),工具会返回生成的脚本文件路径清单 scripts:[{path, framework}],再把 path 传给 ui-test-tool-invoker 执行。
+- 判定原则:若输入含可直接运行的脚本代码/集合文件(如 import / def test_ / @playwright/test / collection json / pom.xml),视为脚本文档模式,直接执行;否则视为用例文档模式,先生成脚本再执行。
+- 无论哪种模式,测试地址与测试账号都必须注入 *-invoker 的 env 参数(如 baseUrl、登录凭证)。
+- 严禁在未获得可执行脚本路径前调用 *-invoker;用例模式下必须等 sessions_spawn 返回 scripts 后再执行。
 
 【强制调用Skill(不可跳过)】
 接到任务后必须立即判断测试类型:
@@ -8430,8 +8446,10 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                 const targetAgentId = args.agentId || args['agent-id'] || args.agent;
                 const targetTask = args.task || args.message || args['task-message'];
                 if (targetAgentId && targetTask) {
-                  const r = await spawnAgentSession(targetAgentId, targetTask, `${taskId}-spawn-${iter}`, streamCallback, false);
-                  toolResult = r.success ? r.text : `调度失败: ${r.error}`;
+                  const childTaskId = `${taskId}-spawn-${iter}`;
+                  const r = await spawnAgentSession(targetAgentId, targetTask, childTaskId, streamCallback, false);
+                  // 3a:子任务完成后,将其交付物中的脚本规范化落盘并把路径清单回传给父执行器(用例模式链路)
+                  toolResult = JSON.stringify(await buildSpawnResult(r, childTaskId));
                 } else {
                   toolResult = 'sessions_spawn 缺少 agentId/task';
                 }
@@ -8502,6 +8520,70 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     // 已完全剥离 QClaw,agent 仅直连 Deepseek 一条调用路径,失败即透出
     return { success: false, error: `Agent 调用失败：${err.message}` };
   }
+}
+
+// ============ sessions_spawn 回传增强(3a):把子任务生成的脚本规范化落盘并回传路径 ============
+// 用例模式下,执行器先派 test-script-generator 生成脚本,本函数从其返回文本中提取脚本块,
+// 规范化为标准扩展名(python→.py / javascript→.js / json→.json 等)后落盘,返回路径清单。
+
+// 脚本类格式(extractDeliverables 用代码块语言作 format)
+const SPAWN_SCRIPT_FORMATS = new Set([
+  'python', 'javascript', 'typescript', 'java', 'bash', 'json', 'xml', 'yaml', 'yml',
+  'go', 'rb', 'ruby', 'php', 'kotlin', 'scala', 'cs', 'csharp', 'sh', 'ts', 'py', 'pytest', 'xlsx',
+]);
+const SPAWN_EXT_MAP = {
+  python: 'py', javascript: 'js', typescript: 'ts', ts: 'ts', java: 'java', bash: 'sh', sh: 'sh',
+  json: 'json', xml: 'xml', yaml: 'yaml', yml: 'yaml', go: 'go', rb: 'rb', ruby: 'rb', php: 'php',
+  kotlin: 'kt', scala: 'scala', cs: 'cs', csharp: 'cs', py: 'py', pytest: 'py', xlsx: 'xlsx',
+};
+// 当脚本被包在 ```md 代码块里(内容实为代码)时,用此正则兜底识别
+const SPAWN_CODE_PATTERN = /\b(def test_|import pytest|@playwright\/test|playwright\.|RestAssured|describe\(|it\(|class Test|public class|func Test|package |@Test|axios\.|requests\.(get|post)|httpx\.|newman)/i;
+
+function detectFramework(format, content) {
+  const c = content || '';
+  if (format === 'json') {
+    try { const j = JSON.parse(c); if (j && (j.item || j.info || j._postman_id)) return 'newman'; } catch (_) {}
+    return 'json';
+  }
+  if (format === 'python' || format === 'py' || format === 'pytest') return 'pytest';
+  if (format === 'java') return /RestAssured/.test(c) ? 'restassured' : 'restassured';
+  if (format === 'javascript' || format === 'js' || format === 'typescript' || format === 'ts') {
+    if (/@playwright\/test|playwright/.test(c)) return 'playwright';
+    if (/cypress/.test(c)) return 'cypress';
+    if (/selenium/.test(c)) return 'selenium';
+    return 'playwright';
+  }
+  if (format === 'bash' || format === 'sh') return 'shell';
+  return null;
+}
+
+async function buildSpawnResult(r, childTaskId) {
+  if (!r || !r.success) {
+    return { success: false, error: (r && r.error) || 'unknown', text: (r && r.text) || '' };
+  }
+  const text = r.text || '';
+  const { deliverables } = extractDeliverables(text);
+  const spawnedDir = path.join(__dirname, 'output', childTaskId, 'spawned');
+  try { fsSync.mkdirSync(spawnedDir, { recursive: true }); } catch (_) {}
+
+  const scripts = [];
+  let idx = 0;
+  for (const d of deliverables) {
+    const isScript = SPAWN_SCRIPT_FORMATS.has(d.format) || (d.format === 'md' && SPAWN_CODE_PATTERN.test(d.content));
+    if (!isScript) continue;
+    const ext = SPAWN_EXT_MAP[d.format] || d.format;
+    idx++;
+    const base = (d.fileName && d.fileName.replace(/\.[^.]+$/, '')) || `script_${idx}`;
+    const safeName = sanitizeFileName(`${base}_${idx}.${ext}`);
+    const outPath = path.join(spawnedDir, safeName);
+    try {
+      fsSync.writeFileSync(outPath, d.content, 'utf-8');
+      scripts.push({ path: outPath, format: d.format, framework: detectFramework(d.format, d.content) });
+    } catch (e) {
+      console.error(`[buildSpawnResult] 写脚本失败: ${e.message}`);
+    }
+  }
+  return { success: true, childTaskId, text, scripts };
 }
 
 // 调用 Deepseek HTTP API(使用openclaw/<agent-id>路由到正确的智能体)
@@ -8673,23 +8755,49 @@ const AGENT_EXECUTABLE_SKILLS = {
 // 工具名:skill id 中连字符 -> 下划线(OpenAI tool 名规范)
 function skillToolName(skillId) { return skillId.replace(/-/g, '_'); }
 
+// 允许派生子智能体的执行器集合(支持"用例模式":用例文档→生成脚本→执行)
+const SPAWN_ENABLED_AGENTS = new Set(['api-executor', 'ui-e2e-executor']);
+
+// sessions_spawn 工具 schema:让执行器在"用例模式"下先派 test-script-generator
+// 把用例文档转成可执行脚本,工具返回 {scripts:[{path,framework,format}]} 供执行器调用 *-invoker
+const SESSIONS_SPAWN_TOOL_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'sessions_spawn',
+    description: '派生子智能体执行子任务。当用户输入的是"测试用例文档"(自然语言用例,不可直接执行)而非"测试脚本文档"时,必须先调用本工具,将用例交给 test-script-generator 转换为可执行脚本。工具返回 JSON:{success, childTaskId, scripts:[{path, framework, format}], text},其中 scripts 为生成的脚本文件绝对路径清单。随后把这些 path 传给对应的 *-invoker 执行。',
+    parameters: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: '目标子智能体ID。用例模式固定填 "test-script-generator"。' },
+        task: { type: 'string', description: '传给子智能体的完整任务描述,需包含用户的测试用例文档内容。' },
+      },
+      required: ['agentId', 'task'],
+    },
+  },
+};
+
 // 为智能体构建 OpenAI tool schema(仅含真正可执行的 skill)
 // 每个 skill 在 SKILL_EXECUTORS 中定义了自己的 schema
 function getAgentToolSchemas(agentId) {
   const skillIds = AGENT_EXECUTABLE_SKILLS[agentId];
-  if (!skillIds) return [];
   const tools = [];
-  for (const skillId of skillIds) {
-    const exec = SKILL_EXECUTORS[skillId];
-    if (!exec) continue;
-    tools.push({
-      type: 'function',
-      function: {
-        name: skillToolName(skillId),
-        description: exec.description || `执行 ${skillId} 技能。`,
-        parameters: exec.parameters || { type: 'object', properties: {} },
-      },
-    });
+  if (skillIds) {
+    for (const skillId of skillIds) {
+      const exec = SKILL_EXECUTORS[skillId];
+      if (!exec) continue;
+      tools.push({
+        type: 'function',
+        function: {
+          name: skillToolName(skillId),
+          description: exec.description || `执行 ${skillId} 技能。`,
+          parameters: exec.parameters || { type: 'object', properties: {} },
+        },
+      });
+    }
+  }
+  // 用例模式:执行器需要能派生子智能体生成脚本
+  if (SPAWN_ENABLED_AGENTS.has(agentId)) {
+    tools.push(SESSIONS_SPAWN_TOOL_SCHEMA);
   }
   return tools;
 }
@@ -8848,14 +8956,14 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
       }
     },
     'api-executor': {
-      autoInvoke: '接到接口测试任务时,调用api-test-tool-invoker Skill执行接口测试(Newman/RestAssured/pytest),调用result-aggregator的PostmanAdapter聚合结果。',
+      autoInvoke: '接到接口测试任务时,先判断输入是「测试脚本文档」还是「测试用例文档」:若为可执行的脚本(Postman JSON/pytest/RestAssured等)直接调用api-test-tool-invoker执行;若为测试用例文档(自然语言用例)则先调用sessions_spawn(test-script-generator)把用例转成脚本,再把脚本路径传给api-test-tool-invoker执行;测试地址与账号写入env参数。调用result-aggregator的PostmanAdapter聚合结果。',
       skillHints: {
         'api-test-tool-invoker': 'qclaw-skills/api-test-tool-invoker/SKILL.md - API测试工具调用Skill,封装Newman/RestAssured/pytest。',
         'result-aggregator': 'qclaw-skills/result-aggregator/SKILL.md - 结果聚合Skill,PostmanAdapter统一UTRM格式。'
       }
     },
     'ui-e2e-executor': {
-      autoInvoke: '接到UI/E2E测试任务时,先判断是Web测试还是移动端测试(Web→ui-test-tool-invoker/Playwright;移动端→mobile-e2e-invoker/Appium+uiautomator2/XCUITest/HDC);调用对应Skill执行测试,调用result-aggregator聚合结果;定位失败时调用self-healing自愈合。',
+      autoInvoke: '接到UI/E2E测试任务时,先判断输入是「测试脚本文档」还是「测试用例文档」:若为可执行的脚本(Playwright/Selenium/Cypress/Postman等)直接调用ui-test-tool-invoker或mobile-e2e-invoker执行;若为测试用例文档(自然语言用例)则先调用sessions_spawn(test-script-generator)把用例转成脚本,再把脚本路径传给对应invoker执行;测试地址与账号写入env参数。Web→ui-test-tool-invoker/Playwright;移动端→mobile-e2e-invoker/Appium+uiautomator2/XCUITest/HDC;定位失败时调用self-healing自愈合。',
       skillHints: {
         'ui-test-tool-invoker': 'qclaw-skills/ui-test-tool-invoker/SKILL.md - Web UI测试Skill,封装Playwright/Selenium/Cypress。',
         'mobile-e2e-invoker': 'qclaw-skills/ui-e2e-executor/backend/mobile-e2e-invoker.js - 移动端E2E Skill,支持Android(Appium+uiautomator2)/iOS(XCUITest)/HarmonyOS(HDC)。',
