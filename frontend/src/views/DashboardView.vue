@@ -372,6 +372,29 @@ async function readAttachmentContent(file: AttachmentFile): Promise<string | nul
     }
   }
 
+  // 2.5 办公表格/文档(.xlsx/.xls/.pdf/.pptx/.ppt):走后端通用 /api/parse 解析
+  //     与 test-script-generator 系统提示词承诺的 `=== 测试用例文档内容 ===` 标记保持一致,
+  //     确保上传的 Excel/PDF 用例能被真正解析进输入,而非仅传文件名与大小占位。
+  if (['.xlsx', '.xls', '.pdf', '.pptx', '.ppt'].includes(ext)) {
+    try {
+      const base64 = file.dataUrl.split(',').pop() || ''
+      const res = await request<{ success: boolean; text?: string }>('/api/parse', {
+        method: 'POST',
+        body: JSON.stringify({ filename: file.name, base64 })
+      })
+      if (res.success && res.data?.success && res.data?.text) {
+        const truncated = res.data.text.length > 50000
+          ? res.data.text.substring(0, 50000) + '\n\n... (内容过长,已截断,完整文件在后端路径)'
+          : res.data.text
+        return `=== 测试用例文档内容 ===\n\n--- 文档 1: ${file.name} ---\n${truncated}`
+      }
+      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析结果为空]`
+    } catch (e) {
+      console.warn('[Dashboard] 文档解析失败:', file.name, e)
+      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析失败: ${e}]`
+    }
+  }
+
   // 3. 图片:仅引用文件名(无法提取测试文本内容)
   if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'].includes(ext)) {
     return `[图片附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB)]`

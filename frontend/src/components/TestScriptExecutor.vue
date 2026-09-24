@@ -152,6 +152,26 @@ async function readAttachmentContent(file: AttachmentFile): Promise<string | nul
       return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析失败: ${e}]`
     }
   }
+  // 办公表格/文档(.xlsx/.xls/.pdf/.pptx/.ppt):走后端通用 /api/parse 解析
+  // (与 DashboardView.readAttachmentContent 及 test-script-generator 系统提示词承诺的 `=== 测试用例文档内容 ===` 标记保持一致)
+  if (['.xlsx', '.xls', '.pdf', '.pptx', '.ppt'].includes(ext)) {
+    try {
+      const base64 = file.dataUrl.split(',').pop() || ''
+      const res = await request<{ success: boolean; text?: string }>('/api/parse', {
+        method: 'POST',
+        body: JSON.stringify({ filename: file.name, base64 })
+      })
+      if (res.success && res.data?.success && res.data?.text) {
+        const MAX = 50000
+        const truncated = res.data.text.length > MAX ? res.data.text.substring(0, MAX) + '\n... (内容过长已截断)' : res.data.text
+        return `=== 测试用例文档内容 ===\n\n--- 文档 1: ${file.name} ---\n${truncated}`
+      }
+      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析结果为空]`
+    } catch (e) {
+      console.warn('[TestScript] 文档解析失败:', file.name, e)
+      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析失败: ${e}]`
+    }
+  }
   return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB)]`
 }
 
