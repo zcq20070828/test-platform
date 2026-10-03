@@ -9533,14 +9533,21 @@ async function executeTaskWithReview(task, userId = null) {
       console.log(`[TaskWithReview] Task ${task.id} failed after ${MAX_RETRIES} retries: ${reason}`);
 
       // 【修复】审核未通过也保留脚本交付件,让用户能查看/下载 AI 生成的脚本
-      const { deliverables: failDeliverables } = extractDeliverables(task.result || '');
+      // 但若执行结果无代码块(纯状态/错误占位,如网关不可用时 agent 未产出内容),
+      // 则不物化占位交付物,避免把失败占位 JSON 当成交付物生成 md/docx/xlsx(见任务 4c0a9ae8)
+      const rawResult = task.result || '';
       let failFiles = [];
-      if (failDeliverables.length > 1) {
-        failFiles = await saveDeliverablesToFiles(task.id, 0, task.agent, failDeliverables);
-      } else if (failDeliverables.length === 1) {
-        const f = await saveDeliverableToFile(task.id, 0, task.agent, failDeliverables[0].content, failDeliverables[0].format);
-        // saveDeliverableToFile 现返回 [主文件, ...docx/xlsx] 数组,需扁平化收集;勿直接 [f],否则 path.basename(数组) 崩溃(见任务 90ed3f45)
-        failFiles = Array.isArray(f) ? [...f] : (f ? [f] : []);
+      if (!/```/.test(rawResult)) {
+        console.log(`[TaskWithReview] 跳过占位结果物化(无实质脚本内容) for task ${task.id}`);
+      } else {
+        const { deliverables: failDeliverables } = extractDeliverables(rawResult);
+        if (failDeliverables.length > 1) {
+          failFiles = await saveDeliverablesToFiles(task.id, 0, task.agent, failDeliverables);
+        } else if (failDeliverables.length === 1) {
+          const f = await saveDeliverableToFile(task.id, 0, task.agent, failDeliverables[0].content, failDeliverables[0].format);
+          // saveDeliverableToFile 现返回 [主文件, ...docx/xlsx] 数组,需扁平化收集;勿直接 [f],否则 path.basename(数组) 崩溃(见任务 90ed3f45)
+          failFiles = Array.isArray(f) ? [...f] : (f ? [f] : []);
+        }
       }
       if (failFiles.length > 0) {
         task.outputFiles = failFiles;
@@ -9916,6 +9923,17 @@ const AGENT_DELIVERABLE_NAMES = {
   'test-master': '测试主报告'
 };
 
+// 交付件格式→标准文件扩展名映射(避免 .python/.bash/.javascript 等非标准后缀)
+const DELIVERABLE_EXT_MAP = {
+  python: 'py', py: 'py', pytest: 'py',
+  javascript: 'js', js: 'js', typescript: 'ts', ts: 'ts',
+  java: 'java', kotlin: 'kt', scala: 'scala',
+  bash: 'sh', sh: 'sh', shell: 'sh',
+  json: 'json', xml: 'xml', yaml: 'yaml', yml: 'yml',
+  go: 'go', rb: 'rb', ruby: 'rb', php: 'php', cs: 'cs', csharp: 'cs',
+  sql: 'sql', ini: 'ini', csv: 'csv', markdown: 'md',
+};
+
 /**
  * 从内容中提取项目信息
  * @param {string} content - 文本内容
@@ -10165,7 +10183,7 @@ async function saveDeliverableToFile(workflowId, stage, agentId, deliverableCont
     const deliverableName = AGENT_DELIVERABLE_NAMES[agentId] || '输出物';
 
     // 【修复】使用交付件真实格式作为扩展名(python/js/md 等),不再强制 .md
-    const fileExt = format === 'md' ? '.md' : `.${format}`;
+    const fileExt = format === 'md' ? '.md' : '.' + (DELIVERABLE_EXT_MAP[format] || format);
 
     // 生成文件名:项目名称 + 版本号(或需求名称)+ 交付件名称 + 扩展名
     let fileName;
@@ -10223,7 +10241,7 @@ async function saveDeliverablesToFiles(workflowId, stage, agentId, deliverables)
 
     for (let i = 0; i < deliverables.length; i++) {
       const deliverable = deliverables[i];
-      const fileExt = deliverable.format === 'md' ? '.md' : `.${deliverable.format}`;
+      const fileExt = deliverable.format === 'md' ? '.md' : '.' + (DELIVERABLE_EXT_MAP[deliverable.format] || deliverable.format);
 
       // 提取项目信息
       const projectInfo = extractProjectInfo(deliverable.content);
