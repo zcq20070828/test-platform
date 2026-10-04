@@ -2634,7 +2634,7 @@ app.post('/api/tasks', authenticate, async (req, res) => {
   } catch (err) {
     // DB 写入失败时,返回 500 错误,前端感知到失败
     tasks.delete(taskId);
-    console.error(`[Tasks] 创建任务到数据库失败 id=${taskId} agent=${task.agent} userId=${task.userId}:`, err.code, err.message);
+    console.error(`[Tasks] 创建任务到数据库失败 id=${taskId} agent=${task.agent} userId=${task.userId} inputByteLen=${Buffer.byteLength(String(task.input || ''), 'utf-8')}:`, err.code, err.message);
     return res.status(500).json({ error: '任务创建失败(数据库写入错误)', detail: err.message });
   }
 

@@ -4,6 +4,28 @@
  */
 
 import { query, getConnection } from './db.js';
+import { sanitizeUtf8, fitUtf8Bytes, SAFE_WRITE_BYTES } from './text-safety.js';
+
+/**
+ * 写库前的统一文本护栏: 先保证合法 UTF-8,再按列容量安全截断。
+ *
+ * 背景: 20261004 UI/E2E 任务创建 500 的真实根因是 tasks.input 为 TEXT(64KB),
+ * 上传用例文档后内容超限,MySQL 截断时把汉字从中间切断,抛出
+ * ER_TRUNCATED_WRONG_VALUE_FOR_FIELD(1366)。该报错不提长度,极易误判为字符集问题。
+ * 全库 TEXT 列已统一扩容为 MEDIUMTEXT(见 migrations/20261004_unify_text_columns_to_mediumtext.sql),
+ * 此处再加一道按字节安全截断的兜底 —— 即使将来某列忘记扩容,也只会安静截断,
+ * 不会让请求 500。
+ *
+ * 默认上限取 SAFE_WRITE_BYTES(8MB):除列容量外还受 max_allowed_packet(默认16MB)
+ * 约束,取一半为 SQL 语句开销留余量,避免触发 ER_NET_PACKET_TOO_LARGE。
+ *
+ * @param {*} v
+ * @param {number} [maxBytes] 默认 SAFE_WRITE_BYTES;写入 LONGTEXT 列可传 TYPE_CAPACITY.LONGTEXT
+ */
+function safeText(v, maxBytes = SAFE_WRITE_BYTES) {
+  if (v == null) return v;
+  return fitUtf8Bytes(sanitizeUtf8(v), maxBytes);
+}
 
 /**
  * 创建任务
@@ -24,12 +46,12 @@ async function createTask(task) {
     task.type || 'general',
     task.source || 'step',
     task.status || 'pending',
-    task.input || '',
+    safeText(task.input) || '',
     task.agentId || task.agent || 'unknown',
     task.priority || 'normal',
     task.userId || null,
-    task.result || null,
-    task.error || null,
+    safeText(task.result) || null,
+    safeText(task.error) || null,
     task.requireReview !== false ? 1 : 0,
     task.reviewPassed || null,
     new Date(),
@@ -75,11 +97,11 @@ async function updateTask(taskId, updates) {
   }
   if (updates.result !== undefined) {
     fields.push('result = ?');
-    params.push(updates.result);
+    params.push(safeText(updates.result));
   }
   if (updates.error !== undefined) {
     fields.push('error = ?');
-    params.push(updates.error);
+    params.push(safeText(updates.error));
   }
   if (updates.reviewPassed !== undefined) {
     fields.push('review_passed = ?');
@@ -103,7 +125,10 @@ async function updateTask(taskId, updates) {
   }
   if (updates.chat_history !== undefined) {
     fields.push('chat_history = ?');
-    params.push(typeof updates.chat_history === 'string' ? updates.chat_history : JSON.stringify(updates.chat_history));
+    // chat_history 虽为 LONGTEXT,但同样受 max_allowed_packet 约束,故走统一默认上限
+    params.push(safeText(
+      typeof updates.chat_history === 'string' ? updates.chat_history : JSON.stringify(updates.chat_history)
+    ));
   }
   // 成本相关字段
   if (updates.inputTokens !== undefined) {

@@ -577,25 +577,25 @@ console.log('[Dashboard] handleSendTask called', {
     try {
       const task = await store.createTask(targetAgentId, fullMessage, filesToSubmit, { source: 'step', type: targetAgentId })
       if (task === null) {
-        // 创建失败（可能原因：未登录 / 401 / 后端错误）
-        ElMessage.error('任务创建失败，请确认已登录且会话未过期')
+        // 创建失败（可能原因：网络异常 / 会话已过期）
+        ElMessage.error('任务创建失败：网络异常或会话已过期，请重试')
         // 从消息列表移除刚才添加的用户消息
         const idx = store.messages.findIndex(m => m.id === userMessage.id)
         if (idx !== -1) store.messages.splice(idx, 1)
       }
     } catch (err: any) {
-      // 处理后端返回的 409 冲突错误
+      // 处理后端返回的 409 冲突错误 / 其它创建失败(展示真实后端错误)
       if (err.code === 'TASK_CONFLICT') {
         ElMessage.warning({
           message: err.message || '同一用户同一时间只能执行一个任务',
           duration: 5000
         })
-        // 从消息列表移除刚才添加的用户消息
-        const idx = store.messages.findIndex(m => m.id === userMessage.id)
-        if (idx !== -1) store.messages.splice(idx, 1)
       } else {
-        ElMessage.error('创建任务失败：' + (err.message || err))
+        ElMessage.error('任务创建失败：' + (err?.message || '请稍后重试'))
       }
+      // 从消息列表移除刚才添加的用户消息
+      const idx = store.messages.findIndex(m => m.id === userMessage.id)
+      if (idx !== -1) store.messages.splice(idx, 1)
     }
     taskInput.value = ''
   }

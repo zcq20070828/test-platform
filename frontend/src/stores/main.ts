@@ -738,7 +738,8 @@ export const useMainStore = defineStore('main', () => {
         return res.task
       } else {
         console.error('[Store] createTask failed:', res.error)
-        return null
+        // 抛出真实后端错误,供调用方展示具体失败原因(而非笼统的"请确认已登录")
+        throw { code: 'CREATE_FAILED', message: res.error || '任务创建失败', status: 500 }
       }
     } catch (error: any) {
       console.error('[Store] createTask error:', error)
@@ -747,7 +748,9 @@ export const useMainStore = defineStore('main', () => {
         const errMsg = error?.error || error?.message || '同一用户同一时间只能执行一个任务'
         throw { code: 'TASK_CONFLICT', message: errMsg, status: 409 }
       }
-      return null
+      // 非 409:原样向上抛。此前在此 return null 会把上面抛出的真实后端错误吞掉,
+      // 导致前端只能显示笼统的"网络异常或会话已过期",掩盖真实原因。
+      throw error
     }
   }
 

@@ -24,12 +24,20 @@ CREATE TABLE IF NOT EXISTS tasks (
   id VARCHAR(36) PRIMARY KEY,
   type VARCHAR(20) DEFAULT 'general' COMMENT '任务类型',
   status ENUM('pending', 'running', 'completed', 'failed') DEFAULT 'pending' COMMENT '任务状态',
-  input TEXT NOT NULL COMMENT '用户输入',
+  -- 20261004 扩容: TEXT(64KB) -> MEDIUMTEXT(16MB)
+  -- 上传用例文档后 input 可达 66KB+,超出 TEXT 上限会被截断并切断多字节汉字,
+  -- 触发 1366 Incorrect string value 导致任务创建 500。详见
+  -- migrations/20261004_enlarge_task_input.sql
+  input MEDIUMTEXT NOT NULL COMMENT '用户输入',
   agent_id VARCHAR(50) NOT NULL COMMENT '执行智能体ID',
   priority ENUM('low', 'normal', 'high') DEFAULT 'normal' COMMENT '优先级',
   user_id VARCHAR(36) NOT NULL COMMENT '用户ID',
   result LONGTEXT COMMENT '执行结果（可能很长）',
-  error TEXT COMMENT '错误信息',
+  -- 20261004 扩容: TEXT(64KB) -> MEDIUMTEXT(16MB)
+  -- 智能体执行失败时写入的 error 可能含完整错误堆栈/大段工具返回原文,
+  -- 超 64KB 会复现与 input 相同的 1366/1406 截断故障(中文堆栈尤其易命中)。
+  -- 详见 migrations/20261004_enlarge_task_error.sql
+  error MEDIUMTEXT COMMENT '错误信息',
   require_review BOOLEAN DEFAULT TRUE COMMENT '是否需要审核',
   review_passed BOOLEAN COMMENT '审核是否通过',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -61,7 +69,7 @@ CREATE TABLE IF NOT EXISTS task_review_results (
   score INT COMMENT '评分',
   veto BOOLEAN DEFAULT FALSE COMMENT '是否一票否决',
   passed BOOLEAN COMMENT '是否通过',
-  output TEXT COMMENT '审核输出',
+  output MEDIUMTEXT 
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_task_id (task_id),
   INDEX idx_reviewer_id (reviewer_id),
@@ -97,8 +105,8 @@ CREATE TABLE IF NOT EXISTS credentials (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id VARCHAR(36),
   provider VARCHAR(50) COMMENT '提供商: github/google/etc',
-  access_token TEXT COMMENT '访问令牌（加密）',
-  refresh_token TEXT COMMENT '刷新令牌（加密）',
+  access_token MEDIUMTEXT 
+  refresh_token MEDIUMTEXT 
   expires_at TIMESTAMP NULL COMMENT '过期时间',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -148,7 +156,7 @@ CREATE TABLE IF NOT EXISTS event_queue (
   status ENUM('pending', 'processing', 'completed', 'failed') DEFAULT 'pending',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   processed_at TIMESTAMP NULL,
-  error TEXT COMMENT '处理错误信息',
+  error MEDIUMTEXT 
   INDEX idx_status (status),
   INDEX idx_type (type),
   INDEX idx_created_at (created_at)
@@ -199,7 +207,7 @@ CREATE TABLE IF NOT EXISTS evaluation_runs (
   start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   end_time TIMESTAMP NULL,
   status ENUM('running', 'completed', 'failed') DEFAULT 'running',
-  result_summary TEXT COMMENT '结果摘要',
+  result_summary MEDIUMTEXT 
   INDEX idx_agent_id (agent_id),
   INDEX idx_status (status),
   INDEX idx_start_time (start_time)
@@ -210,7 +218,7 @@ CREATE TABLE IF NOT EXISTS evaluation_config (
   id INT AUTO_INCREMENT PRIMARY KEY,
   agent_id VARCHAR(50) UNIQUE COMMENT '智能体ID（唯一）',
   config_key VARCHAR(100) NOT NULL,
-  config_value TEXT,
+  config_value MEDIUMTEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_agent_id (agent_id),
@@ -285,7 +293,7 @@ ON DUPLICATE KEY UPDATE username=VALUES(username);
 CREATE TABLE IF NOT EXISTS workflows (
   id            VARCHAR(36) PRIMARY KEY,
   user_id       VARCHAR(36) DEFAULT NULL,
-  input         TEXT,
+  input         MEDIUMTEXT,
   status        ENUM('running','completed','failed','rejected','interactive') DEFAULT 'running',
   steps         JSON        DEFAULT NULL COMMENT '阶段列表 JSON',
   current_step  INT         DEFAULT 0,
@@ -309,7 +317,7 @@ CREATE TABLE IF NOT EXISTS conversation_history (
   user_id     VARCHAR(36)  NOT NULL,
   agent_id    VARCHAR(100) NOT NULL,
   role        ENUM('user','assistant') NOT NULL,
-  content     TEXT NOT NULL,
+  content     MEDIUMTEXT 
   turn_index  INT  DEFAULT 0 COMMENT '本轮的 turn 编号',
   created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_user_agent (user_id, agent_id),
@@ -340,7 +348,7 @@ CREATE TABLE IF NOT EXISTS agent_learned_knowledge (
   doc_path VARCHAR(500) NOT NULL COMMENT '文档相对路径',
   doc_hash VARCHAR(64) NOT NULL COMMENT '文档内容SHA256哈希(用于检测变化)',
   learned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '学习时间',
-  content_preview TEXT COMMENT '内容预览(前500字符，用于快速注入)',
+  content_preview MEDIUMTEXT 
   INDEX idx_user_agent (user_id, agent_id),
   INDEX idx_kb_doc (kb_type, doc_path),
   INDEX idx_learned_at (learned_at),
