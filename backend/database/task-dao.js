@@ -4,44 +4,27 @@
  */
 
 import { query, getConnection } from './db.js';
+import { sanitizeUtf8, fitUtf8Bytes, SAFE_WRITE_BYTES } from './text-safety.js';
 
 /**
- * 将任意值清洗为可安全写入 utf8mb4 列的合法 UTF-8 字符串。
- * 覆盖所有来源形态:
- * - JS 字符串(可能含孤立代理/CESU-8): 用 TextEncoder/TextDecoder 合法化,非法序列降级为 U+FFFD
- * - Node Buffer: 按 UTF-8 解码(非法字节 → U+FFFD)
- * - Uint8Array / DataView / ArrayBuffer 等二进制视图: 按原始字节解码(非法字节 → U+FFFD)
- * - 数字/布尔/对象: 转成字符串(避免原样写库)
+ * 写库前的统一文本护栏: 先保证合法 UTF-8,再按列容量安全截断。
  *
- * 作用: 用户上传内容 / 智能体输出 / KB 文件(可能返回 Buffer/Uint8Array)中混入非法
- *       UTF-8 字节(游离续字节 0x80-0xBF、0xFF、孤立代理等)时,若直接写入 utf8mb4 列会
- *       触发 ER_TRUNCATED_WRONG_VALUE_FOR_FIELD 导致任务创建/更新 500。
- *       统一在此清洗,保证写入成功且内容最大程度保留。
+ * 背景: 20261004 UI/E2E 任务创建 500 的真实根因是 tasks.input 为 TEXT(64KB),
+ * 上传用例文档后内容超限,MySQL 截断时把汉字从中间切断,抛出
+ * ER_TRUNCATED_WRONG_VALUE_FOR_FIELD(1366)。该报错不提长度,极易误判为字符集问题。
+ * 全库 TEXT 列已统一扩容为 MEDIUMTEXT(见 migrations/20261004_unify_text_columns_to_mediumtext.sql),
+ * 此处再加一道按字节安全截断的兜底 —— 即使将来某列忘记扩容,也只会安静截断,
+ * 不会让请求 500。
+ *
+ * 默认上限取 SAFE_WRITE_BYTES(8MB):除列容量外还受 max_allowed_packet(默认16MB)
+ * 约束,取一半为 SQL 语句开销留余量,避免触发 ER_NET_PACKET_TOO_LARGE。
+ *
+ * @param {*} v
+ * @param {number} [maxBytes] 默认 SAFE_WRITE_BYTES;写入 LONGTEXT 列可传 TYPE_CAPACITY.LONGTEXT
  */
-function sanitizeUtf8(v) {
+function safeText(v, maxBytes = SAFE_WRITE_BYTES) {
   if (v == null) return v;
-  // 字符串:TextEncoder 会把孤立代理等非法序列降级为 U+FFFD,再解码回合法字符串
-  if (typeof v === 'string') {
-    return new TextDecoder('utf-8', { fatal: false }).decode(new TextEncoder().encode(v));
-  }
-  // Node Buffer
-  if (Buffer.isBuffer(v)) {
-    return v.toString('utf-8');
-  }
-  // Uint8Array / DataView / 其它 TypedArray 视图(前端/KB 解析可能返回此类二进制)
-  if (ArrayBuffer.isView(v)) {
-    return Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString('utf-8');
-  }
-  // 裸 ArrayBuffer
-  if (v instanceof ArrayBuffer) {
-    return Buffer.from(v).toString('utf-8');
-  }
-  // 其它(数字/布尔/对象):序列化为字符串,避免原样写库
-  try {
-    return typeof v === 'object' ? JSON.stringify(v) : String(v);
-  } catch {
-    return String(v);
-  }
+  return fitUtf8Bytes(sanitizeUtf8(v), maxBytes);
 }
 
 /**
@@ -63,12 +46,12 @@ async function createTask(task) {
     task.type || 'general',
     task.source || 'step',
     task.status || 'pending',
-    sanitizeUtf8(task.input) || '',
+    safeText(task.input) || '',
     task.agentId || task.agent || 'unknown',
     task.priority || 'normal',
     task.userId || null,
-    sanitizeUtf8(task.result) || null,
-    sanitizeUtf8(task.error) || null,
+    safeText(task.result) || null,
+    safeText(task.error) || null,
     task.requireReview !== false ? 1 : 0,
     task.reviewPassed || null,
     new Date(),
@@ -114,11 +97,11 @@ async function updateTask(taskId, updates) {
   }
   if (updates.result !== undefined) {
     fields.push('result = ?');
-    params.push(sanitizeUtf8(updates.result));
+    params.push(safeText(updates.result));
   }
   if (updates.error !== undefined) {
     fields.push('error = ?');
-    params.push(sanitizeUtf8(updates.error));
+    params.push(safeText(updates.error));
   }
   if (updates.reviewPassed !== undefined) {
     fields.push('review_passed = ?');
@@ -142,7 +125,10 @@ async function updateTask(taskId, updates) {
   }
   if (updates.chat_history !== undefined) {
     fields.push('chat_history = ?');
-    params.push(sanitizeUtf8(typeof updates.chat_history === 'string' ? updates.chat_history : JSON.stringify(updates.chat_history)));
+    // chat_history 虽为 LONGTEXT,但同样受 max_allowed_packet 约束,故走统一默认上限
+    params.push(safeText(
+      typeof updates.chat_history === 'string' ? updates.chat_history : JSON.stringify(updates.chat_history)
+    ));
   }
   // 成本相关字段
   if (updates.inputTokens !== undefined) {
