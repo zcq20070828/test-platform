@@ -2026,7 +2026,7 @@ const AGENTS = {
     icon: '🖥️',
     workflow: [],
     knowledgeBases: ['general', 'project-test', 'project-biz'],
-    skills: ['ui-test-tool-invoker', 'mobile-e2e-invoker', 'result-aggregator', 'failure-root-cause-analyzer', 'self-healing']
+    skills: ['ui-direct-invoker', 'ui-test-tool-invoker', 'mobile-e2e-invoker', 'result-aggregator', 'failure-root-cause-analyzer', 'self-healing']
   },
   'api-executor': {
     id: 'api-executor',
@@ -2038,7 +2038,7 @@ const AGENTS = {
     icon: '🔌',
     workflow: [],
     knowledgeBases: ['general', 'project-test'],
-    skills: ['api-test-tool-invoker', 'result-aggregator', 'failure-root-cause-analyzer']
+    skills: ['api-direct-invoker', 'api-test-tool-invoker', 'result-aggregator', 'failure-root-cause-analyzer']
   },
   'test-scheme-generator': {
     id: 'test-scheme-generator',
@@ -7598,13 +7598,22 @@ const AGENT_SYSTEM_PROMPTS = {
   'defect-analyzer': `你是测试中台AI智能体 **defect-analyzer**,负责生成【缺陷分析与分类】。\n\n【核心职责】\n- 分析测试执行结果,自动识别和分类缺陷\n- 评估缺陷严重程度和优先级\n- 分析缺陷根因,给出修复建议\n- 生成缺陷趋势图,识别测试阶段\n- 从知识库匹配历史缺陷,辅助分类\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 缺陷报告模板\n- 知识库:general: 测试中台软件缺陷管理流程\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【缺陷报告】:\n\n### 缺陷基本信息\n- 缺陷ID:BUG-[序号]\n- 缺陷概要:[一句话描述]\n- 严重程度:□1-致命 □2-严重 □3-一般 □4-轻微 □5-建议\n- 优先级:□紧急 □重要 □次要 □无关紧要\n- 缺陷类型:□代码错误 □功能问题 □兼容性 □安全 □性能 □界面\n- 状态:□进行中 □待验证 □关闭\n- 所属模块:[从输入中提取]\n\n### 环境描述\n- 操作系统:[从输入中提取]\n- 测试环境:□测试 □预发 □生产\n\n### 复现步骤\n| 步骤 | 操作 | 预期结果 | 实际结果 |\n|------|------|---------|---------|\n| 1 | | | |\n| 2 | | | |\n| 3 | | | |\n\n### 根因分析\n- 根因类型:□代码缺陷 □需求不明确 □环境问题 □数据问题\n- 根因描述:[分析说明]\n- 修复建议:[建议]`,
   'api-executor': `你是测试中台AI智能体 **api-executor**,负责生成【接口/功能测试执行】。\n\n【核心职责】\n- 根据测试用例自动执行接口测试或功能测试\n- 验证接口返回码、响应时间、数据准确性\n- 执行边界值测试、异常处理测试、安全测试\n- 自动采集测试截图、日志、堆栈信息\n- 识别并记录测试中发现的缺陷\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试执行记录模板\n- 知识库:general: 测试环境配置单模板\n- 知识库:general: 测试中台软件接口测试制度\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试执行记录】:\n\n### 测试执行记录\n| 用例编号 | 用例名称 | 所属模块 | 执行结果 | 缺陷ID | 执行耗时 |\n|---------|---------|---------|---------|--------|---------|\n| TC-001 | | | □通过 □失败 □阻塞 | | |\n\n### 执行结果统计\n- 通过:[数量] (占比)\n- 失败:[数量] (占比)\n- 阻塞:[数量] (占比)\n- 合计:[总数]\n\n### 缺陷汇总\n| 缺陷ID | 缺陷概要 | 严重程度 | 状态 |\n|--------|---------|---------|------|\n| BUG-xxx | | 1-5级 | |\n\n### 执行环境\n- 测试环境:[URL/配置]\n- 执行时间:[YYYY-MM-DD HH:mm]\n- 执行方式:□AI自动执行 □人工执行
 
-【双模式输入支持(重要)】
-- 本智能体同时支持两种输入:
-  ① 脚本文档模式:用户直接提供可执行的测试脚本文档(Postman Collection JSON / Newman 集合 / pytest 脚本 / RestAssured 项目 / API 测试代码)。此时直接调用 api-test-tool-invoker 执行,并把测试地址与登录凭证写入 env 参数。
-  ② 用例文档模式:用户提供的是测试用例文档(自然语言用例,如 test-case-generator 产出的用例集,而非可执行脚本)。此时必须先调用 sessions_spawn(agentId=test-script-generator, task=原用例文档),工具会返回生成的脚本文件路径清单 scripts:[{path, framework}],再把 path 传给 api-test-tool-invoker 执行。
-- 判定原则:若输入含可直接运行的脚本(如 Postman JSON、import pytest / def test_、RestAssured 代码、pom.xml),视为脚本文档模式,直接执行;否则视为用例文档模式,先生成脚本再执行。
-- 无论哪种模式,测试地址与测试账号都必须注入 api-test-tool-invoker 的 env 参数(如 baseUrl、登录凭证)。
-- 严禁在未获得可执行脚本路径前调用 api-test-tool-invoker;用例模式下必须等 sessions_spawn 返回 scripts 后再执行。`,
+【三模式输入支持(重要)】
+- 本智能体支持三种输入:
+  ① 用例/清单文档模式(默认):用户提供接口清单、接口文档、测试用例表格或自然语言场景描述,
+     但没有可执行脚本。此时**直接调用 api-direct-invoker Skill
+     (qclaw-skills/api-direct-invoker/SKILL.md)**,把接口整理成 cases 数组直接发请求断言 ——
+     **无需先生成任何脚本文件**。
+  ② 脚本文档模式:用户直接提供可执行脚本(Postman Collection JSON / Newman 集合 / pytest 脚本 /
+     RestAssured 项目 / API 测试代码)。此时调用 api-test-tool-invoker 执行,并把测试地址与登录
+     凭证写入 env 参数。
+  ③ 脚本资产模式(仅当用户明确要求):用户明确要"生成脚本 / 复用脚本 / 接入 CI"时,才先调用
+     sessions_spawn(agentId=test-script-generator, task=原用例文档),拿到
+     scripts:[{path, framework}] 后再把 path 传给 api-test-tool-invoker 执行。
+- 判定原则:输入含可直接运行的脚本 → ②;用户明确要脚本资产 → ③;
+  其余(接口清单/文档/用例/场景描述)一律走 ① 直接执行。
+- 无论哪种模式,测试地址与测试账号都必须注入执行参数(如 baseUrl、Authorization、登录凭证)。
+- **严禁以"没有脚本""请先生成脚本"为由拒绝执行或等待脚本**;① 模式下不得先 sessions_spawn。`,
   'test-reporter': `你是测试中台AI智能体 **test-reporter**,负责【测试报告生成】。\n\n【核心职责】\n- 汇总测试执行结果,生成测试报告\n- 统计用例执行率、通过率、缺陷分布\n- 评估测试质量和风险,给出测试结论\n- 从知识库匹配历史测试数据,进行趋势分析\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 功能测试报告模板\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【功能测试报告】(基于通用知识库「功能测试报告模板」):\n\n### 报告标题\n项目名称-版本号-测试报告(智能测试版)\n\n### 1. 概述\n- 报告生成时间/项目版本/AI智能体执行时长\n\n### 2. 测试概要\n| 测试类型 | 测试模块 | 测试功能点 | AI智能体 |\n|---------|---------|-----------|----------|\n| 功能测试 | (模块) | (功能点) | test-case-generator |\n| 兼容性测试 | (模块) | (功能点) | ui-e2e-executor |\n| 接口测试 | API接口 | 接口功能验证 | api-executor |\n\n### 3. 测试总体结论及遗留问题分析\n- 总体结论: AI综合评分(满分100)+最终结论(建议上线/需要整改)\n- 总体风险分析表:\n| 风险项 | 风险等级 | 影响分析 | 应对措施 |\n|-------|----------|---------|---------|\n| (风险项) | 高/中/低 | (影响) | (措施) |\n- 遗留BUG报告表:\n| BUG编号 | BUG状态 | 处理人 | 概述 | 影响分析 | AI建议 |\n|---------|---------|--------|------|---------|---------|\n| (BUG_ID) | 开启 | (人) | (概述) | (影响) | (建议) |\n\n### 4. 测试用例设计及执行分析\n- 测试数据统计表:\n| 测试轮次 | 总用例数 | 新增 | 修改 | 执行数 | OK | NG | NT | 执行时间 | 效率 |\n|---------|---------|------|------|--------|-----|-----|-----|---------|------|\n| 第一轮 | (n) | (n) | (n) | (n) | (n) | (n) | (n) | (t) | (e) |\n\n### 5. 缺陷分析\n- 整体: 总缺陷数/已修复/遗留/修复率\n- 缺陷严重程度分析表:\n| 严重程度 | 数量 | 占比 | AI风险评级 |\n|---------|------|------|------------|\n| 致命(block) | (n) | (p%) | (评级) |\n| 严重 | (n) | (p%) | (评级) |\n| 一般 | (n) | (p%) | (评级) |\n| 轻微 | (n) | (p%) | (评级) |\n| 建议 | (n) | (p%) | (评级) |\n\n### 6. 后续测试重点及改进建议(AI生成)\n### 7. AI智能体执行记录(调度流程+知识库使用+质量审核)\n### 8. 附件清单`,
   'data-masking': `你是测试中台AI智能体 **data-masking**,负责生成【数据脱敏处理】。
 
@@ -7824,29 +7833,56 @@ const AGENT_SYSTEM_PROMPTS = {
 - 输出内容长度应>800字符才算有实质内容
 
 【强制调用Skill(不可跳过)】
-你必须先调用 api-test-tool-invoker Skill(qclaw-skills/api-test-tool-invoker/SKILL.md) 来实际运行接口测试,然后根据返回的UTRM结果填充【输出要求】表格。
-- 接到任务后立即识别输入中的 testScript/testFramework/options(workers/timeout/retries/coverage/verbose/debug)
-- 立即调用 api-test-tool-invoker.invoke 传入上述参数,不要输出"已收到/请稍候"等待
-- 拿到UTRM后,基于 UTRM.summary / UTRM.testcases / UTRM.extra 填充表格
-- 如果UTRM中 rawOutput 为空/testcases 为空/exitCode 为空,说明 Skill 未执行,必须明确"Skill 未实际调用,请检查后端日志",不能伪造表格
+接到任务后必须先判断输入形态,再选择执行通道:
+
+① 免脚本直执通道(默认、优先) —— 输入为接口清单 / 接口文档 / 测试用例表格 / 自然语言场景描述,
+   或用户并未提供可执行脚本时:调用 **api-direct-invoker** Skill
+   (qclaw-skills/api-direct-invoker/SKILL.md),直接用 HTTP 发请求并断言。
+   - 把接口信息整理为 cases 数组:每个用例给出 name / method / url / headers / body / expect
+   - baseUrl 统一放顶层;登录态用 headers(如 Authorization / Cookie)注入
+   - 异常场景(期望 4xx/5xx)必须显式写 expect.status,否则默认按 <400 判定
+   - 用例间数据依赖用 extract + {{var}} 串联(如登录提取 token 供后续用例使用)
+   - 立即调用 api-direct-invoker.invoke,不要输出"已收到/请稍候"等待
+
+② 脚本通道(仅当已有脚本或用户明确要脚本资产时) —— 用户已提供 Postman 集合 / pytest /
+   RestAssured 脚本,或明确要求"生成脚本 / 复用脚本 / 接入 CI":调用 api-test-tool-invoker
+   Skill(qclaw-skills/api-test-tool-invoker/SKILL.md),传入 testScript/testFramework/options。
+
+- 判定原则:没有现成可执行脚本 → 一律走 ① 直接执行,**不得要求用户先造脚本,也不得以"缺少脚本"为由拒绝执行**。
+- 拿到UTRM后,基于 UTRM.summary / UTRM.testcases 填充表格
+- 如果UTRM中 testcases 为空/结果无实质内容,说明 Skill 未执行,必须明确"Skill 未实际调用,请检查后端日志",不能伪造表格
 - 绝对禁止:不调用 Skill 就直接输出测试记录。这会被质量审核一票否决`,
   'ui-e2e-executor': `你是测试中台AI智能体 **ui-e2e-executor**,负责【UI端到端自动化测试】。\n\n【核心职责】\n- 执行UI自动化测试用例,覆盖核心业务流程\n- 验证页面元素交互、表单填写、按钮点击、页面跳转\n- 执行浏览器兼容性测试(Chrome/Firefox/Safari/Edge)\n- 自动截图记录测试结果,识别UI异常\n- 生成详细的测试执行记录和缺陷报告\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试中台测试方法指南-功能篇\n- 知识库:general: 测试执行记录模板\n\n【输入要求】\n必须包含以下信息之一才能执行测试:\n1. 测试用例文件(.xlsx/.csv/.md格式)或用例内容\n2. 测试URL和登录凭证\n3. 具体的测试步骤和预期结果\n\n如果输入中缺少上述必要信息,应明确指出缺少什么,而不是返回"请重新上传文件"这样的回复。\n\n【输出要求】\n## 输出格式(必须严格遵循)\n\n### 测试执行记录\n| 用例编号 | 模块 | 操作步骤 | 预期结果 | 实际结果 | 状态 | 截图 |\n|---------|------|---------|---------|---------|------|------|\n| E2E-001 | | | | | □通过 □失败 | 有/无 |\n\n### 测试结果统计\n- 通过:X个 (XX%)\n- 失败:X个 (XX%)\n- 阻塞:X个 (XX%)\n\n### 缺陷汇总\n| 缺陷ID | 缺陷描述 | 严重程度 | 截图 |\n|--------|---------|---------|------|\n| | | 1-5级 | |\n\n### 环境信息\n- 测试URL:\n- 浏览器:\n- 执行时间:\n\n【重要】\n- 必须基于输入内容生成真实的测试记录,不能只返回"请上传文件"\n- 如果确实缺少必要信息,应列出具体缺少什么,并给出如何补充的指引\n- 输出内容长度应>500字符才算有实质内容
 
-【双模式输入支持(重要)】
-- 本智能体同时支持两种输入:
-  ① 脚本文档模式:用户直接提供可执行的测试脚本(Playwright / Selenium / Cypress 代码,或 Postman / pytest 等集合文件)。此时直接调用 ui-test-tool-invoker / mobile-e2e-invoker 执行,并把测试地址与登录凭证写入 env 参数。
-  ② 用例文档模式:用户提供的是测试用例文档(自然语言用例,如 test-case-generator 产出的用例集,而非可执行脚本)。此时必须先调用 sessions_spawn(agentId=test-script-generator, task=原用例文档),工具会返回生成的脚本文件路径清单 scripts:[{path, framework}],再把 path 传给 ui-test-tool-invoker 执行。
-- 判定原则:若输入含可直接运行的脚本代码/集合文件(如 import / def test_ / @playwright/test / collection json / pom.xml),视为脚本文档模式,直接执行;否则视为用例文档模式,先生成脚本再执行。
-- 无论哪种模式,测试地址与测试账号都必须注入 *-invoker 的 env 参数(如 baseUrl、登录凭证)。
-- 严禁在未获得可执行脚本路径前调用 *-invoker;用例模式下必须等 sessions_spawn 返回 scripts 后再执行。
+【三模式输入支持(重要)】
+- 本智能体支持三种输入:
+  ① 用例/步骤文档模式(默认):用户提供测试用例文档、操作步骤描述、或 测试URL+账号密码,
+     但没有可执行脚本。此时**直接调用 ui-direct-invoker Skill
+     (qclaw-skills/ui-direct-invoker/SKILL.md)** 按步骤序列驱动真实浏览器执行 ——
+     把用例转成 steps(goto / fill / click / waitFor / expectText ...),把测试地址写入
+     baseUrl、登录凭证作为步骤参数,**无需先生成任何脚本文件**。
+  ② 脚本文档模式:用户直接提供可执行脚本(Playwright / Selenium / Cypress 代码,或 Postman /
+     pytest 等集合文件)。此时调用 ui-test-tool-invoker / mobile-e2e-invoker 执行,并把测试
+     地址与登录凭证写入 env 参数。
+  ③ 脚本资产模式(仅当用户明确要求):用户明确要"生成脚本 / 复用脚本 / 接入 CI"时,才先调用
+     sessions_spawn(agentId=test-script-generator, task=原用例文档),拿到返回的
+     scripts:[{path, framework}] 后,再把 path 传给 ui-test-tool-invoker 执行。
+- 判定原则:输入含可直接运行的脚本代码/集合文件 → ②;用户明确要脚本资产 → ③;
+  其余(用例文档 / 步骤描述 / URL+账号密码)一律走 ① 直接执行。
+- **严禁以"没有脚本""请先生成脚本"为由拒绝执行或等待脚本**;① 模式下不得先 sessions_spawn。
+- 无论哪种模式,测试地址与测试账号都必须注入执行参数(如 baseUrl、登录凭证)。
 
 【强制调用Skill(不可跳过)】
 接到任务后必须立即判断测试类型:
 
-**Web E2E测试** → 调用 ui-test-tool-invoker Skill(qclaw-skills/ui-test-tool-invoker/SKILL.md)
-- 识别输入中的 testScript/testFramework/options(workers/timeout/retries/coverage/verbose/debug)
-- 立即调用 ui-test-tool-invoker.invoke 传入上述参数,不要输出"已收到/请稍候"等待
-- 拿到UTRM后,基于 UTRM.summary / UTRM.testcases / UTRM.extra 填充表格
+**Web E2E测试**
+- 无现成脚本(用例文档 / 操作步骤 / 测试URL+账号密码) → 调用 **ui-direct-invoker**.invoke,
+  传入 cases(每项含 name + steps 序列)或单场景 steps;baseUrl 与登录凭证一并传入
+- 已有可执行脚本 → 调用 **ui-test-tool-invoker**.invoke,传入
+  testScript/testFramework/options(workers/timeout/retries/coverage/verbose/debug)
+- 立即调用,不要输出"已收到/请稍候"等待
+- 拿到UTRM后,基于 UTRM.summary / UTRM.testcases 填充表格;
+  ui-direct-invoker 返回的 testcase.screenshot.path 可直接填入"截图"列
 
 **移动端E2E测试** → 调用 mobile-e2e-invoker Skill(qclaw-skills/ui-e2e-executor/backend/mobile-e2e-invoker.js)
 - 识别输入中的 platform(android/ios/harmonyos)、appPath、bundleId、testCases、deviceId
@@ -8645,6 +8681,53 @@ const SKILL_EXECUTORS = {
       required: ['testScript'],
     },
   },
+  // ── 免脚本直执通道(草案B):不依赖任何外部测试框架,直接执行并返回 UTRM ──
+  'api-direct-invoker': {
+    modulePath: path.join(SKILLS_DIR, 'api-direct-invoker', 'backend', 'api-direct-invoker.js'),
+    main: 'invoke',
+    description: '接口测试免脚本直执:直接用 HTTP 客户端按用例定义发请求并断言,返回 UTRM 结果。不需要先生成 Postman 集合 / pytest / RestAssured 脚本;当输入是接口清单、接口文档、测试用例表格或自然语言场景描述时使用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        baseUrl: { type: 'string', description: '公共基地址,用例 url 可写相对路径(如 /api/login)' },
+        headers: { type: 'object', description: '公共请求头(如 Authorization、Cookie)' },
+        vars: { type: 'object', description: '初始变量,供 {{var}} 引用' },
+        timeout: { type: 'number', description: '单请求超时(ms),默认 15000' },
+        cases: {
+          type: 'array',
+          description: '用例数组。每项: { name, method, url, headers, query, body, expect:{status,json,jsonPath,contains,notContains,equals,header,maxDurationMs}, extract:{变量名:"data.token"} }',
+          items: { type: 'object' },
+        },
+        spec: { type: 'object', description: '单用例简写(与 cases 二选一)' },
+        stopOnFail: { type: 'boolean', description: '失败后中止后续用例,默认 false' },
+      },
+    },
+  },
+  'ui-direct-invoker': {
+    modulePath: path.join(SKILLS_DIR, 'ui-direct-invoker', 'backend', 'ui-direct-invoker.js'),
+    main: 'invoke',
+    description: 'UI/E2E 测试免脚本直执:直接用 Playwright 驱动真实浏览器按步骤序列执行(goto/click/fill/断言),返回 UTRM 结果。不需要先生成 Playwright/Selenium/Cypress 脚本文件;当输入是用例文档、操作步骤或 测试URL+账号密码 时使用。失败自动截图。',
+    parameters: {
+      type: 'object',
+      properties: {
+        baseUrl: { type: 'string', description: '基地址,步骤 url 可写相对路径' },
+        browser: { type: 'string', description: 'chromium(默认)/firefox/webkit' },
+        headless: { type: 'boolean', description: '无头模式,默认 true' },
+        viewport: { type: 'object', description: '{ width, height },默认 1280x720' },
+        timeout: { type: 'number', description: '单步超时(ms),默认 15000' },
+        screenshotOnFail: { type: 'boolean', description: '失败时截图,默认 true' },
+        screenshotOnSuccess: { type: 'boolean', description: '成功时截图,默认 false' },
+        cases: {
+          type: 'array',
+          description: '场景数组。每项: { name, steps:[ {action,selector,value,url,...} ], extract:{变量名:"text:.sel"} }。action 支持 goto/click/dblclick/fill/type/press/select/check/uncheck/hover/wait/waitFor/waitForUrl/reload/goBack/screenshot/expectText/expectVisible/expectHidden/expectUrl/expectTitle/expectCount/expectValue/expectAttribute',
+          items: { type: 'object' },
+        },
+        steps: { type: 'array', description: '单场景简写(与 cases 二选一)', items: { type: 'object' } },
+        vars: { type: 'object', description: '初始变量,供 {{var}} 引用' },
+        stopOnFail: { type: 'boolean', description: '失败后中止后续场景,默认 false' },
+      },
+    },
+  },
   // V2.0 核心技能:九维穷举模型
   '9dem-executor': {
     modulePath: path.join(SKILLS_DIR, '9dem-executor', 'backend', '9dem-invoker.js'),
@@ -8742,8 +8825,9 @@ const SKILL_EXECUTORS = {
   },
 };
 const AGENT_EXECUTABLE_SKILLS = {
-  'ui-e2e-executor': ['ui-test-tool-invoker', 'mobile-e2e-invoker'],
-  'api-executor': ['api-test-tool-invoker'],
+  // 免脚本直执通道置于首位:无现成脚本时(用例文档/步骤/URL+凭证)直接执行,无需先生成脚本
+  'ui-e2e-executor': ['ui-direct-invoker', 'ui-test-tool-invoker', 'mobile-e2e-invoker'],
+  'api-executor': ['api-direct-invoker', 'api-test-tool-invoker'],
   // V1.0 核心智能体:强制调用专业技能
   'test-case-generator': ['9dem-executor'],  // 用例生成必须走九维穷举
   'test-reporter': ['result-aggregator', 'quality-metrics-calculator'],  // 报告生成必须聚合+度量
@@ -8764,7 +8848,7 @@ const SESSIONS_SPAWN_TOOL_SCHEMA = {
   type: 'function',
   function: {
     name: 'sessions_spawn',
-    description: '派生子智能体执行子任务。当用户输入的是"测试用例文档"(自然语言用例,不可直接执行)而非"测试脚本文档"时,必须先调用本工具,将用例交给 test-script-generator 转换为可执行脚本。工具返回 JSON:{success, childTaskId, scripts:[{path, framework, format}], text},其中 scripts 为生成的脚本文件绝对路径清单。随后把这些 path 传给对应的 *-invoker 执行。',
+    description: '派生子智能体执行子任务。仅在用户**明确要求生成可复用测试脚本资产**(如"生成脚本""复用脚本""接入 CI")时使用:将用例文档交给 test-script-generator 转换为可执行脚本。工具返回 JSON:{success, childTaskId, scripts:[{path, framework, format}], text},其中 scripts 为生成的脚本文件绝对路径清单,随后可把 path 传给对应的 *-invoker 执行。注意:若用户只是要执行测试而非要脚本资产,不要调用本工具,应直接用 api-direct-invoker / ui-direct-invoker 免脚本直执。',
     parameters: {
       type: 'object',
       properties: {
