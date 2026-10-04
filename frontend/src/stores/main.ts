@@ -1242,18 +1242,6 @@ export const useMainStore = defineStore('main', () => {
             });
           }
 
-          // 【方案A】任务完成后自动进入对话模式——通过 localStorage 桥接 store 与 view
-          try {
-            const taskId = taskData.id
-            const agentId = taskData.agentId || taskData.agent
-            const taskName = taskData.agentName || taskData.type || agentId || '任务'
-            localStorage.setItem('__autoChatMode', JSON.stringify({
-              taskId,
-              agentId,
-              taskName,
-              timestamp: Date.now()
-            }))
-          } catch (_) {}
         }
         break
 

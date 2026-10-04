@@ -129,25 +129,6 @@ const hasRunningTask = computed(() => {
 })
 
 // 监听选中智能体变化,自动保存/恢复消息
-// 【方案A】watch 监听 autoChatMode flag 变化（同 tab 内 SSE task_completed 触发）
-// task_completed 在 main.ts 里写 localStorage，watchEffect 感知不到（same-tab），
-// 所以用 watch(() => store.tasks) 检测已完成任务来触发
-const autoChatModeChecked = ref(false)
-watch(() => store.tasks, (newTasks) => {
-  if (autoChatModeChecked.value) return
-  const autoChatModeRaw = localStorage.getItem('__autoChatMode')
-  if (!autoChatModeRaw) return
-  try {
-    const autoData = JSON.parse(autoChatModeRaw)
-    // 检查该任务是否已在 store.tasks 中且已完成
-    const matchedTask = newTasks.find((t: any) => t.id === autoData.taskId && (t.status === 'completed' || t.status === 'failed'))
-    if (matchedTask) {
-      autoChatModeChecked.value = true
-      localStorage.removeItem('__autoChatMode')
-      enterChatMode(autoData, true)
-    }
-  } catch (_) {}
-}, { immediate: true })
 
 watch(selectedAgentId, async (newAgentId) => {
   // 保存到 localStorage,保持页面切换前的选择
@@ -176,8 +157,8 @@ const currentRunningTaskId = ref<string | null>(null)
 const chatMode = ref<{ taskId: string; taskName: string } | null>(null)
 
 // 进入多轮对话续写模式（点选历史任务卡片触发）
-// enterChatMode: 兼容 task 对象（历史任务弹窗）和 {taskId,agentId,taskName} 对象（localStorage autoChatMode）
-// autoEnter=true 表示由 task_completed 自动触发，不清空已有消息（保留任务输出）
+// enterChatMode: 进入指定任务的对话续写模式（手动点历史任务卡片触发，@start-chat 调用）
+// autoEnter 保留为兼容参数：true 表示不清空已有消息（保留任务输出），默认 false
 async function enterChatMode(task: any, autoEnter = false) {
   const taskId = task.id || task.taskId
   const agentId = task.agent || task.agentId
@@ -667,20 +648,6 @@ onMounted(async () => {
   // 加载最近已完成任务的完整结果到 messages（刷新页面后恢复历史）
   // 【串台修复-草案A】只加载当前选中智能体的最近任务，避免混进其它智能体(如安全测试)的交付物
   await store.loadRecentTaskResults(5, selectedAgentId.value)
-
-  // 【方案A】任务完成后自动进入对话模式：检查 localStorage 中的 autoChatMode 标记
-  // 由 main.ts task_completed handler 写入，view 读取后自动跳入 chatMode
-  const autoChatModeRaw = localStorage.getItem('__autoChatMode')
-  if (autoChatModeRaw) {
-    try {
-      const autoData = JSON.parse(autoChatModeRaw)
-      // 5分钟内有效，防止刷新页面后遗留标记仍然触发
-      if (Date.now() - (autoData.timestamp || 0) < 5 * 60 * 1000) {
-        enterChatMode(autoData, true)
-      }
-    } catch (_) {}
-    localStorage.removeItem('__autoChatMode')
-  }
 
   // 检查当前是否有运行中的任务
   const runningTask = store.tasks.find((t: any) => t.status === 'running')
