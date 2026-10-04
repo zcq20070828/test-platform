@@ -261,7 +261,7 @@ async function run() {
       input.value = ''
       files.value = []
     } else if (task === null) {
-      ElMessage.error('任务创建失败，请确认已登录且会话未过期')
+      ElMessage.error('任务创建失败：网络异常或会话已过期，请重试')
     }
   } catch (err: any) {
     if (err?.code === 'TASK_CONFLICT') {

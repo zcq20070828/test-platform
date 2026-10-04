@@ -6,6 +6,27 @@
 import { query, getConnection } from './db.js';
 
 /**
+ * 将任意值清洗为可安全写入 utf8mb4 列的合法 UTF-8 字符串。
+ * - Buffer/二进制: 按 UTF-8 解码(非法字节替换为 U+FFFD)
+ * - 字符串: 重新按 UTF-8 编解码,消解孤立代理/CESU-8 等非法序列(非法处变 U+FFFD)
+ * - 其余类型原样返回
+ *
+ * 作用: 用户上传内容 / 智能体输出中可能混入非法 UTF-8 字节(游离续字节 0x80-0xBF、
+ *       0xFF、孤立代理等),若直接写入 utf8mb4 列会触发
+ *       ER_TRUNCATED_WRONG_VALUE_FOR_FIELD 导致任务创建/更新 500。
+ *       统一在此清洗,保证写入成功且内容最大程度保留。
+ */
+function sanitizeUtf8(v) {
+  if (v == null) return v;
+  if (Buffer.isBuffer(v)) {
+    return v.toString('utf-8');
+  }
+  if (typeof v !== 'string') return v;
+  // 重新编码再解码: 孤立代理 / 非法字节序列统一变为 U+FFFD,确保字节序列合法
+  return Buffer.from(v, 'utf-8').toString('utf-8');
+}
+
+/**
  * 创建任务
  */
 async function createTask(task) {
@@ -24,12 +45,12 @@ async function createTask(task) {
     task.type || 'general',
     task.source || 'step',
     task.status || 'pending',
-    task.input || '',
+    sanitizeUtf8(task.input) || '',
     task.agentId || task.agent || 'unknown',
     task.priority || 'normal',
     task.userId || null,
-    task.result || null,
-    task.error || null,
+    sanitizeUtf8(task.result) || null,
+    sanitizeUtf8(task.error) || null,
     task.requireReview !== false ? 1 : 0,
     task.reviewPassed || null,
     new Date(),
@@ -75,11 +96,11 @@ async function updateTask(taskId, updates) {
   }
   if (updates.result !== undefined) {
     fields.push('result = ?');
-    params.push(updates.result);
+    params.push(sanitizeUtf8(updates.result));
   }
   if (updates.error !== undefined) {
     fields.push('error = ?');
-    params.push(updates.error);
+    params.push(sanitizeUtf8(updates.error));
   }
   if (updates.reviewPassed !== undefined) {
     fields.push('review_passed = ?');
@@ -103,7 +124,7 @@ async function updateTask(taskId, updates) {
   }
   if (updates.chat_history !== undefined) {
     fields.push('chat_history = ?');
-    params.push(typeof updates.chat_history === 'string' ? updates.chat_history : JSON.stringify(updates.chat_history));
+    params.push(sanitizeUtf8(typeof updates.chat_history === 'string' ? updates.chat_history : JSON.stringify(updates.chat_history)));
   }
   // 成本相关字段
   if (updates.inputTokens !== undefined) {

@@ -738,7 +738,8 @@ export const useMainStore = defineStore('main', () => {
         return res.task
       } else {
         console.error('[Store] createTask failed:', res.error)
-        return null
+        // 抛出真实后端错误,供调用方展示具体失败原因(而非笼统的"请确认已登录")
+        throw { code: 'CREATE_FAILED', message: res.error || '任务创建失败', status: 500 }
       }
     } catch (error: any) {
       console.error('[Store] createTask error:', error)
