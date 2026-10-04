@@ -33,7 +33,11 @@ CREATE TABLE IF NOT EXISTS tasks (
   priority ENUM('low', 'normal', 'high') DEFAULT 'normal' COMMENT '优先级',
   user_id VARCHAR(36) NOT NULL COMMENT '用户ID',
   result LONGTEXT COMMENT '执行结果（可能很长）',
-  error TEXT COMMENT '错误信息',
+  -- 20261004 扩容: TEXT(64KB) -> MEDIUMTEXT(16MB)
+  -- 智能体执行失败时写入的 error 可能含完整错误堆栈/大段工具返回原文,
+  -- 超 64KB 会复现与 input 相同的 1366/1406 截断故障(中文堆栈尤其易命中)。
+  -- 详见 migrations/20261004_enlarge_task_error.sql
+  error MEDIUMTEXT COMMENT '错误信息',
   require_review BOOLEAN DEFAULT TRUE COMMENT '是否需要审核',
   review_passed BOOLEAN COMMENT '审核是否通过',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
