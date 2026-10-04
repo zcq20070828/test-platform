@@ -24,7 +24,11 @@ CREATE TABLE IF NOT EXISTS tasks (
   id VARCHAR(36) PRIMARY KEY,
   type VARCHAR(20) DEFAULT 'general' COMMENT '任务类型',
   status ENUM('pending', 'running', 'completed', 'failed') DEFAULT 'pending' COMMENT '任务状态',
-  input TEXT NOT NULL COMMENT '用户输入',
+  -- 20261004 扩容: TEXT(64KB) -> MEDIUMTEXT(16MB)
+  -- 上传用例文档后 input 可达 66KB+,超出 TEXT 上限会被截断并切断多字节汉字,
+  -- 触发 1366 Incorrect string value 导致任务创建 500。详见
+  -- migrations/20261004_enlarge_task_input.sql
+  input MEDIUMTEXT NOT NULL COMMENT '用户输入',
   agent_id VARCHAR(50) NOT NULL COMMENT '执行智能体ID',
   priority ENUM('low', 'normal', 'high') DEFAULT 'normal' COMMENT '优先级',
   user_id VARCHAR(36) NOT NULL COMMENT '用户ID',

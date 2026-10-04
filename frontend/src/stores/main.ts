@@ -748,7 +748,9 @@ export const useMainStore = defineStore('main', () => {
         const errMsg = error?.error || error?.message || '同一用户同一时间只能执行一个任务'
         throw { code: 'TASK_CONFLICT', message: errMsg, status: 409 }
       }
-      return null
+      // 非 409:原样向上抛。此前在此 return null 会把上面抛出的真实后端错误吞掉,
+      // 导致前端只能显示笼统的"网络异常或会话已过期",掩盖真实原因。
+      throw error
     }
   }
 
