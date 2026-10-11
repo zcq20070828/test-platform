@@ -85,7 +85,23 @@ wait_for(){
 start_backend(){
   if backend_up; then ok "后端已运行 ($BACKEND_URL) — 跳过"; return 0; fi
   dim "启动后端 → $BACKEND_URL (首次 warmup 约 2-3 分钟)"
-  ( cd "$BACKEND_DIR" && nohup env PORT=$BACKEND_PORT NODE_ENV=development "$NODE_BIN" server.js > "$BACKEND_LOG" 2>&1 & echo $! > "$BACKEND_PID" )
+  # 2026-10-11: backend/database/db.js 只读 process.env, 不读 .env,
+  #   故必须把 .env 里的 DB_* 显式导出, 否则会静默回落到 localhost/test_platform。
+  DB_ENV_ARGS=()
+  if [ -f "$BACKEND_DIR/.env" ]; then
+    while IFS='=' read -r k v; do
+      case "$k" in
+        DB_HOST|DB_PORT|DB_USER|DB_PASSWORD|DB_NAME|DEEPSEEK_API_KEY|AI_API_KEY|AI_BASE_URL|AI_MODEL|PLATFORM_PYTHON_PATH)
+          v="${v%\"}"; v="${v#\"}"   # 去掉可能的行尾/行首双引号
+          [ -n "$v" ] && DB_ENV_ARGS+=("$k=$v")
+          ;;
+      esac
+    done < "$BACKEND_DIR/.env"
+  fi
+  if [ ${#DB_ENV_ARGS[@]} -gt 0 ]; then
+    dim "  注入配置: $(printf '%s ' "${DB_ENV_ARGS[@]%%=*}")"
+  fi
+  ( cd "$BACKEND_DIR" && nohup env PORT=$BACKEND_PORT NODE_ENV=development "${DB_ENV_ARGS[@]}" "$NODE_BIN" server.js > "$BACKEND_LOG" 2>&1 & echo $! > "$BACKEND_PID" )
   disown 2>/dev/null || true
   if ! wait_for "后端" "backend_up" 240 "$BACKEND_LOG"; then
     err "后端启动失败, 尾日志:"; tail -n 20 "$BACKEND_LOG" 2>/dev/null; return 1

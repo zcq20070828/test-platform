@@ -47,24 +47,44 @@ git clone testplatform-git:/opt/git/test-platform.git
 cd test-platform
 ```
 
-### 4. 安装依赖
+### 4. 一键配置环境（推荐）
 
 ```bash
-cd backend && npm install
-cd ../frontend && npm install
+chmod +x setup-dev-env.sh
+./setup-dev-env.sh
 ```
 
-### 5. 配置环境变量
+它会自动装依赖、生成 `.env`、填入开发库和 AI 配置、并验证数据库连通。
+
+完成后启动：
 
 ```bash
-cd backend
-cp .env.example .env      # 模板已包含全部所需变量
+./start-dev.sh
 ```
 
-然后在 `.env` 里填两样东西（**只填这两样，其余保持模板默认**）：
+### 5. 手动配置（若不想用脚本）
 
-- `DB_HOST` = 开发库内网地址（找负责人要）
-- `AI_BASE_URL` / `AI_API_KEY` 或 `DEEPSEEK_API_KEY` = 负责人下发的内网代理地址与 Key
+```bash
+cd backend && npm install && cd ..
+cd frontend && npm install && cd ..
+cp backend/.env.example backend/.env
+```
+
+在 `backend/.env` 里填：
+
+```ini
+DB_HOST=192.168.43.4
+DB_PORT=3306
+DB_USER=appuser
+DB_PASSWORD=apppwd123
+DB_NAME=test_platform_dev
+DEEPSEEK_API_KEY=DEEPSEEK_API_KEY_PLACEHOLDER
+NODE_ENV=development
+```
+
+> **必读**：`backend/database/db.js` 只读 `process.env`，**不读 `.env` 文件**。
+> 所以 `.env` 里改了 DB 配置后，必须用 `./start-dev.sh` 启动（它会把这些值注入进程环境），
+> 直接 `node server.js` 是不会生效的。
 
 > `.env` 已在 `.gitignore` 中排除，**永远不会被提交**，放心填。
 
@@ -140,6 +160,15 @@ refactor(DB): 全库 TEXT 列统一扩容
 
 **当前模式：所有人的本地后端连同一台开发库。**
 
+| 项 | 值 |
+|---|---|
+| 库地址 | `192.168.43.4:3306`（负责人 Mac 上的 MariaDB） |
+| 库名 | `test_platform_dev`（**不是** `test_platform`） |
+| 账号 | `appuser` / `apppwd123` |
+| 克隆来源 | `test_platform`（42 张表结构，空数据） |
+
+> **前提**：你必须和负责人在**同一个局域网**。地址是内网 IP，不通时找负责人确认最新 IP。
+
 ### 能做的
 
 - 随意查询数据（SELECT）
@@ -151,7 +180,14 @@ refactor(DB): 全库 TEXT 列统一扩容
 
 原因：你改了，同事的后端还在按旧结构跑，会突然报错；而同事可能正在调试同一张表。
 
-### 正确做法
+### 绝对不要碰的
+
+- 🚫 **不要连 `test_platform` 库**（负责人本机在用的正式开发库，443 条历史任务在里面）
+- 🚫 **不要碰腾讯云生产库**（`42.194.137.114`上的 `test_platform`）
+
+你的 `.env` 里 `DB_NAME` 必须是 `test_platform_dev`。填错了就是在动不该动的数据。
+
+### 正确做法（改表结构）
 
 1. 把变更写成脚本，放到 `backend/migrations/`，命名 `YYYYMMDD_描述.sql`：
 
@@ -222,6 +258,10 @@ refactor(DB): 全库 TEXT 列统一扩容
 5. **`dev` 账号不是 root**
    - 它只能做 git 操作，不要尝试用 root 密码做仓库操作
 
+6. **数据库只碰 `test_platform_dev`**
+   - `test_platform`（负责人本机正式库，443 条历史任务）和腾讯云生产库都不属于你
+   - 弱口令 `apppwd123` 只在可信内网使用，不要把开发库端口映射到公网
+
 ---
 
 ## 七、常见问题
@@ -235,11 +275,20 @@ A：不在项目目录内。`cd` 到含 `.git` 的目录再执行。
 **Q：拉代码时提示 `Permission denied (publickey)`？**
 A：你的公钥还没被加到服务器。执行 `cat ~/.ssh/id_ed25519.pub` 把内容发给负责人。
 
+**Q：改了 `.env` 的数据库配置但不生效？**
+A：项目**不用 dotenv**，`backend/database/db.js` 只读 `process.env`。所以必须用 `./start-dev.sh` 启动（脚本会注入配置），直接 `node server.js` 不生效。改完记得 `./start-dev.sh restart`。
+
+**Q：连不上开发库？**
+A：开发库在 `192.168.43.4`（负责人 Mac）。先 `ping 192.168.43.4`，不通说明：① 不在同一个局域网，或 ② 负责人 IP 变了（换网络就会变），找负责人确认最新地址。
+
+**Q：AI 报 401 / 调用失败？**
+A：确认 `.env` 里 `DEEPSEEK_API_KEY` 填对了。这个 Key 是共用的，如果失效找负责人。
+
 **Q：同事推的代码我拉不到？**
 A：`git fetch origin` 更新远程引用，再 `git pull origin main`。
 
 **Q：本地数据库连不上？**
-A：确认 `.env` 里 `DB_HOST` 是开发库地址，且你在这台服务器能访问的那个网络里。
+A：先看 `./start-dev.sh status` 的健康检查输出，再确认 `.env` 里 `DB_NAME=test_platform_dev`（不能是 `test_platform`）。
 
 **Q：改了 `.env` 不生效？**
 A：改完需重启后端：`./start-dev.sh restart`。
