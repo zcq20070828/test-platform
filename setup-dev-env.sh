@@ -20,7 +20,12 @@ DB_PORT="3306"
 DB_NAME="test_platform_dev"
 DB_USER="appuser"
 DB_PASSWORD="apppwd123"
-AI_KEY="DEEPSEEK_API_KEY_PLACEHOLDER"
+# AI Key 不写在本脚本里（本文件会入库 = 密钥公开给所有能读仓库的人）。
+# 获取方式：
+#   1. 从负责人处拿到团队共用 Key，然后：DEV_AI_KEY=sk-xxx bash setup-dev-env.sh
+#   2. 或在本机配置：export DEV_AI_KEY=sk-xxx（写入 ~/.zshrc 亦可）
+#   3. 都没有时留空，之后手工把 Key 填进 backend/.env（.env 不入库）
+AI_KEY="${DEV_AI_KEY:-}"
 
 # 开发库地址：优先用环境变量 DEV_DB_HOST，否则向负责人机器自动探测
 # （负责人 Mac 换网络后 IP 会变，这里不再写死）
@@ -123,9 +128,17 @@ upsert_env DB_PORT "${DB_PORT}"
 upsert_env DB_USER "${DB_USER}"
 upsert_env DB_PASSWORD "${DB_PASSWORD}"
 upsert_env DB_NAME "${DB_NAME}"
-upsert_env DEEPSEEK_API_KEY "$AI_KEY"
 upsert_env NODE_ENV development
-c_ok "  ✓ 已写入开发库与 AI 配置"
+if [ -n "$AI_KEY" ]; then
+  upsert_env DEEPSEEK_API_KEY "$AI_KEY"
+  c_ok "  ✓ 已写入开发库与 AI 配置"
+else
+  c_warn "  ! 未提供 AI Key（DEV_AI_KEY 未设置），已跳过 AI 配置"
+  echo ""
+  echo "    AI 调用会失败。请向负责人索取共用 Key，然后二选一："
+  echo "      DEV_AI_KEY=<Key> bash setup-dev-env.sh   # 重新填入"
+  echo "      或手工编辑 backend/.env 的 DEEPSEEK_API_KEY 行"
+fi
 c_dim "  开发库地址: ${DB_HOST}"
 c_dim "  （自动探测；如需指定其他地址，设环境变量 DEV_DB_HOST 后重跑本脚本）"
 c_dim "  提示：start-dev.sh 会把 .env 里这些值注入进程环境（db.js 只读 process.env）"

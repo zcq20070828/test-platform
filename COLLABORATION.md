@@ -78,8 +78,20 @@ DB_PORT=3306
 DB_USER=appuser
 DB_PASSWORD=apppwd123
 DB_NAME=test_platform_dev
-DEEPSEEK_API_KEY=DEEPSEEK_API_KEY_PLACEHOLDER
 NODE_ENV=development
+```
+
+AI Key **不要写进任何入库的文件**（`.env.example`、脚本、文档都会被提交）。
+向负责人索取共用 Key，然后任选一种方式配置：
+
+```bash
+# 方式一：跑脚本时传入（推荐，Key 不留痕）
+DEV_AI_KEY=<Key> bash setup-dev-env.sh
+
+# 方式二：写进本机环境变量（后续所有脚本自动带上）
+echo 'export DEV_AI_KEY=<Key>' >> ~/.zshrc && source ~/.zshrc
+
+# 方式三：直接编辑 backend/.env（此文件已被 .gitignore 排除，不会入库）
 ```
 
 > ⚠️ **不要写死 DB_HOST**：负责人 Mac 的内网 IP 随其网络变化
