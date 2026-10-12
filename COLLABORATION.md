@@ -73,7 +73,7 @@ cp backend/.env.example backend/.env
 在 `backend/.env` 里填：
 
 ```ini
-DB_HOST=192.168.43.4
+DB_HOST=<问负责人要当前地址，或让 ./setup-dev-env.sh 自动探测填入>
 DB_PORT=3306
 DB_USER=appuser
 DB_PASSWORD=apppwd123
@@ -81,6 +81,11 @@ DB_NAME=test_platform_dev
 DEEPSEEK_API_KEY=DEEPSEEK_API_KEY_PLACEHOLDER
 NODE_ENV=development
 ```
+
+> ⚠️ **不要写死 DB_HOST**：负责人 Mac 的内网 IP 随其网络变化
+> （例如 10-11 是 `192.168.43.4`，10-12 换网络后变成 `192.168.151.45`）。
+> 用 `./setup-dev-env.sh` 会自动探测，或者向负责人要最新地址。
+> 负责人自己执行 `./get-dev-db-host.sh` 可随时查看当前地址。
 
 > **必读**：`backend/database/db.js` 只读 `process.env`，**不读 `.env` 文件**。
 > 所以 `.env` 里改了 DB 配置后，必须用 `./start-dev.sh` 启动（它会把这些值注入进程环境），
@@ -162,12 +167,13 @@ refactor(DB): 全库 TEXT 列统一扩容
 
 | 项 | 值 |
 |---|---|
-| 库地址 | `192.168.43.4:3306`（负责人 Mac 上的 MariaDB） |
+| 库地址 | 负责人 Mac 的内网 IP `:3306`（**IP 会随其网络变化，用 `./get-dev-db-host.sh` 查当前值**） |
 | 库名 | `test_platform_dev`（**不是** `test_platform`） |
 | 账号 | `appuser` / `apppwd123` |
 | 克隆来源 | `test_platform`（42 张表结构，空数据） |
 
-> **前提**：你必须和负责人在**同一个局域网**。地址是内网 IP，不通时找负责人确认最新 IP。
+> **前提**：你必须和负责人在**同一个局域网**。地址是内网 IP，不通时找负责人确认最新地址。
+> 负责人换网络后 IP 会变，改动无需改代码 —— 重跑 `./setup-dev-env.sh` 即可重新探测。
 
 ### 能做的
 
@@ -279,7 +285,10 @@ A：你的公钥还没被加到服务器。执行 `cat ~/.ssh/id_ed25519.pub` �
 A：项目**不用 dotenv**，`backend/database/db.js` 只读 `process.env`。所以必须用 `./start-dev.sh` 启动（脚本会注入配置），直接 `node server.js` 不生效。改完记得 `./start-dev.sh restart`。
 
 **Q：连不上开发库？**
-A：开发库在 `192.168.43.4`（负责人 Mac）。先 `ping 192.168.43.4`，不通说明：① 不在同一个局域网，或 ② 负责人 IP 变了（换网络就会变），找负责人确认最新地址。
+A：开发库在负责人 Mac 上，IP 会随其换网络而变。
+① `ping <地址>` 不通 → 问负责人要当前地址（负责人执行 `./get-dev-db-host.sh` 就能看到）
+② 拿到新地址后改 `.env` 的 `DB_HOST`，或直接 `DEV_DB_HOST=<新地址> bash setup-dev-env.sh` 重跑
+③ 仍不通 → 确认负责人 Mac 上 MariaDB 在跑（`brew services list | grep maria`）
 
 **Q：AI 报 401 / 调用失败？**
 A：确认 `.env` 里 `DEEPSEEK_API_KEY` 填对了。这个 Key 是共用的，如果失效找负责人。

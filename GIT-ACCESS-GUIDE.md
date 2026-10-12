@@ -106,11 +106,12 @@ ssh-keygen -lf /home/dev/.ssh/authorized_keys
 
 | 项 | 要求 |
 |---|---|
-| 网络 | **必须和负责人在同一个局域网**（开发库在 `192.168.43.4`） |
+| 网络 | **必须和负责人在同一个局域网**（开发库在负责人 Mac 上） |
 | 工具 | Mac / Linux + Git + Node.js 18+ |
 | 收到 | 负责人已把你的公钥登记到服务器 |
 
-> 先验证网络：`ping 192.168.43.4` 通不通。不通先解决网络，后面都做不了。
+> 先向负责人要当前开发库地址，然后用它 ping 一下。不通先解决网络，后面都做不了。
+> 注意负责人换网络后地址会变 —— `./setup-dev-env.sh` 会自动探测，不必手填。
 
 ## 步骤 1：配置 SSH
 
@@ -245,7 +246,7 @@ git push origin main
 
 | 项 | 值 |
 |---|---|
-| 库地址 | `192.168.43.4:3306` |
+| 库地址 | 负责人 Mac 的内网 IP `:3306`（**会变，用 `./get-dev-db-host.sh` 查**） |
 | 库名 | `test_platform_dev`（**空库，42 张表结构**） |
 | 账号 | `appuser` / `apppwd123` |
 
@@ -294,7 +295,7 @@ git push origin main
 | `Permission denied (publickey)` | 你的公钥没被登记 | 把 `cat ~/.ssh/id_ed25519.pub` 发给负责人 |
 | `git push` 一直卡住出 `git>` | 缺 `BatchMode yes` | 检查 `~/.ssh/config` 里该别名是否有这行 |
 | `fatal: not a git repository` | 不在项目目录 | `cd` 到含 `.git` 的目录 |
-| 连不上开发库 | 不同网络 / IP 变了 | `ping 192.168.43.4`；不通则问负责人最新 IP |
+| 连不上开发库 | 不同网络 / 负责人 IP 变了 | 向负责人要当前地址；或 `DEV_DB_HOST=<地址> bash setup-dev-env.sh` |
 | 改了 `.env` 不生效 | 项目不读 `.env` 文件 | 必须用 `./start-dev.sh` 启动，然后 `restart` |
 | AI 调用 401 | Key 失效 | 找负责人 |
 | 端口被占用 | 本机其他服务 | 改 `PORT` / `FRONTEND_PORT` 后 restart |

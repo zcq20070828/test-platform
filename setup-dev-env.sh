@@ -16,12 +16,29 @@
 
 set -u
 
-DB_HOST="192.168.43.4"
 DB_PORT="3306"
 DB_NAME="test_platform_dev"
 DB_USER="appuser"
 DB_PASSWORD="apppwd123"
 AI_KEY="DEEPSEEK_API_KEY_PLACEHOLDER"
+
+# 开发库地址：优先用环境变量 DEV_DB_HOST，否则向负责人机器自动探测
+# （负责人 Mac 换网络后 IP 会变，这里不再写死）
+detect_db_host() {
+  if [ -n "${DEV_DB_HOST:-}" ]; then
+    echo "$DEV_DB_HOST"; return 0
+  fi
+  # 同机自探测：读默认路由接口的 IP（适用于本机就是库主机的场景）
+  local iface ip
+  iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
+  [ -n "$iface" ] && ip="$(ipconfig getifaddr "$iface" 2>/dev/null)"
+  [ -z "$ip" ] && for iface in $(ifconfig -l 2>/dev/null | grep -E '^(en[0-9]+)'); do
+    ip="$(ipconfig getifaddr "$iface" 2>/dev/null)"; [ -n "$ip" ] && break
+  done
+  [ -n "$ip" ] && echo "$ip"
+}
+DB_HOST="$(detect_db_host)"
+[ -z "$DB_HOST" ] && DB_HOST="localhost"
 
 c_ok()   { printf "\033[32m%s\033[0m\n" "$1"; }
 c_err()  { printf "\033[31m%s\033[0m\n" "$1"; }
@@ -109,6 +126,8 @@ upsert_env DB_NAME "${DB_NAME}"
 upsert_env DEEPSEEK_API_KEY "$AI_KEY"
 upsert_env NODE_ENV development
 c_ok "  ✓ 已写入开发库与 AI 配置"
+c_dim "  开发库地址: ${DB_HOST}"
+c_dim "  （自动探测；如需指定其他地址，设环境变量 DEV_DB_HOST 后重跑本脚本）"
 c_dim "  提示：start-dev.sh 会把 .env 里这些值注入进程环境（db.js 只读 process.env）"
 echo ""
 
@@ -125,10 +144,11 @@ if command -v mysql >/dev/null 2>&1; then
     c_err "  ✗ 连不上开发库 ${DB_HOST}:${DB_PORT}/${DB_NAME}"
     echo ""
     echo "  排查："
-    echo "    1. 确认你和负责人在同一个局域网"
-    echo "    2. 确认负责人 Mac 上的 MariaDB 已启动：brew services list | grep mariadb"
-    echo "    3. 确认 IP 没变：ping ${DB_HOST}"
-    echo "    4. IP 可能随网络变化，向负责人确认最新地址"
+    echo "    1. ping ${DB_HOST} —— 不通说明不在同一局域网，或地址已变"
+    echo "    2. 向负责人要最新地址：负责人执行 ./get-dev-db-host.sh"
+    echo "    3. 拿到新地址后：DEV_DB_HOST=<新地址> bash setup-dev-env.sh 重跑本脚本"
+    echo "    4. 地址正确仍连不上 → 确认负责人 MariaDB 在跑"
+    echo "       （brew services list | grep maria）"
   fi
 else
   c_warn "  跳过（无 mysql 客户端）"
