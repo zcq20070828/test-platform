@@ -24,9 +24,33 @@
 
 'use strict';
 
+const path = require('path');
+
 // ============================================================
-// UTRM 格式转换(与既有执行器保持一致)
+// 意图引擎(Harness 五步的模型侧能力)—— 懒加载,不可用时可降级
 // ============================================================
+
+let _engine = null;
+function getIntentEngine() {
+  if (_engine !== null) return _engine;
+  try {
+    // __dirname = <root>/qclaw-skills/api-direct-invoker/backend
+    _engine = require(path.resolve(__dirname, '..', '..', '..', 'backend', 'llm', 'intent-engine.js'));
+  } catch (_) {
+    _engine = false;
+  }
+  return _engine;
+}
+
+/** 脱敏:剔除变量中的敏感键,避免凭证随结果落库/展示 */
+function sanitizeVars(vars) {
+  const out = {};
+  for (const [k, v] of Object.entries(vars || {})) {
+    if (/pass|pwd|secret|token|cookie|authorization/i.test(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
 
 function toUTRM(results, tool, exitCode, rawOutput) {
   const { testcases = [], summary = {} } = results;
@@ -216,6 +240,173 @@ function clip(s, max = 2000) {
 }
 
 // ============================================================
+// 意图驱动(intent)附加能力
+// ------------------------------------------------------------
+// ④ 自动断言:用例没写 expect 时,由模型基于"意图 + 真实响应"提出断言点,
+//    但**判定在本地客观完成**(模型不打分),保证结果可复核、不幻觉。
+// ============================================================
+
+/** 精简描述 JSON 结构(只保留形状不保留值),供模型设计断言 */
+function summarizeShape(value, depth = 0, maxDepth = 2) {
+  if (value === null) return 'null';
+  const t = typeof value;
+  if (t !== 'object') return t;
+  if (depth >= maxDepth) return Array.isArray(value) ? 'array' : 'object';
+  if (Array.isArray(value)) {
+    if (value.length === 0) return 'array(0)';
+    return `array(${value.length})<${summarizeShape(value[0], depth + 1, maxDepth)}>`;
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(value)) out[k] = summarizeShape(v, depth + 1, maxDepth);
+  return out;
+}
+
+/** 客观校验模型生成的断言(模型只提点,不判定) */
+function evaluateGeneratedAssertions(generated, resp, duration) {
+  const failures = [];
+  const results = [];
+
+  for (const a of generated || []) {
+    const type = String((a && a.type) || '').toLowerCase();
+    let actual = null;
+    let passed = null;
+
+    try {
+      if (type === 'status') {
+        actual = resp.status;
+        passed = Number(actual) === Number(a.expected);
+      } else if (type === 'duration') {
+        actual = duration;
+        passed = duration <= Number(a.expected);
+      } else if (type === 'json') {
+        const r = matchValue(resp.json, a.expected, '');
+        passed = r.ok;
+        actual = r.ok ? '(子集匹配通过)' : `字段 ${r.path || '(根)'}: 期望 ${clip(r.expected, 200)},实际 ${clip(r.actual, 200)}`;
+      } else if (type === 'jsonpath') {
+        const got = getByPath(resp.json !== null ? resp.json : { text: resp.text }, a.target);
+        const r = matchValue(got, a.expected, a.target);
+        passed = r.ok;
+        actual = r.ok ? clip(got, 200) : `期望 ${clip(a.expected, 200)},实际 ${clip(got, 200)}`;
+      } else if (type === 'contains') {
+        actual = resp.text || '';
+        passed = actual.includes(String(a.expected));
+      } else if (type === 'notcontains') {
+        actual = resp.text || '';
+        passed = !actual.includes(String(a.expected));
+      } else if (type === 'equals') {
+        actual = resp.text || '';
+        passed = actual === String(a.expected);
+      } else if (type === 'header') {
+        actual = resp.headers ? resp.headers[a.target] : undefined;
+        passed = String(actual || '').includes(String(a.expected));
+      }
+    } catch (e) {
+      passed = false;
+      actual = String(e && e.message);
+    }
+
+    const item = {
+      id: (a && a.id) || '',
+      description: (a && a.description) || '',
+      type,
+      target: (a && a.target) || '',
+      expected: a && a.expected,
+      actual: clip(actual, 200),
+      passed,
+      source: 'auto-generated',
+    };
+    results.push(item);
+    if (passed === false) {
+      failures.push(`[自动断言] ${item.description}: 期望 ${clip(a && a.expected, 120)},实际 ${clip(actual, 120)}`);
+    }
+  }
+
+  return { failures, results };
+}
+
+/** 401/403 自动重登:按 auth.login 取 token 注入公共请求头,只重试一次 */
+async function doLogin(ctx) {
+  const cfg = (ctx.auth && ctx.auth.login) || null;
+  if (!cfg || !cfg.url) return null;
+
+  const url = buildUrl(ctx.baseUrl, cfg.url, cfg.query);
+  const method = String(cfg.method || 'POST').toUpperCase();
+  const headers = { 'Content-Type': 'application/json', ...(cfg.headers || {}) };
+  const body =
+    cfg.body === undefined || cfg.body === null
+      ? undefined
+      : typeof cfg.body === 'string'
+      ? cfg.body
+      : JSON.stringify(cfg.body);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), cfg.timeout || ctx.timeout || 15000);
+  try {
+    const res = await fetch(url, { method, headers, body, signal: controller.signal });
+    const text = await res.text();
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch (_) {
+      json = null;
+    }
+
+    const scope = { json, headers: respHeadersToObject(res.headers), text };
+    const token = getByPath(scope, cfg.tokenPath || 'json.token');
+    if (!token) return null;
+
+    const injectAs = (ctx.auth && ctx.auth.injectAs) || 'Authorization';
+    const raw = String(token);
+    const isAuthHeader = /^authorization$/i.test(injectAs);
+    ctx.headers[injectAs] = isAuthHeader && !/^(bearer|basic)\s/i.test(raw) ? `Bearer ${raw}` : raw;
+    ctx.vars[(ctx.auth && ctx.auth.tokenVar) || 'token'] = token;
+    ctx.auth._used = true;
+    return token;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Headers 对象 -> 普通对象 */
+function respHeadersToObject(h) {
+  const out = {};
+  try {
+    if (h && typeof h.forEach === 'function') h.forEach((v, k) => { out[k] = v; });
+    else if (h && typeof h.entries === 'function') for (const [k, v] of h.entries()) out[k] = v;
+  } catch (_) {
+    /* 忽略 */
+  }
+  return out;
+}
+
+/**
+ * 自动断言兜底:用例未声明 expect 时,由模型提出断言点并本地客观校验
+ */
+async function buildAutoExpect(rawCase, ctx, resp, duration) {
+  const own = rawCase.expect || {};
+  if (Object.keys(own).length > 0) return { expect: own, generated: [] };
+  if (!ctx.autoAssert || !ctx.intentAutoAssert) return { expect: {}, generated: [] };
+
+  try {
+    const generated = await ctx.intentAutoAssert({
+      kind: 'api',
+      intent: { goal: ctx.goal || rawCase.name || '' },
+      observation: {
+        request: { method: rawCase.method || 'GET', url: rawCase.url || '' },
+        status: resp.status,
+        headers: resp.headers,
+        durationMs: duration,
+        bodySample: clip(resp.text, 1200),
+        jsonShape: resp.json ? summarizeShape(resp.json) : null,
+      },
+    });
+    return { expect: {}, generated: Array.isArray(generated) ? generated : [] };
+  } catch (_) {
+    return { expect: {}, generated: [] };
+  }
+}
+
+// ============================================================
 // 单条用例执行
 // ============================================================
 
@@ -332,7 +523,9 @@ async function runCase(rawCase, ctx, index) {
   const failures = [];
 
   // ── 断言 ──
-  const exp = c.expect || {};
+  // 意图驱动:用例未声明 expect 时,由模型基于"意图 + 真实响应"提出断言点
+  const auto = await buildAutoExpect(rawCase, ctx, resp, duration);
+  const exp = auto.expect;
 
   if (exp.status !== undefined) {
     const wanted = Array.isArray(exp.status) ? exp.status : [exp.status];
@@ -404,6 +597,10 @@ async function runCase(rawCase, ctx, index) {
     if (val !== undefined) ctx.vars[varName] = val;
   }
 
+  // ④ 自动断言:模型提出断言点 -> 本地客观校验(模型不参与判定)
+  const generatedAssertions = evaluateGeneratedAssertions(auto.generated, resp, duration);
+  for (const f of generatedAssertions.failures) failures.push(f);
+
   const status = failures.length > 0 ? 'failed' : 'passed';
   return {
     ...base,
@@ -414,6 +611,8 @@ async function runCase(rawCase, ctx, index) {
     request: { method: c.method, url: fullUrl, headers: c.headers, body: clip(bodyPayload) },
     response: { status: res.status, headers: resHeaders, body: clip(resText, 3000) },
     assertions: failures,
+    autoAssertions: generatedAssertions.results || [],
+    authExpired: res.status === 401 || res.status === 403,
   };
 }
 
@@ -422,34 +621,72 @@ async function runCase(rawCase, ctx, index) {
 // ============================================================
 
 /**
- * @param {object} params
- * @param {string} [params.baseUrl]               公共基地址
- * @param {object} [params.headers]               公共请求头
- * @param {object} [params.vars]                  初始变量(供 {{var}} 引用)
- * @param {number} [params.timeout=15000]         单请求超时(ms)
- * @param {Array}  [params.cases]                 用例数组(推荐)
- * @param {object} [params.spec]                  单用例简写(与 cases 二选一)
- * @param {boolean}[params.stopOnFail=false]      失败后是否中止后续用例
- * @returns {Promise<object>} UTRM 格式结果
+ * 意图模式:把自然语言目标解析成可执行请求序列(①),再回到通用执行流程
  */
-async function invoke(params) {
-  const p = params || {};
-  const cases = Array.isArray(p.cases) ? p.cases : p.spec ? [p.spec] : [];
-
-  if (cases.length === 0) {
-    return toUTRM(
+async function invokeIntent(p) {
+  const engine = getIntentEngine();
+  const fail = (error, raw) => {
+    const r = toUTRM(
       { testcases: [], summary: { total: 0, passed: 0, failed: 0, skipped: 0, duration: 0 } },
       'api-direct',
       1,
-      'cases/spec 为空:未提供任何用例。请传入 cases 数组(每项含 url 与 expect)。'
+      raw
+    );
+    r.error = error;
+    return r;
+  };
+
+  if (!engine) return fail('ENGINE_NOT_FOUND', '未能加载 intent-engine');
+  if (!engine.isAvailable()) {
+    return fail(
+      'NO_LLM_KEY',
+      '未配置 DEEPSEEK_API_KEY,intent 模式不可用;请改用 mode="script" 并传入 cases。'
     );
   }
 
+  let cases = [];
+  let intent = null;
+  try {
+    if (Array.isArray(p.cases) && p.cases.length) {
+      cases = p.cases;
+    } else if (p.goal) {
+      intent = await engine.parseIntent({
+        kind: 'api',
+        input: String(p.goal),
+        baseUrl: p.baseUrl || '',
+        env: sanitizeVars(p.vars),
+      });
+      cases = Array.isArray(intent.requests) ? intent.requests : [];
+    }
+
+    if (cases.length === 0) {
+      return fail('MISSING_INTENT', 'intent 模式需要 goal 或非空 cases');
+    }
+
+    // 解析出的意图作为执行上下文的一部分,供自动断言使用
+    p.__intent = intent;
+    return executeCases(cases, p, { autoAssert: true });
+  } catch (e) {
+    return fail('INTENT_PARSE_FAILED', `意图解析失败: ${e && e.message}`);
+  }
+}
+
+/**
+ * 通用执行流程(script / intent 共用)
+ * intent 模式下用例缺 expect 时,会自动调用模型生成兜底断言(判定仍在本地客观完成)。
+ */
+async function executeCases(cases, p, { autoAssert = false } = {}) {
   const ctx = {
     baseUrl: p.baseUrl || '',
     headers: p.headers || {},
     vars: { ...(p.vars || {}) },
     timeout: p.timeout || 15000,
+    goal: p.goal || '',
+    intent: p.__intent || null,
+    autoAssert,
+    intentAutoAssert:
+      autoAssert && getIntentEngine() ? (args) => getIntentEngine().autoAssertions(args) : null,
+    auth: p.auth || null,
   };
 
   const testcases = [];
@@ -472,7 +709,19 @@ async function invoke(params) {
       continue;
     }
     // eslint-disable-next-line no-await-in-loop
-    const r = await runCase(c, ctx, i);
+    let r = await runCase(c, ctx, i);
+
+    // 自愈:401/403(token 过期)且配置了 auth.login 时,自动重登后重试一次
+    if (r.authExpired && ctx.auth && ctx.auth.login && !ctx.auth._used) {
+      // eslint-disable-next-line no-await-in-loop
+      const token = await doLogin(ctx);
+      if (token) {
+        // eslint-disable-next-line no-await-in-loop
+        r = await runCase(c, ctx, i);
+        r.retriedAfterLogin = true;
+      }
+    }
+
     testcases.push(r);
     logs.push(`${r.status === 'passed' ? 'PASS' : 'FAIL'} ${r.name} (${r.duration}ms)${r.error ? ' :: ' + r.error : ''}`);
     if (r.status === 'failed' && p.stopOnFail) {
@@ -505,6 +754,42 @@ async function invoke(params) {
   };
 
   return toUTRM({ testcases, summary }, 'api-direct', summary.failed > 0 ? 1 : 0, logs.join('\n'));
+}
+
+/**
+ * @param {object} params
+ * @param {string} [params.mode='script']   script=按 cases 执行(默认);
+ *                                          intent=意图驱动(先用模型把目标解析成请求序列)
+ * @param {string} [params.baseUrl]               公共基地址
+ * @param {object} [params.headers]               公共请求头
+ * @param {object} [params.vars]                  初始变量(供 {{var}} 引用)
+ * @param {number} [params.timeout=15000]         单请求超时(ms)
+ * @param {Array}  [params.cases]                 用例数组(推荐)
+ * @param {object} [params.spec]                  单用例简写(与 cases 二选一)
+ * @param {string} [params.goal]                  意图模式:自然语言测试目标
+ * @param {object} [params.auth]                  鉴权配置 { login:{url,method,body,tokenPath}, injectAs, tokenVar }
+ * @param {boolean}[params.autoAssert=true]        用例未声明 expect 时自动生成断言(intent 模式默认开)
+ * @param {boolean}[params.stopOnFail=false]      失败后是否中止后续用例
+ * @returns {Promise<object>} UTRM 格式结果
+ */
+async function invoke(params) {
+  const p = params || {};
+
+  if (String(p.mode || '').toLowerCase() === 'intent') {
+    return invokeIntent(p);
+  }
+
+  const cases = Array.isArray(p.cases) ? p.cases : p.spec ? [p.spec] : [];
+  if (cases.length === 0) {
+    return toUTRM(
+      { testcases: [], summary: { total: 0, passed: 0, failed: 0, skipped: 0, duration: 0 } },
+      'api-direct',
+      1,
+      'cases/spec 为空:未提供任何用例。请传入 cases 数组(每项含 url 与 expect)。'
+    );
+  }
+
+  return executeCases(cases, p, { autoAssert: p.autoAssert !== false });
 }
 
 module.exports = { invoke, toUTRM, matchValue, getByPath, buildUrl };

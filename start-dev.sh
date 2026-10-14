@@ -87,8 +87,18 @@ start_backend(){
   dim "启动后端 → $BACKEND_URL (首次 warmup 约 2-3 分钟)"
   # 2026-10-11: backend/database/db.js 只读 process.env, 不读 .env,
   #   故必须把 .env 里的 DB_* 显式导出, 否则会静默回落到 localhost/test_platform。
+  # 2026-10-14: 开发库地址会随本机网络变化(换 WiFi 就变), 启动前自动校正。
   DB_ENV_ARGS=()
   if [ -f "$BACKEND_DIR/.env" ]; then
+    # IP 自愈：仅当.env 的 DB_HOST 像内网 IP（非 localhost）且与本机当前探测值不符时改写
+    local cur_ip env_ip
+    cur_ip="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}' | xargs -I{} ipconfig getifaddr {} 2>/dev/null)"
+    env_ip="$(grep -E '^DB_HOST=' "$BACKEND_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '"'"'"' \r')"
+    if [ -n "$cur_ip" ] && [ -n "$env_ip" ] && [ "$env_ip" != "localhost" ] && [ "$env_ip" != "$cur_ip" ]; then
+      sed -i '' "s|^DB_HOST=.*|DB_HOST=${cur_ip}|" "$BACKEND_DIR/.env" 2>/dev/null \
+        && dim "  开发库地址已自动校正: ${env_ip} → ${cur_ip}（本机网络已变化）"
+      env_ip="$cur_ip"
+    fi
     while IFS='=' read -r k v; do
       case "$k" in
         DB_HOST|DB_PORT|DB_USER|DB_PASSWORD|DB_NAME|DEEPSEEK_API_KEY|AI_API_KEY|AI_BASE_URL|AI_MODEL|PLATFORM_PYTHON_PATH)

@@ -22,12 +22,29 @@ description: 免脚本 UI/E2E 测试直执执行器。直接用 Playwright 驱�
 | 用户明确要可复用的 Playwright 脚本资产 | `test-script-generator` + `ui-test-tool-invoker` |
 | 需接入 CI、长期回归 | 生成脚本（脚本更适合沉淀） |
 
+## 执行模式
+
+| `mode` | 含义 | 何时用 |
+|---|---|---|
+| `script`（默认） | 按传入的 `cases`/`steps` 逐步执行 | 已有明确操作步骤 |
+| `intent` | **意图驱动**：模型临场决定每一步，元素定位用语义描述、失效自动自愈 | 用户只给目标/URL+账号，没有现成步骤 |
+
+意图驱动对标 Harness "AI-Powered Intent Testing" 五步：
+
+1. **NL → 结构化 Test Intent**：解析目标、前置条件、入口 URL、断言点、数据依赖
+2. **AI 推理 + 应用状态探索**：每步执行后采集紧凑 DOM 快照（URL/标题/可见文本/可交互元素）回传模型
+3. **执行 ↔ 推理闭环**：模型据当前状态决定下一步；某步失败不立即终止，把失败反馈给模型换路径重试
+4. **视觉 + DOM 双重校验**：DOM 断言 + 视觉/布局基线比对（结构签名差异率）
+5. **知识回流**：执行结束产出可复用的 flow / element / contract 摘要
+
 ## 输入参数
 
 调用入口：`invoke(params)`
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
+| `mode` | string | `script`（默认）/ `intent`（意图驱动） |
+| `goal` | string | `intent` 模式：自然语言测试目标（如"验证用户能登录并看到用户名"） |
 | `baseUrl` | string | 基地址，步骤中 `url` 可写相对路径 |
 | `browser` | string | `chromium`（默认）/ `firefox` / `webkit` |
 | `headless` | boolean | 默认 true |
@@ -35,10 +52,31 @@ description: 免脚本 UI/E2E 测试直执执行器。直接用 Playwright 驱�
 | `timeout` | number | 单步超时(ms)，默认 15000 |
 | `screenshotOnFail` | boolean | 默认 true |
 | `screenshotOnSuccess` | boolean | 默认 false |
+| `credentials` | object | 登录凭证 `{username, password}`，注入为 `{{username}}`/`{{password}}` |
+| `maxSteps` | number | `intent` 模式最大执行步数，默认 25 |
+| `maxLlmCalls` | number | `intent` 模式最大模型调用次数（成本控制），默认 12 |
+| `visualMode` | string | `compare`（默认）/ `update` / `off` —— 视觉回归基线 |
+| `visualThreshold` | number | 视觉差异率阈值，默认 0.15，超出判 fail |
 | `cases` | array | 场景数组（推荐），每个场景一个 UTRM testcase |
 | `steps` | array | 单场景简写（与 `cases` 二选一） |
 | `vars` | object | 初始变量，供 `{{var}}` 引用 |
 | `stopOnFail` | boolean | 失败后中止后续场景，默认 false |
+
+## 语义定位（不再依赖硬编码选择器）
+
+`intent` 模式下步骤里的 `target` 写**人话**即可，例如「用户名输入框」「登录按钮」「右上角的用户名」。
+执行器会把它展开成多个候选定位并依次尝试：
+
+`text=xxx` → `role=button[name="xxx"]` → `role=link` → `role=textbox` → `label=` → `placeholder=` → `aria-label` → `title` → `name` → `id`
+
+**自愈**：原选择器/首选定位失效时，自动落到后续语义候选；命中的不是首选时会在结果里记录
+`selfHealed: true` 与所用策略，便于人工确认是否需要更新基线定位。
+
+## 视觉回归
+
+`visualMode='compare'`（默认）时，每次执行采集页面结构签名（元素 tag:label:量化 bbox）
+与基线比对，输出 `diffRatio` 与结论（pass/fail）；首次执行自动建立基线；
+UI 有意改版时用 `visualMode='update'` 刷新基线；`off` 关闭。
 
 ### 场景结构
 
