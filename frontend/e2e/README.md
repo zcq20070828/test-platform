@@ -70,7 +70,7 @@
 
 ### 前置条件
 
-1. 确保后端服务运行在 `http://localhost:3888`
+1. 确保后端服务运行在 `http://localhost:3002`
 2. 确保前端服务运行在 `http://localhost:5173`（测试会自动启动）
 3. 安装 Playwright 浏览器：
    ```bash

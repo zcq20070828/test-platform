@@ -21,7 +21,7 @@ export default defineConfig({
     host: '0.0.0.0',
     proxy: {
       '/api': {
-        target: process.env.VITE_API_TARGET || 'http://localhost:3888',
+        target: process.env.VITE_API_TARGET || 'http://localhost:3002',
         changeOrigin: true,
         // 禁用响应缓冲，支持 SSE 流式传输
         configure: (proxy, options) => {

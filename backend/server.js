@@ -153,7 +153,9 @@ const kcEndpoints = {
 };
 
 // 配置
-const PORT = process.env.PORT || envConfig.PORT || 3888;
+// 2026-10-14 用户拍板: dev 后端端口统一 3002, 与 .env(PORT=3002) 及
+// frontend/vite.config.ts 的 /api proxy target 三方一致(此前 3888 不一致导致前端 502)。
+const PORT = process.env.PORT || envConfig.PORT || 3002;
 // ===== 路径解耦：迁移自 QClaw workspace (2026-09-16 同步)，test-platform 自包含 =====
 const PLATFORM_ROOT = path.dirname(__dirname);
 const RUNTIME_ROOT = path.join(PLATFORM_ROOT, 'runtime');

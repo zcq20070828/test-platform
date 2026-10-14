@@ -17,6 +17,10 @@
       <el-tab-pane name="tools" label="🛠️ 工具管理">
         <AdminToolsView :embedded="true" />
       </el-tab-pane>
+      <!-- 性能监控 -->
+      <el-tab-pane name="performance" label="📈 性能监控">
+        <PerformanceView />
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -27,6 +31,7 @@ import StatsView from './StatsView.vue'
 import UserManagementView from './UserManagementView.vue'
 import SettingsView from './SettingsView.vue'
 import AdminToolsView from './AdminToolsView.vue'
+import PerformanceView from './PerformanceView.vue'
 
 const activeTab = ref('stats')
 </script>
@@ -53,7 +58,8 @@ const activeTab = ref('stats')
 :deep(.stats-view),
 :deep(.user-management),
 :deep(.settings-view),
-:deep(.admin-tools-view) {
+:deep(.admin-tools-view),
+:deep(.performance-panel) {
   padding: 0;
   background: transparent;
 }

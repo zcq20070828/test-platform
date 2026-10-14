@@ -7,7 +7,7 @@ test.describe('流式输出功能', () => {
 
   test.describe('SSE 连接', () => {
     test('SSE 端点应可连接', async ({ page }) => {
-      const response = await page.request.get('http://localhost:3888/api/events')
+      const response = await page.request.get('http://localhost:3002/api/events')
 
       expect(response.status()).toBe(200)
       expect(response.headers()['content-type']).toContain('text/event-stream')

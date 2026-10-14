@@ -1,6 +1,6 @@
 #!/bin/zsh
 # ============================================================================
-# start-dev.sh — 测试中台 WorkBuddy 一键 dev 环境 (后端 3888 + 前端 5174)
+# start-dev.sh — 测试中台 WorkBuddy 一键 dev 环境 (后端 3002 + 前端 5174)
 #
 # 用法:
 #   ./start-dev.sh            # 启动(已运行则跳过, 幂等)
@@ -10,11 +10,13 @@
 #   ./start-dev.sh status     # 查看健康状态
 #
 # 设计要点(沉淀自 2026-09-17 踩坑):
-#   1) 后端用错开端口 3888, 避开 QClaw 监督进程占用的 3002 (不杀 QClaw 后端)。
-#   2) 停止/状态一律按「监听端口」发现进程, 不依赖启动方式(手动/脚本均可命中),
-#      且 3888/5174 与 QClaw 的 3002 不重叠, 绝不会误杀 QClaw 后端。
-#   3) server.js 的 PORT = process.env.PORT || .env(PORT=3002) || 3888,
-#      故必须显式 export PORT=3888, 否则会落到 3002 冲突。
+#   1) 2026-10-14 用户拍板: 后端端口统一为 3002(与 .env 的 PORT=3002、vite 代理
+#      target 一致)。历史背景: 早期为避开 QClaw 监督进程占用 3002 而错开到 3888,
+#      现 QClaw 已不再占用, 故收回统一端口, 消除「.env 与 vite 代理不一致」的 502 根因。
+#   2) 停止/状态一律按「监听端口」发现进程, 不依赖启动方式(手动/脚本均可命中);
+#      由于端口已统一为 3002, 停止时请确保没有其它服务占用 3002。
+#   3) server.js 的 PORT = process.env.PORT || .env(PORT=3002) || 3002,
+#      故显式 export PORT=3002, 与 .env 及 vite 代理三方一致。
 #   4) 清空 NODE_OPTIONS, 关闭 WorkBuddy 注入的 node-safe-delete-shim,
 #      否则 vite 清理 .vite/deps 缓存(>50 文件)会被拦截而中止。
 #   5) 健康探测一律 curl --noproxy '*', 绕过环境 HTTP_PROXY(否则 localhost 被代理返回 502)。
@@ -29,7 +31,7 @@ BACKEND_DIR="$WS_DIR/backend"
 FRONTEND_DIR="$WS_DIR/frontend"
 NODE_BIN="/Users/zhaochengqing/.workbuddy/binaries/node/versions/22.12.0/bin/node"
 
-BACKEND_PORT=3888
+BACKEND_PORT=3002
 FRONTEND_PORT=5174
 BACKEND_URL="http://localhost:$BACKEND_PORT"
 VITE_TARGET="http://localhost:$BACKEND_PORT"
@@ -39,7 +41,7 @@ FRONTEND_LOG="/tmp/wb-vite-$FRONTEND_PORT.log"
 BACKEND_PID="/tmp/wb-backend-$BACKEND_PORT.pid"
 FRONTEND_PID="/tmp/wb-vite-$FRONTEND_PORT.pid"
 
-# 进程匹配(作用域限定本项目, 避免误杀 QClaw 监督的后端 3002)
+# 进程匹配(作用域限定本项目, 不影响其它服务)
 BACKEND_MATCH="$WS_DIR/backend/server.js"
 FRONTEND_MATCH="$WS_DIR/frontend/node_modules/vite/bin/vite.js"
 
@@ -130,7 +132,7 @@ start_frontend(){
   fi
 }
 
-# ---------- 停止(按端口发现, 不误伤 QClaw 3002) ----------
+# ---------- 停止(按端口发现) ----------
 stop_by_port(){
   local port="$1"; local name="$2"; local pid
   pid=$(listener_pid "$port")
@@ -143,7 +145,7 @@ stop_by_port(){
   else
     dim "$name($port) 未运行"
   fi
-  # 兜底: 清理本项目路径匹配的残留(不影响 QClaw 3002)
+  # 兜底: 清理本项目路径匹配的残留
   pkill -f "$BACKEND_MATCH" 2>/dev/null || true
   pkill -f "$FRONTEND_MATCH" 2>/dev/null || true
 }

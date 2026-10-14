@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 const BASE = "http://localhost:5174";
-const API = "http://localhost:3888";
+const API = "http://localhost:3002";
 
 test.describe("认证模块", () => {
   test("登录页面正确加载", async ({ page }) => {

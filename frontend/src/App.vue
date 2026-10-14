@@ -73,7 +73,6 @@ const menuItems = computed(() => {
     { path: '/knowledge', icon: 'Collection', title: '知识库' },
     { path: '/tasks', icon: 'List', title: '任务' },
     { path: '/test-runner', icon: 'VideoPlay', title: '自动化测试' },
-    { path: '/performance', icon: 'Monitor', title: '性能监控' },
     { path: '/performance-test', icon: 'DataLine', title: '性能测试' },
     { path: '/evaluation', icon: 'DataAnalysis', title: '智能评估' },
     { path: '/security', icon: 'Lock', title: '安全测试' },
