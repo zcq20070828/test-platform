@@ -69,7 +69,9 @@ const menuItems = computed(() => {
         { path: '/workflow', icon: 'Connection', title: '测试流水线' }
       ]
     },
-    { path: '/agents', icon: 'User', title: '智能体' },
+    // 【平台瘦身 2026-10-14】「智能体」入口从菜单移除（页面保留、路由保留但禁止访问）。
+    // 恢复方法：取消下一行注释即可（同时把 router/index.ts 中 /agents 的 meta.disabled 去掉）。
+    // { path: '/agents', icon: 'User', title: '智能体' },
     { path: '/knowledge', icon: 'Collection', title: '知识库' },
     { path: '/tasks', icon: 'List', title: '任务' },
     { path: '/test-runner', icon: 'VideoPlay', title: '自动化测试' },

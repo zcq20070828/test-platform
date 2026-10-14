@@ -32,7 +32,14 @@ const routes = [
     path: '/agents',
     name: 'Agents',
     component: () => import('@/views/AgentsView.vue'),
-    meta: { requiresAuth: true }
+    // 【平台瘦身 2026-10-14】模块已下线：路由保留、页面代码保留，但禁止访问。
+    // 恢复方法：删掉 meta 里的 disabled / disabledTip 两个字段，
+    //          并取消 App.vue 菜单中「智能体」项的注释。
+    meta: {
+      requiresAuth: true,
+      disabled: true,
+      disabledTip: '「智能体」模块已下线，暂不开放'
+    }
   },
   {
     path: '/knowledge',
@@ -183,6 +190,12 @@ router.beforeEach((to, from) => {
   // 如果需要管理员权限但当前用户不是管理员，重定向到首页
   if (to.meta.requiresAdmin && !mainStore.isAdmin) {
     ElMessage.error('需要管理员权限')
+    return { name: 'Dashboard' }
+  }
+
+  // 已下线模块（平台瘦身）：路由仍存在但禁止进入，直接拦回首页
+  if (to.meta.disabled) {
+    ElMessage.warning(String(to.meta.disabledTip || '该模块已下线，暂不开放'))
     return { name: 'Dashboard' }
   }
 
