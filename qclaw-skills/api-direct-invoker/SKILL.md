@@ -21,19 +21,58 @@ description: 免脚本接口测试直执执行器。直接用 HTTP 客户端发�
 | 用户明确要 Postman 集合、pytest 脚本等可复用资产 | `test-script-generator` + `api-test-tool-invoker` |
 | 需要接入 CI、长期回归复用 | 生成脚本（脚本更适合沉淀） |
 
+## 执行模式
+
+| `mode` | 含义 | 何时用 |
+|---|---|---|
+| `script`（默认） | 按传入的 `cases` 逐条发请求断言 | 已有明确的请求清单 |
+| `intent` | **意图驱动**：先用模型把自然语言目标解析成结构化 Test Intent + 请求序列，再执行 | 用户只给了"验证登录能成功"这类描述，没有现成请求清单 |
+
+意图驱动对标 Harness "AI-Powered Intent Testing" 五步：
+
+1. **NL → 结构化 Test Intent**：解析目标、前置条件、入口 URL、断言点、数据依赖
+2. **AI 推理 + 应用状态探索**：每步执行后采集紧凑 DOM/响应快照回传模型
+3. **执行 ↔ 推理闭环**：模型据当前状态决定下一步，失败时换路径重试
+4. **视觉 + DOM 双重校验**：断言点由模型提出、判定在本地客观完成（模型不打分，防幻觉）
+5. **知识回流**：执行结束时产出可复用的 flow / element / contract 摘要
+
 ## 输入参数
 
 调用入口：`invoke(params)`
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
+| `mode` | string | `script`（默认）/ `intent`（意图驱动） |
 | `baseUrl` | string | 公共基地址，用例中 `url` 可写相对路径（如 `/api/login`） |
 | `headers` | object | 公共请求头（如 `Authorization`、Cookie） |
 | `vars` | object | 初始变量，供 `{{var}}` 引用 |
 | `timeout` | number | 单请求超时(ms)，默认 15000 |
-| `cases` | array | 用例数组（推荐） |
+| `cases` | array | 用例数组（推荐）；`intent` 模式下每项可只给 `goal` |
 | `spec` | object | 单用例简写（与 `cases` 二选一） |
+| `goal` | string | `intent` 模式：自然语言测试目标 |
+| `auth` | object | 鉴权配置，见「自动重登（自愈）」 |
+| `autoAssert` | boolean | 用例未声明 `expect` 时是否自动生成断言，默认 true |
 | `stopOnFail` | boolean | 失败后中止后续用例，默认 false |
+
+## 自动断言
+
+用例没写 `expect` 时，由模型基于「意图 + 真实响应」提出断言点（status / duration / json / jsonPath / contains / notContains / equals / header），
+**判定在本地客观完成** —— 模型只提点、不打分，结果可复核、不幻觉。
+
+## 自动重登（自愈）
+
+```json
+{
+  "auth": {
+    "login": { "url": "/api/login", "method": "POST", "body": {"username":"{{username}}","password":"{{password}}"}, "tokenPath": "data.token" },
+    "injectAs": "Authorization",
+    "tokenVar": "token"
+  },
+  "credentials": { "username": "admin", "password": "xxx" }
+}
+```
+
+遇到 401/403 时自动重登取 token、注入请求头并重试一次。凭证不会写入结果（落库/展示前剔除敏感键）。
 
 ### 单个用例结构
 

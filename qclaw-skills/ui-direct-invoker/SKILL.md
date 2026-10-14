@@ -22,12 +22,29 @@ description: 免脚本 UI/E2E 测试直执执行器。直接用 Playwright 驱�
 | 用户明确要可复用的 Playwright 脚本资产 | `test-script-generator` + `ui-test-tool-invoker` |
 | 需接入 CI、长期回归 | 生成脚本（脚本更适合沉淀） |
 
+## 执行模式
+
+| `mode` | 含义 | 何时用 |
+|---|---|---|
+| `script`（默认） | 按传入的 `cases`/`steps` 逐步执行 | 已有明确操作步骤 |
+| `intent` | **意图驱动**：模型临场决定每一步，元素定位用语义描述、失效自动自愈 | 用户只给目标/URL+账号，没有现成步骤 |
+
+意图驱动对标 Harness "AI-Powered Intent Testing" 五步：
+
+1. **NL → 结构化 Test Intent**：解析目标、前置条件、入口 URL、断言点、数据依赖
+2. **AI 推理 + 应用状态探索**：每步执行后采集紧凑 DOM 快照（URL/标题/可见文本/可交互元素）回传模型
+3. **执行 ↔ 推理闭环**：模型据当前状态决定下一步；某步失败不立即终止，把失败反馈给模型换路径重试
+4. **视觉 + DOM 双重校验**：DOM 断言 + 视觉/布局基线比对（结构签名差异率）
+5. **知识回流**：执行结束产出可复用的 flow / element / contract 摘要
+
 ## 输入参数
 
 调用入口：`invoke(params)`
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
+| `mode` | string | `script`（默认）/ `intent`（意图驱动） |
+| `goal` | string | `intent` 模式：自然语言测试目标（如"验证用户能登录并看到用户名"） |
 | `baseUrl` | string | 基地址，步骤中 `url` 可写相对路径 |
 | `browser` | string | `chromium`（默认）/ `firefox` / `webkit` |
 | `headless` | boolean | 默认 true |
@@ -35,10 +52,64 @@ description: 免脚本 UI/E2E 测试直执执行器。直接用 Playwright 驱�
 | `timeout` | number | 单步超时(ms)，默认 15000 |
 | `screenshotOnFail` | boolean | 默认 true |
 | `screenshotOnSuccess` | boolean | 默认 false |
+| `credentials` | object | 登录凭证 `{username, password}`，注入为 `{{username}}`/`{{password}}`；也可带 `usernameSelector`/`passwordSelector`/`submitSelector` 兜底 |
+| `maxSteps` | number | `intent` 模式最大执行步数，默认 25 |
+| `maxLlmCalls` | number | `intent` 模式最大模型调用次数（成本控制），默认 12 |
+| `maxConsecutiveFailures` | number | `intent` 模式连续失败多少步判定阻塞，默认 2 |
+| `maxElements` | number | `intent` 模式每次观察采集的可交互元素上限，默认 40（越大越准、token 越贵） |
+| `visualMode` | string | `compare`（默认）/ `update` / `off` —— 视觉回归基线 |
+| `visualThreshold` | number | 视觉差异率阈值，默认 0.15，超出判 fail |
 | `cases` | array | 场景数组（推荐），每个场景一个 UTRM testcase |
 | `steps` | array | 单场景简写（与 `cases` 二选一） |
 | `vars` | object | 初始变量，供 `{{var}}` 引用 |
 | `stopOnFail` | boolean | 失败后中止后续场景，默认 false |
+
+## 语义定位（不再依赖硬编码选择器）
+
+`intent` 模式下步骤里的 `target` 写**人话**即可，例如「用户名输入框」「登录按钮」「右上角的用户名」。
+执行器会把它展开成多个候选定位并依次尝试：
+
+`text=xxx` → `role=button[name="xxx"]` → `role=link` → `role=textbox` → `label=` → `placeholder=` → `aria-label` → `title` → `name` → `id`
+
+**自愈**：原选择器/首选定位失效时，自动落到后续语义候选；命中的不是首选时会在结果里记录
+`selfHealed: true` 与所用策略，便于人工确认是否需要更新基线定位。
+
+**中文排版空格归一化**：按钮文案常写成「登 录」「确 定」（字间带排版空格），与模型输出的紧凑写法
+「登录」字面不等。执行器会额外生成"字符间允许任意空白"的正则候选，并额外尝试去空格后的
+`placeholder` / `aria-label` / `id` 匹配，避免这类误判。
+
+**按动作类型排序候选**：`fill` / `type` 这类"可输入"动作会优先匹配 `input` / `textarea` /
+`select` / `[contenteditable]`，并校验元素确实可编辑。否则「密码」会先命中
+「切换密码可见性」这类 `role=button` 图标，导致 fill 抛错。
+
+## 自动登录（前置条件自愈）
+
+大多数 SPA 未认证时会重定向到登录页。若 `intent` 模式直接把登录页快照交给模型，
+模型会在登录页上臆造"返回首页"之类快照中不存在的元素，导致执行阻塞。
+
+执行器因此内置**登录前置自愈**：起始 `goto` 之后，若探测到当前是登录页
+（URL 命中 `/login`、`/signin`、`/auth`，或页面存在 `input[type=password]`），
+且调用方传入了 `credentials`，则自动执行：
+
+1. 语义定位用户名输入框 → `fill({{username}})`
+2. 语义定位密码输入框 → `fill({{password}})`（兜底 `input[type="password"]`）
+3. 语义定位登录按钮 → `click`（兜底 `button[type="submit"]` / `form button`）
+4. **轮询等待离开登录页**（最多 15s）
+
+结果以一条 `action: "login"` 步骤记入 `steps`，失败时带明确错误文案。
+
+> 注意：此处**不能**用 `waitForLoadState('networkidle')` 等待登录完成 —— 平台有 SSE 长连接，
+> 网络永不静默，固定等待会误判为"登录失败"。必须用轮询判定登录态特征。
+
+**安全约定**：`credentials` 只在运行时通过 `vars` 注入为 `{{username}}` / `{{password}}`，
+不写入数据库、不写入日志；`sanitizeVars()` 会在传给模型前过滤掉
+`pass / pwd / secret / token / cookie / authorization` 等敏感键。
+
+## 视觉回归
+
+`visualMode='compare'`（默认）时，每次执行采集页面结构签名（元素 tag:label:量化 bbox）
+与基线比对，输出 `diffRatio` 与结论（pass/fail）；首次执行自动建立基线；
+UI 有意改版时用 `visualMode='update'` 刷新基线；`off` 关闭。
 
 ### 场景结构
 
