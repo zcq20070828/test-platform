@@ -10,6 +10,10 @@ frontend/.vite/
 # 本地环境配置（含数据库密码，勿提交）
 .env
 *.local.env
+# 2026-10-14防呆: macOS `sed -i` 失败会留下 .envXXXXXX 临时文件(含密钥),
+#曾两次被 git add -A 误提交。改为匹配所有 .env* 变体，仅放行 .env.example
+.env*
+!.env.example
 
 # 数据库文件
 *.sqlite
