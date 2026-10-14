@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures'
 
-const API_BASE = 'http://localhost:3888/api'
+const API_BASE = 'http://localhost:3002/api'
 
 /**
  * API 集成测试 - 测试前后端数据交互

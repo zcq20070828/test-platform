@@ -1,7 +1,7 @@
 import { test, expect, Page } from "@playwright/test";
 
 const BASE = "http://localhost:5174";
-const API = "http://localhost:3888";
+const API = "http://localhost:3002";
 
 async function loginViaAPI(page: Page) {
   const timestamp = Date.now();

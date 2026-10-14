@@ -185,7 +185,7 @@ chmod +x setup-dev-env.sh
 **期望输出**：
 
 ```
-✅ 后端  http://localhost:3888  → 200
+✅ 后端  http://localhost:3002  → 200
 {"status":"ok","agents":18,"tasks":0}
 ✅ 前端  http://localhost:5174/  → 200
 ```
@@ -199,7 +199,7 @@ chmod +x setup-dev-env.sh
 同一台机器上多人或已有服务占用时，先查端口：
 
 ```bash
-lsof -iTCP:3888 -sTCP:LISTEN    # 后端端口
+lsof -iTCP:3002 -sTCP:LISTEN    # 后端端口
 lsof -iTCP:5174 -sTCP:LISTEN    # 前端端口
 ```
 

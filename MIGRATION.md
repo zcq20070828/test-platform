@@ -53,7 +53,7 @@ SKILLS_DIR     = PLATFORM_ROOT/qclaw-skills
 ## 五、运行验证（2026-08-13 实测）
 
 ```
-node server.js  →  http://localhost:3888
+node server.js  →  http://localhost:3002
 /api/health → {"status":"ok","agents":15,"tasks":286}
 [Users] 从数据库加载了 4 个用户
 [Tasks] 从数据库加载了 286 个任务
@@ -86,7 +86,7 @@ OPENCLAW_GATEWAY 未启动 → 自动回退直连 Deepseek API（不卡死）
 
 ```bash
 cd test-platform/backend && npm install   # 已完成
-node server.js                            # 或 npm run dev（默认 3888）
+node server.js                            # 或 npm run dev（默认 3002）
 # 前端：cd ../frontend && npm install && npm run dev（5173）/ build
 # 数据库：本地 MariaDB test_platform（已就绪）；生产见 deploy/
 ```
