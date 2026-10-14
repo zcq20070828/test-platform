@@ -212,11 +212,7 @@ async function handleSendTask(_files?: any) {
 }
 
 
-// 切换视图
-function startWorkflow() {
-  viewMode.value = 'execution'
-}
-
+// 【平台瘦身 2026-10-14】startWorkflow 已随顶部横幅移除；发送任务时 handleSendTask 自动切换到执行视图。
 function backToOverview() {
   if (!workflowStore.isRunning) {
     viewMode.value = 'overview'
@@ -224,19 +220,8 @@ function backToOverview() {
 }
 
 // ==================== 阶段配置 ====================
-const stageIcons: Record<string, string> = {
-  'Phase 1: 需求分析': 'Search',
-  'Phase 2: 用例生成': 'List',
-  'Phase 3: UI/E2E测试': 'Monitor',
-  'Phase 4: 测试报告': 'Document'
-}
-
-const stageColors: Record<string, string> = {
-  'Phase 1: 需求分析': '#409eff',
-  'Phase 2: 用例生成': '#67c23a',
-  'Phase 3: UI/E2E测试': '#e6a23c',
-  'Phase 4: 测试报告': '#b37feb'
-}
+// 【平台瘦身 2026-10-14】流程介绍卡片移除后，stageIcons/stageColors 已无使用场景，一并删除。
+// （阶段数据 workflowStore.stages 与 getAgentDetail 仍由 store 保留，供其他组件使用。）
 
 // ==================== QClaw 原生对话历史加载 ====================
 const API_BASE = import.meta.env.VITE_API_BASE || ''
@@ -354,135 +339,10 @@ onUnmounted(() => {
   <div class="workflow-view" data-testid="workflow-page">
     <!-- ======== 概览模式 ======== -->
     <div v-if="viewMode === 'overview'" class="workflow-overview">
-      <!-- 顶部标题区 -->
-      <div class="overview-header">
-        <div class="header-content">
-          <h1>全自动工作流引擎</h1>
-          <p class="subtitle">输入测试需求，AI 驱动 7 个智能体完成从需求分析到报告输出的全流程（每阶段完成后 3 个 AI 审核员并行把关）</p>
-          <div class="header-stats">
-            <div class="stat-item">
-              <span class="stat-num">4</span>
-              <span class="stat-label">执行阶段</span>
-            </div>
-            <div class="stat-divider"></div>
-            <div class="stat-item">
-              <span class="stat-num">4</span>
-              <span class="stat-label">审核关卡</span>
-            </div>
-            <div class="stat-divider"></div>
-            <div class="stat-item">
-              <span class="stat-num">7</span>
-              <span class="stat-label">智能体</span>
-            </div>
-            <div class="stat-divider"></div>
-            <div class="stat-item">
-              <span class="stat-num">100%</span>
-              <span class="stat-label">自动化</span>
-            </div>
-          </div>
-        </div>
-        <div class="header-action">
-          <el-button type="primary" size="large" @click="startWorkflow">
-            开始使用
-          </el-button>
-        </div>
-      </div>
+      <!-- 【平台瘦身 2026-10-14】顶部横幅区（"全自动工作流引擎"标题 + "开始使用"按钮）已移除。
+           恢复方法：见 git 历史，搜索 overview-header。发送任务时 handleSendTask 会自动切换到执行视图。 -->
 
-      <!-- 阶段流程卡片（执行+审核交替） -->
-      <div class="stages-flow">
-        <div
-          v-for="(stage, index) in workflowStore.stages"
-          :key="stage.name"
-          class="stage-card"
-          :class="{ 'review-card': stage.isReview }"
-          :style="{ '--stage-color': stage.isReview ? '#f56c6c' : (stageColors[stage.name] || '#409eff') }"
-        >
-          <div class="stage-badge" :class="{ 'review-badge': stage.isReview }">
-            <span v-if="stage.isReview">🛡️</span>
-            <span v-else>{{ Math.floor(index / 2) + 1 }}</span>
-          </div>
-          <div class="stage-info">
-            <h3>
-              <el-icon v-if="!stage.isReview"><component :is="stageIcons[stage.name] || 'Operation'" /></el-icon>
-              <el-icon v-else><Select /></el-icon>
-              {{ stage.name }}
-              <el-tag v-if="stage.isReview" type="danger" size="small" effect="dark" style="margin-left: 8px;">审核关卡</el-tag>
-              <span class="step-count">{{ stage.steps.length }}个智能体</span>
-            </h3>
-            <p>{{ stage.description }}</p>
-            <div class="stage-agents">
-              <el-tag
-                v-for="agentId in stage.steps"
-                :key="agentId"
-                size="small"
-                :effect="stage.isReview ? 'dark' : 'plain'"
-                :type="stage.isReview ? 'danger' : undefined"
-                class="agent-tag"
-              >
-                <span class="agent-icon">{{ workflowStore.getAgentDetail(agentId).icon }}</span>
-                {{ workflowStore.getAgentDetail(agentId).name }}
-              </el-tag>
-            </div>
-          </div>
-          <div v-if="index < workflowStore.stages.length - 1" class="stage-arrow">
-            <el-icon><ArrowRight /></el-icon>
-          </div>
-        </div>
-      </div>
-
-      <!-- AI质量审核专区 -->
-      <div class="review-section">
-        <div class="section-header">
-          <h2>
-            <el-icon><Select /></el-icon>
-            AI 质量审核机制
-          </h2>
-          <el-tag type="danger" effect="dark" size="small">核心关卡</el-tag>
-        </div>
-        <div class="review-content">
-          <div class="review-flow">
-            <div class="review-card">
-              <div class="review-num">1</div>
-              <div class="review-body">
-                <h4>事实与逻辑审核</h4>
-                <p>评估需求分析结果的<strong>事实准确性(25%)</strong>和<strong>逻辑一致性(25%)</strong></p>
-                <div class="review-veto">
-                  <el-tag type="danger" size="small" effect="plain">⚡ 否决项</el-tag>
-                  <span>存在事实幻觉则直接不通过</span>
-                </div>
-              </div>
-            </div>
-            <div class="review-arrow">→</div>
-            <div class="review-card">
-              <div class="review-num">2</div>
-              <div class="review-body">
-                <h4>安全合规审核</h4>
-                <p>评估<strong>安全性(15%)</strong>与<strong>合规性(10%)</strong>，含4个否决项</p>
-                <div class="review-veto">
-                  <el-tag type="danger" size="small" effect="plain">⚡ 否决项</el-tag>
-                  <span>敏感内容、歧视偏见、提示注入</span>
-                </div>
-              </div>
-            </div>
-            <div class="review-arrow">→</div>
-            <div class="review-card">
-              <div class="review-num">3</div>
-              <div class="review-body">
-                <h4>格式结构审核</h4>
-                <p>评估<strong>格式规范(12.5%)</strong>与<strong>结构完整性(12.5%)</strong></p>
-                <div class="review-pass">
-                  <el-tag type="success" size="small" effect="plain">✓ 通过条件</el-tag>
-                  <span>三评均 ≥ 95分</span>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="review-note">
-            <el-icon><InfoFilled /></el-icon>
-            三个AI审核智能体独立完成完整4维度评估（各100分），只有三评均达到95分以上才能进入下一阶段。最多重试3次。
-          </div>
-        </div>
-      </div>
+      <!-- 【平台瘦身 2026-10-14】「阶段流程卡片」与「AI质量审核机制」两个流程介绍区块已移除 -->
 
       <!-- 快速开始 — 实时流式对话区 -->
       <div class="quick-start">
@@ -608,176 +468,11 @@ onUnmounted(() => {
   margin: 0 auto;
 }
 
-.overview-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 32px 36px;
-  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-  border-radius: 16px;
-  color: white;
-  margin-bottom: 28px;
-}
+/* 【平台瘦身 2026-10-14】顶部横幅（.overview-header/.header-action）样式已随模板一并移除 */
 
-.overview-header h1 {
-  margin: 0 0 8px 0;
-  font-size: 28px;
-  font-weight: 700;
-}
+/* 【平台瘦身 2026-10-14】副标题/头部统计、阶段流程卡片、AI审核专区的样式已随模板一并移除 */
 
-.subtitle {
-  color: rgba(255,255,255,0.7);
-  font-size: 14px;
-  margin: 0 0 20px 0;
-}
-
-.header-stats {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-}
-
-.stat-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.stat-num {
-  font-size: 24px;
-  font-weight: 700;
-  color: #67c8ff;
-}
-
-.stat-label {
-  font-size: 12px;
-  color: rgba(255,255,255,0.5);
-  margin-top: 2px;
-}
-
-.stat-divider {
-  width: 1px;
-  height: 32px;
-  background: rgba(255,255,255,0.15);
-}
-
-.header-action .el-button {
-  height: 44px;
-  padding: 0 32px;
-  font-size: 15px;
-  border-radius: 8px;
-}
-
-/* 阶段流程 */
-.stages-flow {
-  margin-bottom: 28px;
-}
-
-.stage-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 20px 24px;
-  background: white;
-  border-radius: 12px;
-  margin-bottom: 12px;
-  border-left: 4px solid var(--stage-color);
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-  transition: transform 0.2s, box-shadow 0.2s;
-  position: relative;
-}
-
-.stage-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-}
-
-.stage-card.review-card {
-  background: linear-gradient(135deg, #fef0f0 0%, #fff 100%);
-  border-left-color: #f56c6c;
-}
-
-.review-badge {
-  background: #f56c6c;
-}
-
-.review-card .agent-tag {
-  border-color: #f56c6c;
-  color: #f56c6c;
-}
-
-.stage-badge {
-  flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: var(--stage-color);
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 16px;
-}
-
-.stage-info {
-  flex: 1;
-}
-
-.stage-info h3 {
-  margin: 0 0 6px 0;
-  font-size: 16px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.step-count {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--el-text-color-secondary);
-  background: var(--el-fill-color);
-  padding: 2px 8px;
-  border-radius: 10px;
-}
-
-.stage-info p {
-  margin: 0 0 10px 0;
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.5;
-}
-
-.stage-agents {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.agent-tag {
-  font-size: 12px;
-  border-color: var(--stage-color);
-  color: var(--stage-color);
-}
-
-.agent-icon {
-  margin-right: 2px;
-}
-
-.stage-arrow {
-  position: absolute;
-  right: -18px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--el-text-color-placeholder);
-  font-size: 18px;
-  z-index: 1;
-}
-
-/* AI审核专区 */
-.review-section {
-  margin-bottom: 28px;
-}
+/* 【平台瘦身 2026-10-14】阶段流程卡片样式（stages-flow、stage、agent、step-count 相关类）已移除 */
 
 .section-header {
   display: flex;
@@ -799,87 +494,7 @@ onUnmounted(() => {
   align-items: center;
 }
 
-.review-content {
-  background: white;
-  border-radius: 12px;
-  padding: 24px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-}
-
-.review-flow {
-  display: flex;
-  align-items: stretch;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.review-card {
-  flex: 1;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 10px;
-  padding: 16px;
-  position: relative;
-}
-
-.review-num {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--el-color-danger-light-5);
-  color: var(--el-color-danger);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 14px;
-  margin-bottom: 10px;
-}
-
-.review-card h4 {
-  margin: 0 0 8px 0;
-  font-size: 14px;
-}
-
-.review-card p {
-  margin: 0 0 10px 0;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.6;
-}
-
-.review-veto, .review-pass {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.review-arrow {
-  display: flex;
-  align-items: center;
-  font-size: 20px;
-  color: var(--el-text-color-placeholder);
-  flex-shrink: 0;
-}
-
-.review-note {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 12px 16px;
-  background: var(--el-color-info-light-9);
-  border-radius: 8px;
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.6;
-}
-
-.review-note .el-icon {
-  margin-top: 2px;
-  color: var(--el-color-info);
-  flex-shrink: 0;
-}
+/* 【平台瘦身 2026-10-14】AI审核专区样式（review 相关类）已移除 */
 
 /* 快速开始 */
 .quick-start {
@@ -1006,27 +621,5 @@ onUnmounted(() => {
   font-size: 13px;
   color: var(--el-color-primary);
   font-weight: 500;
-}
-
-@media (max-width: 1200px) {
-  .overview-header {
-    flex-direction: column;
-    text-align: center;
-    gap: 20px;
-  }
-
-  .header-stats {
-    justify-content: center;
-  }
-
-  .review-flow {
-    flex-direction: column;
-  }
-
-  .review-arrow {
-    transform: rotate(90deg);
-    justify-content: center;
-    padding: 4px 0;
-  }
 }
 </style>
