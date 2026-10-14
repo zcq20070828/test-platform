@@ -15,7 +15,7 @@
                                           └─ 后端直连 Deepseek API（密钥硬编码于 server.js）
 ```
 
-- 后端**默认端口 3888**，本包 `.env` 建议设为 **3002**（对齐前端 vite 代理期望）。
+- 后端端口统一为 **3002**（`server.js` 兜底与 `.env` 均为 3002，与前端 vite 的 `/api` 代理 target 三方一致）。
 - 前端已构建在 `frontend/dist/`，由后端直接托管，**生产环境无需单独运行前端服务**。
 - 智能体定义读取 `~/.qclaw/agents/<id>/SOUL.md`；技能读取 `~/.qclaw/skills/<id>/SKILL.md`。
 - 知识库根目录硬编码为 `$HOME/.qclaw/knowledge-base/`。**知识库根目录硬编码为 `$HOME/.qclaw/knowledge-base/`**
