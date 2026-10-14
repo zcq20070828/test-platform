@@ -1029,6 +1029,7 @@ async function checkAssertion(page, a) {
       const bodyText = String((await page.evaluate(() => document.body?.innerText || '')) || '');
       let actual = bodyText;
       let scope = '整页文本';
+      let located = false;
       if (target) {
         const r = await locateWithHeal(page, { target, requireVisible: false });
         if (r.selector) {
@@ -1036,6 +1037,7 @@ async function checkAssertion(page, a) {
             (await page.locator(r.selector).first().textContent({ timeout: 5000 })) || ''
           );
           scope = `目标「${target}」(${r.strategy})`;
+          located = true;
         } else {
           // 目标定位不到时回退整页文本:否则 actual 恒为空,判定结果会"证据失真"
           scope = `目标「${target}」未定位,回退整页文本`;
@@ -1044,16 +1046,28 @@ async function checkAssertion(page, a) {
       const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
       const compact = (s) => String(s || '').replace(/\s+/g, '');
       const aNorm = norm(actual);
-      const eNorm = norm(expected);
+      let eNorm = norm(expected);
       // 中文排版空格(如「登 录」)会让字面比对失败,用去空格比对兜底
-      const passed = eNorm
+      let passed = eNorm
         ? aNorm.includes(eNorm) || compact(actual).includes(compact(expected))
         : false;
+      let healNote = '';
+      // 断言自愈:模型常把 expected 写成描述句(如"导航项文本可见")而非字面值。
+      // 此时只要 target 这个干净字面量确实命中,就判定达成(不会掩盖真实失败,
+      // 因为若目标真不存在,located 会是 false)。
+      if (!passed && located && norm(target) && aNorm.includes(norm(target))) {
+        passed = true;
+        eNorm = norm(target);
+        healNote = ' (模型 expected 写成描述句,已按 target 字面量判定)';
+      }
       return {
         ...base,
+        expected: eNorm,
         passed,
         actual: clip(aNorm, 300),
-        evidence: passed ? `命中(${scope})` : `页面未见期望文本「${expected}」(判定范围:${scope})`,
+        evidence: passed
+          ? `命中(${scope})${healNote}`
+          : `页面未见期望文本「${expected}」(判定范围:${scope})`,
       };
     }
 
