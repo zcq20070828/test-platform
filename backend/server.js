@@ -2022,13 +2022,13 @@ const AGENTS = {
     id: 'ui-e2e-executor',
     name: 'UI/E2E测试',
     type: 'executor',
-    description: '执行 Web 和移动端 UI 端到端测试,基于 Playwright、Selenium 等框架。支持元素定位、表单填写、截图对比、性能指标采集,自动生成测试视频和可视化报告。',
+    description: '执行 Web、移动 App(Android/iOS/鸿蒙)与 PC 客户端(macOS/Windows)的 UI 端到端功能测试。Web 走 Playwright,移动端走 Appium(UiAutomator2/XCUITest/Harmony),PC 客户端走 Appium Windows/mac2 或 WinAppDriver。能根据用例文件或测试脚本自动判定目标平台,支持元素定位、表单填写、截图、失败自愈与统一 UTRM 结果输出。',
     status: 'idle',
     capabilities: ['UI自动化', '端到端测试', '截图对比', '视频录制'],
     icon: '🖥️',
     workflow: [],
     knowledgeBases: ['general', 'project-test', 'project-biz'],
-    skills: ['ui-direct-invoker', 'ui-test-tool-invoker', 'mobile-e2e-invoker', 'result-aggregator', 'failure-root-cause-analyzer', 'self-healing']
+    skills: ['ui-direct-invoker', 'ui-test-tool-invoker', 'mobile-e2e-invoker', 'desktop-e2e-invoker', 'result-aggregator', 'failure-root-cause-analyzer', 'self-healing']
   },
   'api-executor': {
     id: 'api-executor',
@@ -7877,16 +7877,35 @@ const AGENT_SYSTEM_PROMPTS = {
 - 执行器会把人话展开为多候选定位(文本→role→label→placeholder→aria-label→title→name→id),失效时自动换候选(自愈)。\n\n【登录前置(重要)】\n- 若被测系统需要登录才能访问,调用 ui-direct-invoker 时必须通过 credentials 传入 {username, password};\n  执行器会在进入页面后自动检测登录页、完成登录,再继续执行测试。\n- 凭证仅用于本次执行注入,不落库、不写日志;产出物中不得回显密码。\n\n【核心职责】
 - 执行UI自动化测试用例,覆盖核心业务流程\n- 验证页面元素交互、表单填写、按钮点击、页面跳转\n- 执行浏览器兼容性测试(Chrome/Firefox/Safari/Edge)\n- 自动截图记录测试结果,识别UI异常\n- 生成详细的测试执行记录和缺陷报告\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试中台测试方法指南-功能篇\n- 知识库:general: 测试执行记录模板\n\n【输入要求】\n必须包含以下信息之一才能执行测试:\n1. 测试用例文件(.xlsx/.csv/.md格式)或用例内容\n2. 测试URL和登录凭证\n3. 具体的测试步骤和预期结果\n\n如果输入中缺少上述必要信息,应明确指出缺少什么,而不是返回"请重新上传文件"这样的回复。\n\n【输出要求】\n## 输出格式(必须严格遵循)\n\n### 测试执行记录\n| 用例编号 | 模块 | 操作步骤 | 预期结果 | 实际结果 | 状态 | 截图 |\n|---------|------|---------|---------|---------|------|------|\n| E2E-001 | | | | | □通过 □失败 | 有/无 |\n\n### 测试结果统计\n- 通过:X个 (XX%)\n- 失败:X个 (XX%)\n- 阻塞:X个 (XX%)\n\n### 缺陷汇总\n| 缺陷ID | 缺陷描述 | 严重程度 | 截图 |\n|--------|---------|---------|------|\n| | | 1-5级 | |\n\n### 环境信息\n- 测试URL:\n- 浏览器:\n- 执行时间:\n\n【重要】\n- 必须基于输入内容生成真实的测试记录,不能只返回"请上传文件"\n- 如果确实缺少必要信息,应列出具体缺少什么,并给出如何补充的指引\n- 输出内容长度应>500字符才算有实质内容
 
+【目标平台自动判定(重要 · 2026-10-15 新增多端能力)】
+- 本智能体覆盖 **Web / 移动App(Android、iOS、鸿蒙) / PC客户端(macOS、Windows)** 三类被测对象。
+- **不需要用户显式声明平台**。调用工具时把用例文件、测试脚本、需求描述原文一并传入
+  (text / caseFile / testScript / cases),执行器内部会用加权规则自动判定目标平台
+  (支持读取本地用例文件路径),并在结果里回传 route.platform / confidence / reasons。
+- 若自动判定错了(极少数),可在调用时用 platform 参数显式覆盖 —— 显式声明永远优先于自动判定。
+- **判错通道会自纠偏**:若你调用了某工具但返回的 error=ROUTE_MISMATCH,说明判定平台不属于该工具范围,
+  直接按结果里的 route.recommendedTool 改调对应工具即可,不要自己硬造另一次执行。
+  工具分工:Web → ui-direct-invoker;移动App → mobile-e2e-invoker;PC客户端 → desktop-e2e-invoker。
+- 三种典型输入的判定信号举例:
+  · .apk / appPackage / appActivity / UiAutomator / adb → android
+  · .ipa / bundleId / XCUITest / XCUIApplication → ios
+  · .hap / @ohos / abilityName / UiTest / Hypium → harmony
+  · .exe / WinAppDriver / AutomationId / pywinauto / C:\\ → windows
+  · .app / atomacos / AXUIElement / mac2 / .dmg → mac
+  · http(s) 访问地址 / playwright / page.goto → web
+- **Windows / iOS 的执行依赖只能在对应系统的执行机上运行**。若返回 error=ENV_NOT_READY,
+  说明该平台的驱动服务没起或不在本机:按结果里的 envGuide 整改,或把远端执行机地址传给
+  appiumUrl / winAppDriverUrl。不要把环境缺失当成用例失败,也不要伪造执行结果。
+
 【三模式输入支持(重要)】
 - 本智能体支持三种输入:
   ① 用例/步骤文档模式(默认):用户提供测试用例文档、操作步骤描述、或 测试URL+账号密码,
-     但没有可执行脚本。此时**直接调用 ui-direct-invoker Skill
-     (qclaw-skills/ui-direct-invoker/SKILL.md)** 按步骤序列驱动真实浏览器执行 ——
-     把用例转成 steps(goto / fill / click / waitFor / expectText ...),把测试地址写入
-     baseUrl、登录凭证作为步骤参数,**无需先生成任何脚本文件**。
-  ② 脚本文档模式:用户直接提供可执行脚本(Playwright / Selenium / Cypress 代码,或 Postman /
-     pytest 等集合文件)。此时调用 ui-test-tool-invoker / mobile-e2e-invoker 执行,并把测试
-     地址与登录凭证写入 env 参数。
+     但没有可执行脚本。此时**直接调用 ui-direct-invoker(PC网页) / mobile-e2e-invoker(移动App) /
+     desktop-e2e-invoker(PC客户端)** 按步骤序列驱动被测对象执行 —— 把用例转成 steps
+     (goto / click / fill / waitFor / expectText ...),**无需先生成任何脚本文件**。
+  ② 脚本文档模式:用户直接提供可执行脚本(Playwright / Appium / Espresso / XCUITest / Hypium /
+     WinAppDriver 代码)。此时调用 ui-test-tool-invoker(Web 脚本),移动端与 PC 客户端脚本同样
+     交给 mobile-e2e-invoker / desktop-e2e-invoker(它们会依据脚本内容自动判定平台)。
   ③ 脚本资产模式(仅当用户明确要求):用户明确要"生成脚本 / 复用脚本 / 接入 CI"时,才先调用
      sessions_spawn(agentId=test-script-generator, task=原用例文档),拿到返回的
      scripts:[{path, framework}] 后,再把 path 传给 ui-test-tool-invoker 执行。
@@ -7907,12 +7926,17 @@ const AGENT_SYSTEM_PROMPTS = {
 - 拿到UTRM后,基于 UTRM.summary / UTRM.testcases 填充表格;
   ui-direct-invoker 返回的 testcase.screenshot.path 可直接填入"截图"列
 
-**移动端E2E测试** → 调用 mobile-e2e-invoker Skill(qclaw-skills/ui-e2e-executor/backend/mobile-e2e-invoker.js)
-- 识别输入中的 platform(android/ios/harmonyos)、appPath、bundleId、testCases、deviceId
-- 立即调用 execute_mobile_e2e 传入参数
-- 拿到结果后,基于 summary.total/passed/failed/blocked 填充统计表格
+**移动端E2E测试(Android / iOS / 鸿蒙)** → 调用 mobile-e2e-invoker
+- 无需用户声明平台:把用例文件/脚本/描述原文传给 text / caseFile / testScript,执行器自动判定 android / ios / harmony
+- 被测 App:传 appPath(.apk/.ipa/.hap)或 appPackage+bundleId+入口(已安装场景)
+- 立即调用,不要输出"已收到/请稍候"等待
+- 拿到结果后,基于 summary.total/passed/failed 填充统计表格
 
-**必须同时调用 result-aggregator 的 PlaywrightAdapter 聚合结果(移动端结果也需要)**
+**PC客户端E2E测试(macOS / Windows 桌面应用)** → 调用 desktop-e2e-invoker
+- 同样支持自动判定:Windows 用例(pywinauto / WinAppDriver / .exe)、macOS 用例(atomacos / .app / bundleId)
+- Windows 需 Windows 执行机;iOS / macOS 驱动需 macOS 主机。环境不具备时执行器会返回 ENV_NOT_READY + 整改清单,如实转述给用户
+
+**必须同时调用 result-aggregator 的 PlaywrightAdapter 聚合结果(移动端与 PC 客户端结果也需要)**
 
 - 如果 Skill 返回为空/无实质结果,说明 Skill 未执行,必须明确"Skill 未实际调用,请检查后端日志",不能伪造表格
 - 绝对禁止:不调用 Skill 就直接输出测试记录。这会被质量审核一票否决`,
@@ -8652,8 +8676,75 @@ const SKILL_EXECUTORS = {
   'mobile-e2e-invoker': {
     modulePath: path.join(SKILLS_DIR, 'ui-e2e-executor', 'backend', 'mobile-e2e-invoker.js'),
     main: 'executeMobileE2E',
-    schema: 'execute_mobile_e2e',
-    description: '跨平台移动端E2E自动化测试（Android/iOS/HarmonyOS）',
+    description: '移动App功能测试执行器(Android / iOS / HarmonyOS 鸿蒙):通过 Appium W3C 协议驱动真机/模拟器,按用例步骤操作原生控件并产出 UTRM 结果。platform 不传时,执行器会根据【用例文件/测试脚本/需求描述】自动判定目标平台;若判定结果不是移动端,会返回 ROUTE_MISMATCH 并指明应改调的工具。',
+    parameters: {
+      type: 'object',
+      properties: {
+        platform: { type: 'string', description: '目标平台 android / ios / harmony。**留空则由执行器自动判定**(推荐,智能体无需人工声明)', enum: ['android', 'ios', 'harmony'] },
+        text: { type: 'string', description: '需求描述 / 测试范围说明,参与平台自动判定' },
+        caseFile: { type: 'string', description: '用例文件路径(.xlsx/.csv/.md/.json)或用例正文,参与平台自动判定' },
+        testScript: { type: 'string', description: '测试脚本路径或脚本内容(Appium/Espresso/XCUITest/Hypium 等),参与平台自动判定' },
+        goal: { type: 'string', description: 'mode=intent 时的自然语言测试目标' },
+        mode: { type: 'string', description: 'script(默认)=按 steps 执行; intent=意图驱动:模型临场观察控件树决定下一步并自动生成断言', enum: ['script', 'intent'] },
+        cases: {
+          type: 'array',
+          description: '场景数组。每项 { name, steps:[...] };intent 模式下每项可只给 { name, goal }。action 支持 click/tap/fill/type/clear/press/swipe/scroll/wait/waitFor/expectVisible/expectHidden/expectNotExists/expectText/expectValue/screenshot/launch/restart/close/back/hideKeyboard/goto',
+          items: { type: 'object' },
+        },
+        steps: { type: 'array', description: '单场景简写(与 cases 二选一)', items: { type: 'object' } },
+        appPath: { type: 'string', description: '安装包路径(.apk / .ipa / .hap)' },
+        appPackage: { type: 'string', description: 'Android 包名(与 appActivity 配对,要求 App 已安装)' },
+        appActivity: { type: 'string', description: 'Android 入口 Activity' },
+        bundleId: { type: 'string', description: 'iOS Bundle ID' },
+        bundleName: { type: 'string', description: '鸿蒙 bundleName' },
+        abilityName: { type: 'string', description: '鸿蒙 abilityName' },
+        deviceName: { type: 'string', description: '设备/模拟器名称' },
+        platformVersion: { type: 'string', description: '系统版本' },
+        udid: { type: 'string', description: '设备唯一标识(多设备时强烈建议传入)' },
+        automationName: { type: 'string', description: '覆盖默认驱动名(UiAutomator2 / XCUITest / HarmonyOS)' },
+        noReset: { type: 'boolean', description: '不重置应用状态,默认 true' },
+        fullReset: { type: 'boolean', description: '执行前卸载重装应用,默认 false' },
+        appiumUrl: { type: 'string', description: 'Appium Server 地址,默认 http://127.0.0.1:4723;执行机在远端时填远端地址' },
+        capabilities: { type: 'object', description: '额外的 Appium capabilities,会合并覆盖默认值' },
+        timeout: { type: 'number', description: '单步超时(ms),默认 15000' },
+        vars: { type: 'object', description: '初始变量,供 {{var}} 引用' },
+        restartAppBetweenCases: { type: 'boolean', description: '每个用例前重启 App,保证用例互相隔离' },
+        screenshotOnFail: { type: 'boolean', description: '失败时截图,默认 true' },
+        screenshotOnSuccess: { type: 'boolean', description: '成功时截图,默认 false' },
+        stopOnFail: { type: 'boolean', description: '失败后中止后续场景,默认 false' },
+      },
+    },
+  },
+  'desktop-e2e-invoker': {
+    modulePath: path.join(SKILLS_DIR, 'ui-e2e-executor', 'backend', 'desktop-e2e-invoker.js'),
+    main: 'executeDesktopE2E',
+    description: 'PC客户端功能测试执行器(Windows / macOS 桌面应用):通过 Appium Windows 驱动 / WinAppDriver / mac2 驱动操作原生桌面控件并产出 UTRM 结果。platform 不传时按【用例文件/测试脚本/需求描述】自动判定;Windows 用例需在 Windows 执行机上运行并把地址传给 winAppDriverUrl。',
+    parameters: {
+      type: 'object',
+      properties: {
+        platform: { type: 'string', description: '目标平台 windows / mac。**留空则由执行器自动判定**', enum: ['windows', 'mac'] },
+        text: { type: 'string', description: '需求描述 / 测试范围说明,参与平台自动判定' },
+        caseFile: { type: 'string', description: '用例文件路径或正文,参与平台自动判定' },
+        testScript: { type: 'string', description: '测试脚本路径或内容(WinAppDriver / pywinauto / atomacos 等),参与平台自动判定' },
+        goal: { type: 'string', description: 'mode=intent 时的自然语言测试目标' },
+        mode: { type: 'string', description: 'script(默认)=按 steps 执行; intent=意图驱动', enum: ['script', 'intent'] },
+        cases: { type: 'array', description: '场景数组,每项 { name, steps:[...] };动作同移动端执行器', items: { type: 'object' } },
+        steps: { type: 'array', description: '单场景简写', items: { type: 'object' } },
+        windowsAppId: { type: 'string', description: 'Windows 应用标识(形如 Microsoft.WindowsCalculator_8wekyb3d8bbwe!App)' },
+        appPath: { type: 'string', description: '应用路径(.exe / .app)' },
+        bundleId: { type: 'string', description: 'macOS Bundle ID' },
+        appTopLevelWindow: { type: 'string', description: 'Windows 顶层窗口句柄(十六进制字符串)' },
+        driverMode: { type: 'string', description: 'winappdriver=直连 WinAppDriver(caps 不带 appium: 前缀);留空走 Appium', enum: ['appium', 'winappdriver'] },
+        winAppDriverUrl: { type: 'string', description: 'WinAppDriver / Appium 地址,默认 http://127.0.0.1:4723' },
+        automationName: { type: 'string', description: '覆盖默认驱动名(Windows / mac2)' },
+        capabilities: { type: 'object', description: '额外的 capabilities,会合并覆盖默认值' },
+        timeout: { type: 'number', description: '单步超时(ms),默认 15000' },
+        vars: { type: 'object', description: '初始变量,供 {{var}} 引用' },
+        restartAppBetweenCases: { type: 'boolean', description: '每个用例前重启应用' },
+        screenshotOnFail: { type: 'boolean', description: '失败时截图,默认 true' },
+        stopOnFail: { type: 'boolean', description: '失败后中止后续场景,默认 false' },
+      },
+    },
   },
 
   'compatibility-coordinator-invoker': {
@@ -8887,7 +8978,7 @@ const SKILL_EXECUTORS = {
 };
 const AGENT_EXECUTABLE_SKILLS = {
   // 免脚本直执通道置于首位:无现成脚本时(用例文档/步骤/URL+凭证)直接执行,无需先生成脚本
-  'ui-e2e-executor': ['ui-direct-invoker', 'ui-test-tool-invoker', 'mobile-e2e-invoker'],
+  'ui-e2e-executor': ['ui-direct-invoker', 'ui-test-tool-invoker', 'mobile-e2e-invoker', 'desktop-e2e-invoker'],
   'api-executor': ['api-direct-invoker', 'api-test-tool-invoker'],
   // V1.0 核心智能体:强制调用专业技能
   'test-case-generator': ['9dem-executor'],  // 用例生成必须走九维穷举
