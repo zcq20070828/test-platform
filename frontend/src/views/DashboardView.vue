@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMainStore } from '@/stores/main'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import StatCard from '@/components/StatCard.vue'
+// 【平台瘦身 2026-10-14】StatCard 随顶部统计卡片移除（组件文件保留，当前无其他引用方）
 import DashboardChatPanel from '@/components/DashboardChatPanel.vue'
 import type { AttachmentFile, ChatMessage } from '@/types'
 import { getAuthHeaders, request, taskApi } from '@/api'
@@ -263,39 +263,7 @@ watch(() => store.tasks, (newTasks) => {
   }
 }, { deep: true })
 
-// 使用 store 的 stats,如果为空则用静态计算
-const stats = computed(() => {
-  // 如果有实时统计数据,优先使用
-  if (store.stats) {
-    return [
-      { icon: '🤖', value: store.stats.agents?.total ?? 0, label: 'Agent总数' },
-      { icon: '⚡', value: store.stats.tasks?.running ?? 0, label: '执行中' },
-      { icon: '📋', value: store.stats.tasks?.total ?? 0, label: '任务总数' },
-      { icon: '✅', value: store.stats.tasks?.completed ?? 0, label: '已完成' },
-      { icon: '📚', value: store.stats.knowledge?.docs ?? 0, label: '知识库文档' },
-      { icon: '⏱️', value: store.stats.system?.uptime ? formatUptime(store.stats.system.uptime) : '-', label: '运行时长' }
-    ]
-  }
-  // 回退到 store 计算属性
-  return [
-    { icon: '🤖', value: store.agentCount, label: 'Agent总数' },
-    { icon: '⚡', value: store.runningCount, label: '执行中' },
-    { icon: '📋', value: store.taskCount, label: '任务总数' },
-    { icon: '✅', value: store.completedCount, label: '已完成' },
-    { icon: '📚', value: store.knowledgeDocs.length, label: '知识库文档' },
-    { icon: '⏱️', value: store.avgTaskTime || '-', label: '平均耗时' }
-  ]
-})
-
-// 格式化运行时长
-function formatUptime(seconds: number) {
-  const hours = Math.floor(seconds / 3600)
-  const mins = Math.floor((seconds % 3600) / 60)
-  if (hours > 0) {
-    return `${hours}小时${mins}分`
-  }
-  return `${mins}分钟`
-}
+// 【平台瘦身 2026-10-14】顶部统计卡片移除后，stats computed 与 formatUptime 已无使用场景，一并删除。
 
 
 
@@ -670,16 +638,8 @@ onUnmounted(() => {
 
 <template>
   <div class="dashboard" data-testid="dashboard-page">
-    <!-- 统计卡片 -->
-    <div class="stats-grid" data-testid="stats-grid">
-      <StatCard
-        v-for="(stat, index) in stats"
-        :key="index"
-        :icon="stat.icon"
-        :value="stat.value"
-        :label="stat.label"
-      />
-    </div>
+    <!-- 【平台瘦身 2026-10-14】顶部统计卡片（Agent总数/执行中/任务总数/已完成/知识库文档/运行时长）已移除。
+         恢复方法：见 git 历史 494ef6b 之前的 DashboardView.vue（stats-grid 模板 + stats computed + StatCard）。 -->
 
     <!-- 智能体选择器 -->
     <div class="agent-selector" :class="{ 'has-running-task': hasRunningTask }">
@@ -770,12 +730,7 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 8px;
-  flex-shrink: 0;
-}
+/* 【平台瘦身 2026-10-14】顶部统计卡片样式（stats-grid）已随模板一并移除 */
 
 /* 智能体选择器样式 */
 .agent-selector {
@@ -919,10 +874,6 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1200px) {
-  .stats-grid {
-    grid-template-columns: repeat(3, 1fr);
-  }
-
   .agent-selector {
     flex-direction: column;
     align-items: flex-start;
