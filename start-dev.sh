@@ -9,6 +9,10 @@
 #   ./start-dev.sh restart    # 停止后重新启动
 #   ./start-dev.sh status     # 查看健康状态
 #
+# 端口可用环境变量覆盖(多人各自错开):
+#   BACKEND_PORT=3003 FRONTEND_PORT=5175 ./start-dev.sh
+# 开发库跑在本机的人可加 AUTO_DB_HOST=1, 换网络后自动校正 .env 里的 DB_HOST。
+#
 # 设计要点(沉淀自 2026-09-17 踩坑):
 #   1) 2026-10-14 用户拍板: 后端端口统一为 3002(与 .env 的 PORT=3002、vite 代理
 #      target 一致)。历史背景: 早期为避开 QClaw 监督进程占用 3002 而错开到 3888,
@@ -26,13 +30,17 @@
 set -u
 
 # ---------- 配置(可按需修改) ----------
-WS_DIR="/Users/zhaochengqing/WorkBuddy/2026-08-13-20-26-38/test-platform"
+# 项目根目录按脚本位置推导, 任何人 clone 到任何路径都能直接用
+WS_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$WS_DIR/backend"
 FRONTEND_DIR="$WS_DIR/frontend"
-NODE_BIN="/Users/zhaochengqing/.workbuddy/binaries/node/versions/22.12.0/bin/node"
+# 优先用 PATH 里的 node; 找不到再回退到 WorkBuddy 内置 (仅负责人机器上有)
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+[ -z "$NODE_BIN" ] && NODE_BIN="$HOME/.workbuddy/binaries/node/versions/22.12.0/bin/node"
 
-BACKEND_PORT=3002
-FRONTEND_PORT=5174
+# 端口可由环境变量覆盖, 多人各自错开(见 ONBOARDING.md 附录 B)
+BACKEND_PORT="${BACKEND_PORT:-3002}"
+FRONTEND_PORT="${FRONTEND_PORT:-5174}"
 BACKEND_URL="http://localhost:$BACKEND_PORT"
 VITE_TARGET="http://localhost:$BACKEND_PORT"
 
@@ -40,10 +48,6 @@ BACKEND_LOG="/tmp/wb-backend-$BACKEND_PORT.log"
 FRONTEND_LOG="/tmp/wb-vite-$FRONTEND_PORT.log"
 BACKEND_PID="/tmp/wb-backend-$BACKEND_PORT.pid"
 FRONTEND_PID="/tmp/wb-vite-$FRONTEND_PORT.pid"
-
-# 进程匹配(作用域限定本项目, 不影响其它服务)
-BACKEND_MATCH="$WS_DIR/backend/server.js"
-FRONTEND_MATCH="$WS_DIR/frontend/node_modules/vite/bin/vite.js"
 
 # ---------- 关键: 关闭 WorkBuddy 的 node-safe-delete-shim ----------
 # 该 shim 会拦截 vite 清理 .vite/deps 缓存(>50 文件)导致启动中止
@@ -93,13 +97,16 @@ start_backend(){
   DB_ENV_ARGS=()
   if [ -f "$BACKEND_DIR/.env" ]; then
     # IP 自愈：仅当.env 的 DB_HOST 像内网 IP（非 localhost）且与本机当前探测值不符时改写
+    # 注意：只有「库就跑在本机」的人才该开启（负责人）。连别人库的成员必须保持关闭，
+    #       否则会被改成自己的 IP 导致连不上。用 AUTO_DB_HOST=1 显式开启。
     local cur_ip env_ip
-    cur_ip="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}' | xargs -I{} ipconfig getifaddr {} 2>/dev/null)"
-    env_ip="$(grep -E '^DB_HOST=' "$BACKEND_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '"'"'"' \r')"
-    if [ -n "$cur_ip" ] && [ -n "$env_ip" ] && [ "$env_ip" != "localhost" ] && [ "$env_ip" != "$cur_ip" ]; then
-      sed -i '' "s|^DB_HOST=.*|DB_HOST=${cur_ip}|" "$BACKEND_DIR/.env" 2>/dev/null \
-        && dim "  开发库地址已自动校正: ${env_ip} → ${cur_ip}（本机网络已变化）"
-      env_ip="$cur_ip"
+    if [ "${AUTO_DB_HOST:-0}" = "1" ]; then
+      cur_ip="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}' | xargs -I{} ipconfig getifaddr {} 2>/dev/null)"
+      env_ip="$(grep -E '^DB_HOST=' "$BACKEND_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '"'"'"' \r')"
+      if [ -n "$cur_ip" ] && [ -n "$env_ip" ] && [ "$env_ip" != "localhost" ] && [ "$env_ip" != "$cur_ip" ]; then
+        sed -i '' "s|^DB_HOST=.*|DB_HOST=${cur_ip}|" "$BACKEND_DIR/.env" 2>/dev/null \
+          && dim "  开发库地址已自动校正: ${env_ip} → ${cur_ip}（本机网络已变化）"
+      fi
     fi
     while IFS='=' read -r k v; do
       case "$k" in
@@ -133,6 +140,8 @@ start_frontend(){
 }
 
 # ---------- 停止(按端口发现) ----------
+# 只停监听该端口的进程, 不做全项目 pkill:
+# 同一台机器上可能同时跑着另一组端口(例如负责人 3002 + 自己 3003), 不能误伤。
 stop_by_port(){
   local port="$1"; local name="$2"; local pid
   pid=$(listener_pid "$port")
@@ -145,9 +154,6 @@ stop_by_port(){
   else
     dim "$name($port) 未运行"
   fi
-  # 兜底: 清理本项目路径匹配的残留
-  pkill -f "$BACKEND_MATCH" 2>/dev/null || true
-  pkill -f "$FRONTEND_MATCH" 2>/dev/null || true
 }
 stop_backend(){ stop_by_port "$BACKEND_PORT" "后端"; }
 stop_frontend(){ stop_by_port "$FRONTEND_PORT" "前端"; }

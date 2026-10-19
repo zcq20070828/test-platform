@@ -1,7 +1,12 @@
 # 测试中台 · 多人协作开发指南
 
 > 面向所有参与测试中台建设的研发。看完这一篇就能独立上手。
-> 远程仓库：腾讯云 `42.194.137.114` 的 `/opt/git/test-platform.git`（与生产部署目录完全隔离）
+>
+> **第一次接入请先看 [`ONBOARDING.md`](ONBOARDING.md)** —— 那是逐条命令的小白版，
+> 包含装软件、配 SSH、装依赖、建库、启动、排错的完整流程。本文只讲协作规范。
+>
+> 远程仓库：GitHub <https://github.com/zcq20070828/test-platform>
+> （历史遗留的腾讯云裸库 `42.194.137.114:/opt/git/test-platform.git` 仍可读，但**不再作为主仓库**）
 
 ---
 
@@ -9,41 +14,31 @@
 
 ### 1. 拿到仓库访问权限
 
-向项目负责人（赵成庆）索取以下两项：
+向项目负责人索取：
 
 | 项目 | 内容 |
 |---|---|
-| 仓库账号 | `dev`（Git 专用账号，非 root） |
-| SSH 密钥授权 | 把你本机的公钥交给负责人添加 |
+| 仓库邀请 | 负责人在 GitHub 上邀请你为 Collaborator（Write 权限） |
+| 开发库地址 | 负责人 Mac 的当前内网 IP |
+| AI Key | 团队共用 Key（只能私聊，不要贴群） |
 
-> `dev` 账号已被限制为**只能执行 git 操作**，无法登录服务器、无法执行其他命令。
+> GitHub 仓库当前是 Public，未受邀也能 clone 和查看；
+> 但**推送代码必须被邀请**，否则 `git push` 会被拒绝。
 
 ### 2. 配置 SSH
 
-编辑 `~/.ssh/config`（若已有该文件，追加对应段落，不要覆盖原有内容）：
-
-```
-Host testplatform-git
-    HostName 42.194.137.114
-    User dev
-    Port 22
-    IdentityFile ~/.ssh/id_ed25519
-    IdentitiesOnly yes
-    PreferredAuthentications publickey
-    BatchMode yes
-    StrictHostKeyChecking accept-new
-```
-
-验证连通（应看到仓库分支列表）：
+用你自己的 GitHub 账号生成密钥并上传公钥：
 
 ```bash
-ssh testplatform-git 'git-upload-pack /opt/git/test-platform.git' > /dev/null && echo "连通 OK"
+ssh-keygen -t ed25519 -C "你的邮箱@example.com"
+cat ~/.ssh/id_ed25519.pub        # 复制整行 → https://github.com/settings/ssh/new
+ssh -T git@github.com            # 应显示 Hi <你的用户名>!
 ```
 
 ### 3. 克隆代码
 
 ```bash
-git clone testplatform-git:/opt/git/test-platform.git
+git clone git@github.com:zcq20070828/test-platform.git
 cd test-platform
 ```
 
@@ -51,34 +46,36 @@ cd test-platform
 
 ```bash
 chmod +x setup-dev-env.sh
-./setup-dev-env.sh
+DEV_DB_HOST=<负责人给的IP> DEV_AI_KEY=<负责人给的Key> ./setup-dev-env.sh
 ```
 
 它会自动装依赖、生成 `.env`、填入开发库和 AI 配置、并验证数据库连通。
 
-完成后启动：
+完成后启动（端口按你的编号错开）：
 
 ```bash
-./start-dev.sh
+BACKEND_PORT=3003 FRONTEND_PORT=5175 ./start-dev.sh
 ```
 
 ### 5. 手动配置（若不想用脚本）
 
 ```bash
-cd backend && npm install && cd ..
-cd frontend && npm install && cd ..
+cd backend && npm ci && cd ..
+cd frontend && npm ci && cd ..
 cp backend/.env.example backend/.env
 ```
 
 在 `backend/.env` 里填：
 
 ```ini
-DB_HOST=<问负责人要当前地址，或让 ./setup-dev-env.sh 自动探测填入>
+PORT=3003                 # 你的专属后端端口，见附录「端口规划」
+DB_HOST=<问负责人要当前地址>
 DB_PORT=3306
 DB_USER=appuser
 DB_PASSWORD=apppwd123
 DB_NAME=test_platform_dev
 NODE_ENV=development
+DEEPSEEK_API_KEY=<负责人私聊给你的 Key>
 ```
 
 AI Key **不要写进任何入库的文件**（`.env.example`、脚本、文档都会被提交）。
@@ -101,17 +98,20 @@ echo 'export DEV_AI_KEY=<Key>' >> ~/.zshrc && source ~/.zshrc
 
 > **必读**：`backend/database/db.js` 只读 `process.env`，**不读 `.env` 文件**。
 > 所以 `.env` 里改了 DB 配置后，必须用 `./start-dev.sh` 启动（它会把这些值注入进程环境），
-> 直接 `node server.js` 是不会生效的。
+> 或者在启动前手动 `set -a; source .env; set +a`；直接 `node server.js` 是不会生效的。
 
 > `.env` 已在 `.gitignore` 中排除，**永远不会被提交**，放心填。
 
 ### 6. 启动开发环境
 
 ```bash
-./start-dev.sh          # 默认后端 3002 / 前端 5174
-./start-dev.sh status   # 查看运行状态
+BACKEND_PORT=3003 FRONTEND_PORT=5175 ./start-dev.sh   # 换成你的端口
+./start-dev.sh status   # 查看运行状态（同样带上端口变量）
 ./start-dev.sh stop     # 停止
 ```
+
+> 不设环境变量时默认 3002 / 5174（负责人的配置）。
+> **同一台机器上不要和别人用同一组端口。**
 
 ---
 
@@ -285,13 +285,13 @@ refactor(DB): 全库 TEXT 列统一扩容
 ## 七、常见问题
 
 **Q：`git push` 一直卡住不动？**
-A：检查 `~/.ssh/config` 里是否有 `testplatform-git` 段落且含 `BatchMode yes`。缺少该配置会导致 SSH 反复尝试密码认证而挂起。
+A：大概率是 SSH 连不上。先跑 `ssh -T git@github.com` 确认输出 `Hi <你的用户名>!`；不通说明公钥没加到 GitHub，或网络需要代理。详见 `ONBOARDING.md` 第 3 章。
 
 **Q：`fatal: not a git repository`？**
 A：不在项目目录内。`cd` 到含 `.git` 的目录再执行。
 
 **Q：拉代码时提示 `Permission denied (publickey)`？**
-A：你的公钥还没被加到服务器。执行 `cat ~/.ssh/id_ed25519.pub` 把内容发给负责人。
+A：你的公钥还没加到 GitHub 账号。执行 `cat ~/.ssh/id_ed25519.pub`，把整行粘贴到 <https://github.com/settings/ssh/new>。
 
 **Q：改了 `.env` 的数据库配置但不生效？**
 A：项目**不用 dotenv**，`backend/database/db.js` 只读 `process.env`。所以必须用 `./start-dev.sh` 启动（脚本会注入配置），直接 `node server.js` 不生效。改完记得 `./start-dev.sh restart`。
@@ -327,5 +327,6 @@ A：改完需重启后端：`./start-dev.sh restart`。
 
 ---
 
-**文档版本**：v1.0（2026-10-11 建立多人协作模式）
-**仓库地址**：`testplatform-git:/opt/git/test-platform.git`
+**文档版本**：v1.1（2026-10-19 迁移至 GitHub，补充端口覆盖说明）
+**仓库地址**：<https://github.com/zcq20070828/test-platform>
+**小白版接入指南**：[`ONBOARDING.md`](ONBOARDING.md)
