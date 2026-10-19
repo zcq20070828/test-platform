@@ -11,7 +11,18 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import mysql from 'mysql2/promise';
+import { createRequire } from 'module';
+
+// mysql2 依赖解析（2026-10-19 修复）：
+//   本 skill 位于 qclaw-skills/ 目录下，Node 默认只向上查找祖先 node_modules，
+//   找不到「兄弟目录」test-platform/backend/node_modules，直接 import 'mysql2/promise'
+//   会抛 Cannot find package 'mysql2'，导致 getEvalEngine() 加载失败
+//   → 表现为「评估引擎未加载」，手动评估与定时评估全部不可用。
+//   与 ui-e2e-executor 的 playwright 解析同做法：用 createRequire 显式指定根目录。
+const _requireFromBackend = createRequire(
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..', 'backend', 'package.json')
+);
+const mysql = _requireFromBackend('mysql2/promise');
 
 // 数据库模块
 import * as evalDb from './evaluation-db.js';
