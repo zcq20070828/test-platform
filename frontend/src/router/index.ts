@@ -60,10 +60,18 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    // [已下线-性能监控] 2026-10-19 用户拍板：性能监控暂无业务价值，屏蔽入口。
+    // 恢复方式：删掉 meta 里的 disabled / disabledTip 两行，并取消 AdminDashboardView.vue
+    // 中「📈 性能监控」tab-pane 与 PerformanceView import 的注释即可。
+    // 页面文件 PerformanceView.vue 保留未删，可随时还原。
     path: '/performance',
     name: 'Performance',
     component: () => import('@/views/PerformanceView.vue'),
-    meta: { requiresAuth: true }
+    meta: {
+      requiresAuth: true,
+      disabled: true,
+      disabledTip: '性能监控已下线，暂不开放'
+    }
   },
   {
     path: '/stats',

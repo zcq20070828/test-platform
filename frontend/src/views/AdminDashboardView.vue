@@ -17,10 +17,15 @@
       <el-tab-pane name="tools" label="🛠️ 工具管理">
         <AdminToolsView :embedded="true" />
       </el-tab-pane>
-      <!-- 性能监控 -->
+      <!-- [已下线-性能监控] 2026-10-19 用户拍板：性能监控暂无业务价值，先屏蔽。
+           恢复方式：取消本段注释，并取消下方 import PerformanceView 的注释；
+                    同时删除 router/index.ts 中 /performance 的 meta.disabled / disabledTip。
+           页面文件 views/PerformanceView.vue 保留未删，可随时还原。 -->
+      <!--
       <el-tab-pane name="performance" label="📈 性能监控">
         <PerformanceView />
       </el-tab-pane>
+      -->
     </el-tabs>
   </div>
 </template>
@@ -31,7 +36,8 @@ import StatsView from './StatsView.vue'
 import UserManagementView from './UserManagementView.vue'
 import SettingsView from './SettingsView.vue'
 import AdminToolsView from './AdminToolsView.vue'
-import PerformanceView from './PerformanceView.vue'
+// [已下线-性能监控] 配套上方 tab-pane 注释一并停用，恢复时取消注释
+// import PerformanceView from './PerformanceView.vue'
 
 const activeTab = ref('stats')
 </script>
