@@ -51,6 +51,8 @@ export interface Task {
   progress?: number
   // 数据来源：分步测试任务 or 测试流水线运行记录
   source?: 'task' | 'workflow'
+  // 任务所属用户的显示名（后端由 users 表 JOIN 得出，任务列表"用户"列使用）
+  username?: string | null
   // 测试流水线步骤数
   workflowSteps?: number
   // AI审核相关
