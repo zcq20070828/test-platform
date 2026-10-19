@@ -361,6 +361,16 @@ export const knowledgeApi = {
     return res
   },
 
+  // 抓取网络链接正文并入库（后端 POST /api/kb/fetch-url）
+  // 需要登录才能访问的云文档（腾讯文档/飞书/语雀）抓不到正文，后端会返回 EMPTY_CONTENT 提示
+  async fetchWebLink(url: string, name?: string, kbType?: string): Promise<any> {
+    const res = await request('/api/kb/fetch-url', {
+      method: 'POST',
+      body: JSON.stringify({ url, name, kbType: kbType || 'general' })
+    })
+    return res
+  },
+
   // 从本地路径（NAS/Git）导入文件到知识库
   async importFromPaths(paths: string[], kbType: string): Promise<{ imported: number; results: any[]; errors: any[] } | null> {
     const res = await request<{ imported: number; results: any[]; errors: any[] }>('/api/kb/import', {
@@ -695,6 +705,36 @@ export const evaluationApi = {
   async getStats(): Promise<any | null> {
     const res = await request<any>('/api/evaluation/stats')
     return res.success ? res.data! : null
+  },
+
+  // 获取定时评估配置（后端按 userId 隔离存储）
+  async getSchedule(): Promise<any | null> {
+    const res = await request<{ schedule: any }>('/api/evaluation/schedule')
+    return res.success ? (res.data?.schedule ?? null) : null
+  },
+
+  // 新建/更新定时评估配置
+  async saveSchedule(body: {
+    enabled?: boolean
+    freq: 'daily' | 'weekly'
+    time: string
+    weekday?: number | null
+    mode?: 'rule' | 'both'
+    daysBack?: number
+    limitPerAgent?: number
+    agentIds?: string[]
+  }): Promise<any | null> {
+    const res = await request('/api/evaluation/schedule', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    })
+    return res.success ? res.data : null
+  },
+
+  // 删除定时评估配置
+  async deleteSchedule(): Promise<boolean> {
+    const res = await request('/api/evaluation/schedule', { method: 'DELETE' })
+    return res.success
   }
 }
 

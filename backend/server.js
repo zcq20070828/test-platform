@@ -3862,33 +3862,276 @@ app.post('/api/kb/import', authenticate, async (req, res) => {
   res.json({ imported: results.length, results, errors });
 });
 
-// 凭证管理 API
-app.get('/api/credentials', authenticate, (req, res) => {
-  res.json({ git: null, nas: null });
+// ============================================================
+// 凭证管理 API（Git / NAS）—— 2026-10-19 由占位改为真实实现
+// ------------------------------------------------------------
+// 存储：runtime/credentials.json，按 userId 隔离；
+//       敏感字段（token / privateKey / password）用 AES-256-GCM 加密落盘，
+//       密钥派生自 LOCAL_JWT_SECRET，接口对外只返回脱敏视图。
+// 验证：
+//   - Git：给了 repoUrl 就做真实 `git ls-remote`（https 注入 token / ssh 指定私钥）；
+//          没给 repoUrl 时只做本地可用性校验，并如实标注 mode=local-check。
+//   - NAS：macOS 原生 `smbutil view` 真实列举共享（Windows/Linux 返回 ENV_NOT_READY）。
+// 安全：所有外部命令都用 execFile 传参数数组，不经 shell，杜绝命令注入。
+// ============================================================
+const CRED_FILE = path.join(RUNTIME_ROOT, 'credentials.json');
+
+async function loadCredStore() {
+  try {
+    return JSON.parse(await fs.readFile(CRED_FILE, 'utf8'));
+  } catch (_) {
+    return {};
+  }
+}
+
+async function saveCredStore(store) {
+  await fs.mkdir(RUNTIME_ROOT, { recursive: true });
+  await fs.writeFile(CRED_FILE, JSON.stringify(store, null, 2), 'utf8');
+}
+
+async function credKey() {
+  const nodeCrypto = await import('node:crypto');
+  return nodeCrypto.createHash('sha256').update(String(ssoConfig?.jwtSecret || 'test-platform')).digest();
+}
+
+async function encryptSecret(plain) {
+  if (!plain) return '';
+  const nodeCrypto = await import('node:crypto');
+  const key = await credKey();
+  const iv = nodeCrypto.randomBytes(12);
+  const cipher = nodeCrypto.createCipheriv('aes-256-gcm', key, iv);
+  const enc = Buffer.concat([cipher.update(String(plain), 'utf8'), cipher.final()]);
+  return 'enc:' + iv.toString('base64') + ':' + cipher.getAuthTag().toString('base64') + ':' + enc.toString('base64');
+}
+
+async function decryptSecret(v) {
+  if (!v) return '';
+  if (typeof v === 'string' && v.startsWith('enc:')) {
+    try {
+      const nodeCrypto = await import('node:crypto');
+      const key = await credKey();
+      const parts = v.split(':');
+      const d = nodeCrypto.createDecipheriv('aes-256-gcm', key, Buffer.from(parts[1], 'base64'));
+      d.setAuthTag(Buffer.from(parts[2], 'base64'));
+      return Buffer.concat([d.update(Buffer.from(parts[3], 'base64')), d.final()]).toString('utf8');
+    } catch (_) {
+      return '';
+    }
+  }
+  return String(v); // 兼容历史明文
+}
+
+// 对外只暴露脱敏视图，敏感内容不出网
+function publicCredView(rec) {
+  const g = rec?.git;
+  const n = rec?.nas;
+  return {
+    git: g ? { type: g.type, hasToken: !!g.token, hasKey: !!(g.privateKey || g.keyPath), keyPath: g.keyPath || null, updatedAt: g.updatedAt || null } : null,
+    nas: n ? { type: n.type, host: n.host, share: n.share, username: n.username, workgroup: n.workgroup, updatedAt: n.updatedAt || null } : null,
+  };
+}
+
+app.get('/api/credentials', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  const store = await loadCredStore();
+  res.json(publicCredView(store[userId] || {}));
 });
 
-app.put('/api/credentials/git', authenticate, (req, res) => {
-  res.json({ ok: true, message: 'Git 凭证已保存' });
+app.put('/api/credentials/git', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  if (!userId) return res.status(401).json({ ok: false, error: '无法识别用户' });
+  const b = req.body || {};
+  const store = await loadCredStore();
+  const rec = store[userId] || {};
+  rec.git = {
+    type: b.type === 'ssh' ? 'ssh' : 'https',
+    token: b.token ? await encryptSecret(b.token) : (rec.git?.token || ''),
+    privateKey: b.privateKey ? await encryptSecret(b.privateKey) : (rec.git?.privateKey || ''),
+    keyPath: b.keyPath || rec.git?.keyPath || '',
+    updatedAt: new Date().toISOString(),
+  };
+  store[userId] = rec;
+  await saveCredStore(store);
+  res.json({ ok: true, message: 'Git 凭证已保存', git: publicCredView(rec).git });
 });
 
-app.put('/api/credentials/nas', authenticate, (req, res) => {
-  res.json({ ok: true, message: 'NAS 凭证已保存' });
+app.put('/api/credentials/nas', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  if (!userId) return res.status(401).json({ ok: false, error: '无法识别用户' });
+  const b = req.body || {};
+  const store = await loadCredStore();
+  const rec = store[userId] || {};
+  rec.nas = {
+    type: b.type || 'smb',
+    host: b.host || '',
+    share: b.share || '',
+    username: b.username || '',
+    password: b.password ? await encryptSecret(b.password) : (rec.nas?.password || ''),
+    workgroup: b.workgroup || '',
+    updatedAt: new Date().toISOString(),
+  };
+  store[userId] = rec;
+  await saveCredStore(store);
+  res.json({ ok: true, message: 'NAS 凭证已保存', nas: publicCredView(rec).nas });
 });
 
-app.delete('/api/credentials/:type', authenticate, (req, res) => {
-  res.json({ ok: true, message: `${req.params.type} 凭证已删除` });
+app.delete('/api/credentials/:type', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  const type = req.params.type;
+  const store = await loadCredStore();
+  if (store[userId] && type && store[userId][type]) {
+    delete store[userId][type];
+    await saveCredStore(store);
+  }
+  res.json({ ok: true, message: `${type} 凭证已删除` });
 });
 
-app.post('/api/credentials/git/verify', (req, res) => {
-  res.json({ success: false, message: 'Git 凭证验证功能暂未实现' });
+// 用 execFile 传参数数组（不经 shell），返回 { ok, stdout, stderr }
+function runCmd(bin, args, timeoutMs = 25000) {
+  return new Promise((resolve) => {
+    execFile(bin, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      resolve({ ok: !err, code: err ? err.code : 0, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+  });
+}
+
+app.post('/api/credentials/git/verify', authenticate, async (req, res) => {
+  const b = req.body || {};
+  const repoUrl = String(b.repoUrl || '').trim();
+
+  // 没有仓库地址时无法做连通测试，只做本地可用性校验（如实标注，不谎报成功）
+  if (!repoUrl) {
+    if (b.type === 'ssh') {
+      const keyPath = b.keyPath;
+      if (keyPath) {
+        try {
+          await fs.access(keyPath);
+          return res.json({ success: true, mode: 'local-check', message: `私钥文件可访问：${keyPath}（提供仓库地址可做真实连通测试）` });
+        } catch (_) {
+          return res.json({ success: false, mode: 'local-check', message: `私钥文件不可访问：${keyPath}` });
+        }
+      }
+      const hasKey = !!(b.privateKey && String(b.privateKey).includes('PRIVATE KEY'));
+      return res.json({
+        success: hasKey,
+        mode: 'local-check',
+        message: hasKey ? '私钥格式正确（提供仓库地址可做真实连通测试）' : '未提供私钥内容或格式不正确',
+      });
+    }
+    const hasToken = !!(b.token && String(b.token).length >= 8);
+    return res.json({
+      success: hasToken,
+      mode: 'local-check',
+      message: hasToken ? 'Token 已提供（提供仓库地址可做真实连通测试）' : 'Token 为空或过短',
+    });
+  }
+
+  // 真实连通测试：git ls-remote
+  try {
+    let args = ['ls-remote', '--heads', repoUrl];
+    let env = { ...process.env };
+    let tmpKey = null;
+
+    if (b.type === 'ssh') {
+      const nodeCrypto = await import('node:crypto');
+      let keyContent = b.privateKey || '';
+      if (!keyContent && b.keyPath) {
+        try { keyContent = await fs.readFile(b.keyPath, 'utf8'); } catch (_) { /* 忽略 */ }
+      }
+      if (!keyContent) {
+        return res.json({ success: false, message: 'SSH 方式需要 privateKey 或 keyPath' });
+      }
+      tmpKey = path.join(os.tmpdir(), `gitkey-${nodeCrypto.randomBytes(6).toString('hex')}`);
+      await fs.writeFile(tmpKey, keyContent, { mode: 0o600 });
+      env.GIT_SSH_COMMAND = `ssh -i ${tmpKey} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10`;
+    } else if (b.token) {
+      // https: 注入 token（兼容 GitHub / GitLab / 自建）
+      try {
+        const u = new URL(repoUrl);
+        u.username = 'oauth2';
+        u.password = b.token;
+        args = ['ls-remote', '--heads', u.toString()];
+      } catch (_) {
+        return res.json({ success: false, message: '仓库地址格式不正确' });
+      }
+    }
+
+    const r = await new Promise((resolve) => {
+      execFile('git', args, { timeout: 30000, env, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+        resolve({ ok: !err, stdout: String(stdout || ''), stderr: String(stderr || '') });
+      });
+    });
+    if (tmpKey) { try { await fs.unlink(tmpKey); } catch (_) { /* 忽略 */ } }
+
+    if (r.ok) {
+      const refs = r.stdout.split('\n').filter((l) => l.trim()).length;
+      return res.json({ success: true, mode: 'remote', message: `连通成功，读取到 ${refs} 个远端分支引用` });
+    }
+    return res.json({ success: false, mode: 'remote', message: (r.stderr || 'git ls-remote 失败').split('\n')[0].slice(0, 200) });
+  } catch (e) {
+    return res.json({ success: false, message: `验证异常: ${e.message}` });
+  }
 });
 
-app.post('/api/credentials/nas/verify', (req, res) => {
-  res.json({ success: false, message: 'NAS 凭证验证功能暂未实现' });
+app.post('/api/credentials/nas/verify', authenticate, async (req, res) => {
+  const b = req.body || {};
+  const host = String(b.host || '').trim();
+  if (!host) return res.json({ success: false, message: '缺少 NAS 主机地址' });
+  if (process.platform !== 'darwin') {
+    return res.json({
+      success: false,
+      error: 'ENV_NOT_READY',
+      message: 'SMB 验证依赖 macOS 的 smbutil，当前系统不是 macOS',
+      envGuide: ['Windows 可用 net view \\\\host', 'Linux 可用 smbclient -L //host -U user'],
+    });
+  }
+  const user = b.username ? encodeURIComponent(b.username) : '';
+  const pass = b.password ? encodeURIComponent(b.password) : '';
+  const target = `//${user}${pass ? ':' + pass : ''}${user ? '@' : ''}${host}`;
+  const r = await runCmd('/usr/bin/smbutil', ['view', target], 25000);
+  if (r.ok) {
+    const shares = (r.stdout || '').split('\n')
+      .slice(1) // 去掉表头
+      .map((l) => l.trim().split(/\s{2,}|\t/)[0])
+      .filter((s) => s && s !== 'Share' && !/^-+$/.test(s));
+    return res.json({ success: true, message: `连接成功，可见 ${shares.length} 个共享`, shares });
+  }
+  return res.json({ success: false, message: (r.stderr || r.stdout || 'smbutil 连接失败').split('\n')[0].slice(0, 200) });
 });
 
-app.get('/api/smb/browse', (req, res) => {
-  res.status(501).json({ error: 'SMB 浏览功能暂未实现' });
+app.get('/api/smb/browse', authenticate, async (req, res) => {
+  const host = String(req.query.host || '').trim();
+  if (!host) return res.status(400).json({ success: false, error: '缺少 host 参数' });
+  if (process.platform !== 'darwin') {
+    return res.status(501).json({
+      success: false,
+      error: 'ENV_NOT_READY',
+      message: 'SMB 浏览依赖 macOS 的 smbutil，当前系统不是 macOS',
+      envGuide: ['Windows 可用 net view \\\\host', 'Linux 可用 smbclient -L //host -U user'],
+    });
+  }
+
+  // 凭证优先取已保存的 NAS 凭证，其次用查询参数（内网工具，密码仅兜底）
+  const userId = req.user?.id || req.user?.sub;
+  const store = await loadCredStore();
+  const saved = store[userId]?.nas;
+  let user = String(req.query.username || saved?.username || '');
+  let pass = String(req.query.password || (saved?.password ? await decryptSecret(saved.password) : ''));
+  if (saved?.host && !req.query.username && saved.host === host) {
+    pass = await decryptSecret(saved.password);
+  }
+
+  const enc = (s) => encodeURIComponent(s || '');
+  const target = `//${user}${pass ? ':' + enc(pass) : ''}${user ? '@' : ''}${host}`;
+  const r = await runCmd('/usr/bin/smbutil', ['view', target], 25000);
+  if (!r.ok) {
+    return res.json({ success: false, error: (r.stderr || r.stdout || 'smbutil 浏览失败').split('\n')[0].slice(0, 200) });
+  }
+  const shares = (r.stdout || '').split('\n')
+    .slice(1)
+    .map((l) => l.trim().split(/\s{2,}|\t/)[0])
+    .filter((s) => s && s !== 'Share' && !/^-+$/.test(s));
+  res.json({ success: true, host, shares, source: 'smbutil' });
 });
 
 // ============================================================================
@@ -4117,6 +4360,154 @@ app.post('/api/kb/upload', authenticate, (req, res, next) => {
   });
 
   res.status(201).json(doc);
+});
+
+/**
+ * POST /api/kb/fetch-url —— 抓取网络链接正文并入库（知识库「网络链接」入口的真实实现）
+ * ============================================================
+ * 背景：此前前端「网络链接」上传只是一个占位提示（"功能开发中"），没有后端抓取能力。
+ * 现在补上：抓取 URL → 剥离 HTML 保留正文 → 落成 .md 文档 → 触发向量化，
+ * 与「本地文件上传」走完全相同的入库/向量化链路。
+ *
+ * 依赖：仅 Node 内置 fetch（Node >= 18）。零新增 npm 依赖。
+ *
+ * 安全约束：
+ *   1. 仅允许 http / https（拒绝 file:// 等其它协议）；
+ *   2. 单次抓取上限 8MB、超时 20 秒；
+ *   3. 文件名做净化（去路径分隔符与控制字符），杜绝路径穿越写库。
+ *
+ * 注：需要登录才能访问的云文档（腾讯文档 / 飞书 / 语雀等）抓不到正文，
+ *     会明确返回 EMPTY_CONTENT 并提示先导出为文件再上传，不制造空文档。
+ */
+function htmlToMarkdownish(html) {
+  let s = String(html || '');
+  // 去掉脚本/样式/注释（这些不是正文）
+  s = s.replace(/<script[\s\S]*?<\/script>/gi, ' ');
+  s = s.replace(/<style[\s\S]*?<\/style>/gi, ' ');
+  s = s.replace(/<!--[\s\S]*?-->/g, ' ');
+  const titleRaw = (s.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '';
+  // 块级标签转换行，保留段落结构
+  s = s.replace(/<\/(p|div|li|h[1-6]|tr|section|article|td)>/gi, '\n');
+  s = s.replace(/<(br|hr)\s*\/?>/gi, '\n');
+  s = s.replace(/<[^>]+>/g, '');
+  const decode = (t) => String(t)
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+  let text = decode(s)
+    .replace(/[ \t\u00a0]+/g, ' ')
+    .replace(/\n[ \t]*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return { title: decode(titleRaw).replace(/\s+/g, ' ').trim(), text };
+}
+
+function sanitizeKBFileName(name) {
+  return String(name || '')
+    .replace(/[\\/:*?"<>|]/g, '_')   // 路径分隔符与 Windows 非法字符
+    .replace(/[\x00-\x1f\x7f]/g, '') // 控制字符
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+}
+
+app.post('/api/kb/fetch-url', authenticate, async (req, res) => {
+  const { url, name, kbType = 'general' } = req.body || {};
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ success: false, error: '缺少 url' });
+  }
+  let parsed;
+  try {
+    parsed = new URL(url.trim());
+  } catch (_) {
+    return res.status(400).json({ success: false, error: 'URL 格式不正确' });
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return res.status(400).json({ success: false, error: '仅支持 http / https 链接' });
+  }
+
+  const MAX_BYTES = 8 * 1024 * 1024;
+  let html = '';
+  try {
+    const resp = await fetch(parsed.href, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20000),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; AITestPlatform-KBFetcher/1.0)',
+        'Accept': 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
+      },
+    });
+    if (!resp.ok) {
+      return res.status(502).json({ success: false, error: `抓取失败: 目标返回 HTTP ${resp.status}` });
+    }
+    const cl = Number(resp.headers.get('content-length') || 0);
+    if (cl > MAX_BYTES) {
+      return res.status(413).json({ success: false, error: '页面超过 8MB，请先导出为文件再上传' });
+    }
+    const buf = await resp.arrayBuffer();
+    if (buf.byteLength > MAX_BYTES) {
+      return res.status(413).json({ success: false, error: '页面超过 8MB，请先导出为文件再上传' });
+    }
+    // 按 Content-Type 的 charset 解码，缺失时按 UTF-8（GBK 页面会乱码，日志提示）
+    const ctype = (resp.headers.get('content-type') || '').toLowerCase();
+    let charset = (ctype.match(/charset=([\w-]+)/) || [])[1] || 'utf-8';
+    if (!/^utf-?8$/i.test(charset)) {
+      console.warn(`[KB Fetch] 非 UTF-8 页面(${charset})，可能出现乱码: ${parsed.href}`);
+      charset = 'utf-8';
+    }
+    html = new TextDecoder(charset).decode(buf);
+  } catch (e) {
+    const msg = e && e.name === 'TimeoutError' ? '抓取超时（20 秒）' : (e && e.message) || '抓取失败';
+    return res.status(502).json({ success: false, error: msg });
+  }
+
+  const { title, text } = htmlToMarkdownish(html);
+  if (!text || text.length < 50) {
+    const emptyTip = '抓取到的正文为空或过少，通常是需要登录才能访问的页面（如腾讯文档 / 飞书 / 语雀）。请先导出为文件再用「本地文件上传」。';
+    return res.status(422).json({ success: false, error: emptyTip, message: emptyTip });
+  }
+
+  // 落库：文件名优先用自定义名，其次页面标题，最后用域名
+  let base = sanitizeKBFileName(name || title || parsed.hostname);
+  if (!base) base = sanitizeKBFileName(parsed.hostname) || 'webpage';
+  const fileName = base.toLowerCase().endsWith('.md') ? base : base + '.md';
+  const destDir = path.join(KB_ROOT, kbType);
+  const destPath = path.join(destDir, fileName);
+  try {
+    await fs.mkdir(destDir, { recursive: true });
+    const md = `# ${title || base}\n\n> 来源: ${parsed.href}\n> 抓取时间: ${new Date().toISOString()}\n\n${text}\n`;
+    await fs.writeFile(destPath, md, 'utf-8');
+  } catch (e) {
+    return res.status(500).json({ success: false, error: `写入知识库失败: ${e.message}` });
+  }
+
+  const doc = {
+    id: `${kbType}/${escapeHTML(fileName)}`,
+    name: escapeHTML(fileName),
+    kbType,
+    size: Buffer.byteLength(text, 'utf-8'),
+    modified: new Date().toISOString(),
+    sourceUrl: parsed.href,
+  };
+
+  const currentUser = req.user || {};
+  addKBMetaUploader(kbType, fileName, currentUser.id || currentUser.sub, currentUser.name || currentUser.username || '未知')
+    .catch(e => console.warn('[KB Meta] 记录上传者失败:', e.message));
+
+  // 与本地上传一致：自动触发向量化
+  (async () => {
+    try {
+      const vr = await callVectorService('process', {
+        docId: doc.id, kbType, name: fileName, content: text,
+      });
+      console.log(`[KB Fetch] 向量化完成: ${doc.id}, chunks=${vr.chunks || 0}`);
+      broadcast({ type: 'kb_vectorized', docId: doc.id, chunks: vr.chunks || 0, kbType });
+    } catch (ve) {
+      console.warn('[KB Fetch] 向量化失败:', ve.message);
+    }
+  })();
+
+  broadcast({ type: 'kb_updated', action: 'upload', doc });
+  res.status(201).json({ success: true, doc, title: title || base, chars: text.length });
 });
 
 /**
@@ -11876,6 +12267,190 @@ app.post('/api/evaluation/run', authenticate, async (req, res) => {
 // 返回结构统一：
 //   { mode, results: [{agentId, taskId, status, result}, ...] }
 // ══════════════════════════════════════════════════════════════
+
+// ============================================================
+// 定时评估调度（此前前端「定时评估设置」只是占位提示，这里补上后端能力）
+// ------------------------------------------------------------
+// 存储：runtime/evaluation-schedules.json（按 userId 隔离）。
+//   选文件而非建表，是为了不改动现有库结构；后续如需多实例共享再迁 DB。
+// 触发：内部以该用户身份签发短期 JWT，调用 /api/evaluation/run，
+//   复用与手动评估完全一致的链路（任务记录 / SSE 进度 / 报告落盘）。
+// 精度：每分钟检查一次，分钟级触发；同一分钟只跑一次（lastRunKey 去重）。
+// ============================================================
+const EVAL_SCHED_FILE = path.join(RUNTIME_ROOT, 'evaluation-schedules.json');
+
+// 注意：本文件的 fs 是 'fs/promises'（同步 API 在 fsSync 上），故这里一律用 await
+async function loadEvalSchedules() {
+  try {
+    return JSON.parse(await fs.readFile(EVAL_SCHED_FILE, 'utf8'));
+  } catch (_) {
+    return {};
+  }
+}
+
+async function saveEvalSchedules(all) {
+  try {
+    await fs.mkdir(RUNTIME_ROOT, { recursive: true });
+    await fs.writeFile(EVAL_SCHED_FILE, JSON.stringify(all, null, 2), 'utf8');
+    return true;
+  } catch (e) {
+    console.error('[EvalSchedule] 保存失败:', e.message);
+    return false;
+  }
+}
+
+const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+// 校验并规范化配置，非法时返回 { error }
+function normalizeSchedule(body) {
+  const b = body || {};
+  const freq = b.freq === 'weekly' ? 'weekly' : 'daily';
+  const time = String(b.time || '09:00');
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+    return { error: '时间格式应为 HH:mm（如 09:30）' };
+  }
+  let weekday = Number(b.weekday);
+  if (freq === 'weekly') {
+    if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+      return { error: '每周模式需指定 weekday（0=周日 … 6=周六）' };
+    }
+  } else {
+    weekday = null;
+  }
+  const mode = b.mode === 'both' ? 'both' : 'rule';
+  const daysBack = Number.isFinite(Number(b.daysBack)) ? Number(b.daysBack) : 30;
+  const limitPerAgent = Number.isFinite(Number(b.limitPerAgent)) ? Number(b.limitPerAgent) : 20;
+  return {
+    value: {
+      enabled: b.enabled === undefined ? true : !!b.enabled,
+      freq, time, weekday, mode, daysBack, limitPerAgent,
+      agentIds: Array.isArray(b.agentIds) ? b.agentIds : [],
+    },
+  };
+}
+
+app.get('/api/evaluation/schedule', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  const all = await loadEvalSchedules();
+  const sched = all[userId] || null;
+  res.json({ success: true, schedule: sched });
+});
+
+app.post('/api/evaluation/schedule', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  if (!userId) return res.status(401).json({ success: false, error: '无法识别用户' });
+  const { value, error } = normalizeSchedule(req.body);
+  if (error) return res.status(400).json({ success: false, error });
+
+  const all = await loadEvalSchedules();
+  const prev = all[userId] || {};
+  all[userId] = {
+    ...value,
+    userId,
+    // 保存用户快照：定时触发时用它签发 token，保证评估结果归属正确
+    user: {
+      id: userId,
+      username: req.user?.username || prev.user?.username || '',
+      name: req.user?.name || prev.user?.name || '',
+      role: req.user?.role || prev.user?.role || 'user',
+    },
+    lastRunKey: prev.lastRunKey || null,
+    lastRunAt: prev.lastRunAt || null,
+    lastStatus: prev.lastStatus || null,
+    updatedAt: new Date().toISOString(),
+  };
+  if (!(await saveEvalSchedules(all))) {
+    return res.status(500).json({ success: false, error: '配置写入失败' });
+  }
+  console.log(`[EvalSchedule] ${userId} 定时评估已${value.enabled ? '启用' : '停用'}: ${value.freq} ${value.time}`);
+  res.json({ success: true, schedule: all[userId] });
+});
+
+app.delete('/api/evaluation/schedule', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  const all = await loadEvalSchedules();
+  if (all[userId]) {
+    delete all[userId];
+    await saveEvalSchedules(all);
+  }
+  res.json({ success: true, deleted: true });
+});
+
+// 判断当前分钟是否命中配置
+function scheduleDueNow(sched, now) {
+  if (!sched || !sched.enabled) return false;
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  if (`${hh}:${mm}` !== sched.time) return false;
+  if (sched.freq === 'weekly' && Number(sched.weekday) !== now.getDay()) return false;
+  return true;
+}
+
+function minuteKey(now) {
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${hh}:${mm}`;
+}
+
+async function triggerScheduledEvaluation(userId, sched) {
+  const key = minuteKey(new Date());
+  try {
+    const token = signLocalToken({
+      id: userId,
+      username: sched.user?.username || '',
+      name: sched.user?.name || '',
+      role: sched.user?.role || 'user',
+    });
+    const port = process.env.PORT || 3002;
+    const resp = await fetch(`http://127.0.0.1:${port}/api/evaluation/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        agentIds: sched.agentIds && sched.agentIds.length ? sched.agentIds : undefined,
+        scope: ['capability', 'quality', 'business'],
+        daysBack: sched.daysBack,
+        limitPerAgent: sched.limitPerAgent,
+      }),
+      signal: AbortSignal.timeout(600000),
+    });
+    const data = await resp.json().catch(() => ({}));
+    const ok = resp.ok && data.success !== false;
+    const all = await loadEvalSchedules();
+    if (all[userId]) {
+      all[userId].lastRunKey = key;
+      all[userId].lastRunAt = new Date().toISOString();
+      all[userId].lastStatus = ok ? 'success' : (data.error || `HTTP ${resp.status}`);
+      await saveEvalSchedules(all);
+    }
+    console.log(`[EvalSchedule] 定时评估触发完成 userId=${userId} status=${ok ? 'success' : 'failed'}`);
+  } catch (e) {
+    console.error('[EvalSchedule] 定时评估触发异常:', e.message);
+    const all = await loadEvalSchedules();
+    if (all[userId]) {
+      all[userId].lastRunKey = key;
+      all[userId].lastRunAt = new Date().toISOString();
+      all[userId].lastStatus = e.message || 'trigger failed';
+      await saveEvalSchedules(all);
+    }
+  }
+}
+
+// 每分钟扫描一次（不做秒级轮询，避免无谓开销）
+setInterval(async () => {
+  const now = new Date();
+  const key = minuteKey(now);
+  let all;
+  try {
+    all = await loadEvalSchedules();
+  } catch (_) {
+    return;
+  }
+  for (const [userId, sched] of Object.entries(all)) {
+    if (!scheduleDueNow(sched, now)) continue;
+    if (sched.lastRunKey === key) continue; // 同一分钟只跑一次
+    triggerScheduledEvaluation(userId, sched);
+  }
+}, 60 * 1000);
 
 app.post('/api/evaluation/llm', authenticate, async (req, res) => {
   let { taskId, agentIds } = req.body;

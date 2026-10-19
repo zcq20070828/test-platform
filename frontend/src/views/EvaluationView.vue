@@ -143,6 +143,46 @@
           </div>
         </el-card>
 
+        <!-- 定时评估设置 -->
+        <el-dialog v-model="cronDialogVisible" title="设置定时评估" width="480px">
+          <el-form label-width="90px">
+            <el-form-item label="执行频率">
+              <el-tag :type="config.period === 'weekly' ? 'warning' : 'primary'">
+                {{ config.period === 'weekly' ? '每周评估' : '每日评估' }}
+              </el-tag>
+              <span class="form-tip" style="margin-left: 8px">由上方「评估周期」决定</span>
+            </el-form-item>
+            <el-form-item v-if="config.period === 'weekly'" label="星期">
+              <el-select v-model="cronForm.weekday" style="width: 120px">
+                <el-option v-for="d in weekdayOptions" :key="d.value" :label="d.label" :value="d.value" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="执行时间">
+              <el-time-picker
+                v-model="cronForm.time"
+                format="HH:mm"
+                value-format="HH:mm"
+                placeholder="选择时间"
+                style="width: 140px"
+              />
+            </el-form-item>
+            <el-form-item label="评估算法">
+              <el-tag type="info">{{ config.algorithm === 'both' ? '规则 + LLM' : '规则评估' }}</el-tag>
+            </el-form-item>
+            <div v-if="cronLoaded" class="form-tip">
+              当前已设置：{{ cronLoaded.freq === 'weekly' ? '每周' : '每天' }} {{ cronLoaded.time }}
+              <span v-if="cronLoaded.lastRunAt">｜上次执行 {{ cronLoaded.lastRunAt }}</span>
+              <span v-if="cronLoaded.lastStatus">｜状态 {{ cronLoaded.lastStatus }}</span>
+            </div>
+            <div v-else class="form-tip">尚未设置定时评估</div>
+          </el-form>
+          <template #footer>
+            <el-button v-if="cronLoaded" type="danger" plain @click="removeCron">取消定时</el-button>
+            <el-button @click="cronDialogVisible = false">关闭</el-button>
+            <el-button type="primary" :loading="cronSaving" @click="saveCron">保存</el-button>
+          </template>
+        </el-dialog>
+
         <!-- 评估进度 -->
         <el-card v-if="evaluating || (progress.total ?? 0) > 0" class="progress-card" shadow="never">
           <template #header>
@@ -1023,8 +1063,83 @@ async function startEvaluation() {
   }
 }
 
+// --- 定时评估（后端 /api/evaluation/schedule，每分钟扫描触发）---
+const cronDialogVisible = ref(false)
+const cronSaving = ref(false)
+const cronLoaded = ref<any>(null)
+const cronForm = ref({ time: '09:00', weekday: 1 })
+const weekdayOptions = [
+  { value: 1, label: '周一' }, { value: 2, label: '周二' }, { value: 3, label: '周三' },
+  { value: 4, label: '周四' }, { value: 5, label: '周五' }, { value: 6, label: '周六' },
+  { value: 0, label: '周日' },
+]
+
+// 与页面其它请求保持一致：直接用 fetch + 本地 token，不走 api/index
+function authHeaders(json = false): any {
+  const token = localStorage.getItem('token')
+  const h: any = json ? { 'Content-Type': 'application/json' } : {}
+  if (token) h['Authorization'] = `Bearer ${token}`
+  return h
+}
+
 async function setupCron() {
-  showMsg('定时评估设置功能开发中（将调用 cron skill）', 'info')
+  // 后端当前支持每日/每周；每月尚未实现，如实提示而不是假装支持
+  if (config.value.period === 'monthly') {
+    showMsg('每月评估暂未支持，请先选择「每日评估」或「每周评估」', 'warning')
+    return
+  }
+  try {
+    const res = await fetch('/api/evaluation/schedule', { headers: authHeaders() })
+    const data = await res.json().catch(() => ({}))
+    const s = data?.schedule || null
+    cronLoaded.value = s
+    if (s) {
+      cronForm.value = { time: s.time || '09:00', weekday: s.weekday ?? 1 }
+    }
+  } catch (e) {
+    cronLoaded.value = null
+  }
+  cronDialogVisible.value = true
+}
+
+async function saveCron() {
+  cronSaving.value = true
+  try {
+    const res = await fetch('/api/evaluation/schedule', {
+      method: 'POST',
+      headers: authHeaders(true),
+      body: JSON.stringify({
+        enabled: true,
+        freq: config.value.period === 'weekly' ? 'weekly' : 'daily',
+        time: cronForm.value.time,
+        weekday: config.value.period === 'weekly' ? cronForm.value.weekday : null,
+        mode: config.value.algorithm === 'both' ? 'both' : 'rule',
+        agentIds: config.value.agentIds,
+      })
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data?.success === false) {
+      showMsg(data?.error || '保存失败', 'error')
+      return
+    }
+    showMsg(`定时评估已设置：${config.value.period === 'weekly' ? '每周' : '每天'} ${cronForm.value.time} 自动执行`, 'success')
+    cronDialogVisible.value = false
+  } catch (e: any) {
+    showMsg(`保存失败: ${e.message}`, 'error')
+  } finally {
+    cronSaving.value = false
+  }
+}
+
+async function removeCron() {
+  try {
+    await fetch('/api/evaluation/schedule', { method: 'DELETE', headers: authHeaders() })
+    cronLoaded.value = null
+    showMsg('已取消定时评估', 'success')
+    cronDialogVisible.value = false
+  } catch (e: any) {
+    showMsg(`取消失败: ${e.message}`, 'error')
+  }
 }
 
 function selectReport(report: any) {

@@ -646,10 +646,21 @@ async function submitWebLink() {
   }
   webUploading.value = true
   try {
-    // 网络链接需要后端抓取，暂时显示"功能开发中"
-    ElMessage.info('网络链接抓取功能正在开发中，请先使用本地文件上传')
-    webUploading.value = false
-    return
+    // 后端 POST /api/kb/fetch-url 真实抓取正文并入知识库（与本地上传同一条入库/向量化链路）
+    const res: any = await knowledgeApi.fetchWebLink(
+      webForm.value.url.trim(),
+      webForm.value.name.trim(),
+      targetKbType.value || 'general'
+    )
+    // request() 包一层 { success, data }，后端业务体在 data 里
+    const data = res?.data || res
+    if (!res?.success || data?.success === false) {
+      ElMessage.error(data?.message || data?.error || res?.error || '抓取失败')
+      return
+    }
+    ElMessage.success(`已抓取并入库：${data?.doc?.name || data?.title || '网页'}（${data?.chars || 0} 字）`)
+    await store.loadDocuments()
+    uploadDialogVisible.value = false
   } catch (e: any) {
     ElMessage.error(`抓取失败: ${e.message}`)
   } finally {
