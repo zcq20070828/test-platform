@@ -2754,7 +2754,8 @@ app.get('/api/tasks', authenticate, async (req, res) => {
       taskList.push({
         ...t,
         source: 'task',
-        username: t.username || req.user.name || '—', // 兜底：用当前登录用户名
+        // [FIX-USERNAME] 先取内存对象自带的 username,再回落到当前登录用户;占位符交由出口统一兜底
+        username: t.username || req.user.name || req.user.username || null,
         agentName: t.agentName || (AGENTS[t.agent] || {}).name || t.agent,
         output: t.output || t.result || null,
         startTime: t.startTime || t.createdAt || null,
@@ -2835,6 +2836,16 @@ app.get('/api/tasks', authenticate, async (req, res) => {
   }
 
   taskList.sort((a, b) => new Date(b.startTime || b.createdAt) - new Date(a.startTime || a.createdAt));
+
+  // [FIX-USERNAME] 统一兜底"用户"列:本接口已按 req.user.id 严格过滤(见各分支的 userId 条件),
+  // 列表里的每一行都必然属于当前登录用户,因此任何来源(DB JOIN / 内存 tasks Map / 内存 workflow)
+  // 缺失 username 时,一律回落到当前登录用户的显示名,不再让前端渲染成空占位符。
+  const fallbackUsername = req.user.name || req.user.username || null;
+  if (fallbackUsername) {
+    for (const t of taskList) {
+      if (!t.username) t.username = fallbackUsername;
+    }
+  }
 
   res.json(taskList);
 });
@@ -2948,6 +2959,11 @@ app.get('/api/tasks/:id', authenticate, async (req, res) => {
   } catch (_) { /* 补齐失败不影响主流程 */ }
   if (!canAccessTask(task, req)) {
     return res.status(403).json({ error: '无权访问此任务' });
+  }
+  // [FIX-USERNAME] 详情接口同样兜底"用户"字段:能走到这里的任务必属于当前用户(已过 canAccessTask),
+  // 内存快照/旧数据缺 username 时回落到当前登录用户显示名,避免详情弹窗里显示空占位符。
+  if (!task.username && req.user) {
+    task.username = req.user.name || req.user.username || null;
   }
   res.json(task);
 });
@@ -14070,7 +14086,13 @@ function buildSecurityReportMarkdown({ workflowId, target, scanType, status, rep
 async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
   console.error('[SecurityWorkflow] START workflowId=' + workflowId + ' target=' + (taskInput?.target || '?'));
   // 写入 workflows Map,供 sseBroadcast 的 workflow userId 查找兜底(security workflow 不走 syncWorkflow)
-  workflows.set(workflowId, { id: workflowId, userId, status: 'running', scenario: '安全测试', mode: 'security', startedAt: new Date().toISOString() });
+  // [FIX-USERNAME] 内存 workflow 对象必须带 username,否则任务列表"用户"列显示为空
+  // (workflowToTaskRow 直接读 wf.username, 内存对象不走 DB JOIN)
+  const secUser = await resolveUserForScope(userId).catch(() => null);
+  workflows.set(workflowId, {
+    id: workflowId, userId, username: secUser?.name || null,
+    status: 'running', scenario: '安全测试', mode: 'security', startedAt: new Date().toISOString()
+  });
   const { target, scanType = 'full', description = '', testDomain = 'web' } = taskInput;
   const startTime = Date.now();
   const results = { stages: [], status: 'running', findings: [], allArtifacts: [] };
@@ -15171,8 +15193,11 @@ app.post('/api/performance-test/workflow', authenticate, async (req, res) => {
     });
 
     // 写 workflows Map（status=running），用于 SSE 广播
+    // [FIX-USERNAME] 内存 workflow 对象必须带 username,否则任务列表"用户"列显示为空
     workflows.set(workflowId, {
-      id: workflowId, user_id: userId, input: description || target,
+      id: workflowId, user_id: userId, userId,
+      username: req.user?.name || req.user?.username || null,
+      input: description || target,
       status: 'running', steps: [], current_step: 0,
       results: [], workflow_results: null,
       mode: 'performance', scenario: '',

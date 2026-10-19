@@ -74,7 +74,12 @@ async function createTask(task) {
  * 根据 ID 获取任务
  */
 async function getTaskById(taskId) {
-  const sql = 'SELECT * FROM tasks WHERE id = ?';
+  // [FIX-USERNAME] 与 getTasks 保持同口径:JOIN users 取显示名,否则详情接口返回 username=null,
+  // 前端任务详情"用户"字段会显示成空占位符
+  const sql = `SELECT t.*, COALESCE(NULLIF(u.name,''), '测试用户') AS username
+               FROM tasks t
+               LEFT JOIN users u ON t.user_id = u.id COLLATE utf8mb4_unicode_ci
+               WHERE t.id = ?`;
   const rows = await query(sql, [taskId]);
   
   if (rows.length === 0) {

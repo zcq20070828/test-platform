@@ -1182,9 +1182,10 @@ export const useMainStore = defineStore('main', () => {
           const idx = tasks.value.findIndex(t => t.id === taskData.id)
           if (idx >= 0) {
             // 合并：保留已有 username（GET /api/tasks 拉的完整数据），用 SSE 数据补全其余字段
-            tasks.value[idx] = { ...tasks.value[idx], ...taskData, username: tasks.value[idx].username }
+            tasks.value[idx] = { ...tasks.value[idx], ...taskData, username: taskData.username || tasks.value[idx].username }
           } else {
-            tasks.value.unshift(taskData)
+            // [FIX-USERNAME] 新行也要带用户名，否则任务列表"用户"列显示为空占位符
+            tasks.value.unshift({ ...taskData, username: taskData.username || user.value?.name || null })
           }
 
           // 【串台修复-草案A】实时完成事件仅同步到当前选中智能体的对话流：
@@ -1368,7 +1369,10 @@ export const useMainStore = defineStore('main', () => {
         if (data.task) {
           const idx = tasks.value.findIndex(t => t.id === data.task.id)
           if (idx >= 0) {
-            tasks.value[idx] = data.task
+            // [FIX-USERNAME] 整体替换会抹掉 username（SSE 的 task 对象常常不带该字段），改为合并并保留
+            tasks.value[idx] = { ...tasks.value[idx], ...data.task, username: data.task.username || tasks.value[idx].username }
+          } else {
+            tasks.value.unshift({ ...data.task, username: data.task.username || user.value?.name || null })
           }
         }
         break
