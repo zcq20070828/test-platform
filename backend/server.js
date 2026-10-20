@@ -18,6 +18,13 @@ import * as performanceDAO from './database/performance-dao.js';
 import { init as initWebCompat, create as createWebCompatReport, findByUser as getWebCompatByUser, countByUser as countWebCompatByUser, findById as getWebCompatById } from './database/web-compatibility-dao.js';
 import { getToolList, generateInstallScript, getTool as getToolInfo, checkToolsStatus, installToolBackend, upgradeToolBackend, isToolInstalledBackend } from './tool-registry.js';
 import bcrypt from 'bcrypt';
+import {
+  getScannerStatus as getSecScannerStatus,
+  runSourceScan as runSecSourceScan,
+  runUrlScan as runSecUrlScan,
+  finalizeFindings as finalizeSecFindings,
+  summarizeFindings as summarizeSecFindings,
+} from './security/scanner-runner.js';
 // 获取 CST 本地时间字符串 (与 MySQL TIMESTAMP 存储行为一致)
 function localNowStr() {
   return new Date().toLocaleString('sv', { timeZone: 'Asia/Shanghai' }).replace(' ', 'T').slice(0, 19).replace('T', ' ');
@@ -13858,10 +13865,145 @@ app.delete('/api/defects/:id', authenticate, requireAdmin, async (req, res) => {
 // 安全测试路由
 // ══════════════════════════════════════════════════════════════
 
+// ── 开源扫描器（semgrep/trivy/bandit/npm audit/pip-audit/nikto/nmap）──
+// 深度来源：这些是真实工具执行产出的证据，不是 LLM 推测。
+
+/** GET /api/security/scanners — 工具可用性与版本 */
+app.get('/api/security/scanners', authenticate, async (req, res) => {
+  try {
+    const refresh = String(req.query.refresh || '') === '1';
+    const scanners = await getSecScannerStatus({ refresh });
+    res.json({ success: true, data: scanners });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/security/scan/real — 执行真实扫描并落库为报告
+ * body: { mode: 'source'|'url', target, tools?: string[], testDomain?: string, scanType?: string }
+ *  - mode=source：target 是本地路径（默认项目根），跑 SAST + SCA
+ *  - mode=url   ：target 是 http(s) 地址，跑 DAST（nikto/nmap/nuclei）
+ */
+app.post('/api/security/scan/real', authenticate, async (req, res) => {
+  const { mode = 'source', target, tools, testDomain = 'web', scanType = 'real-scan' } = req.body || {};
+  const userId = req.user?.id || req.user?.userId;
+
+  try {
+    const status = await getSecScannerStatus();
+    const available = new Set(status.filter(s => s.available).map(s => s.id));
+
+    let raw = [];
+    let usedTools = [];
+    let scanTarget = String(target || '').trim();
+
+    if (mode === 'url') {
+      const url = String(target || '').trim();
+      if (!/^https?:\/\//i.test(url)) {
+        return res.status(400).json({ success: false, error: 'URL 模式要求 target 为 http(s) 地址' });
+      }
+      const wanted = (Array.isArray(tools) && tools.length ? tools : ['nikto', 'nmap', 'nuclei'])
+        .filter(t => available.has(t));
+      if (!wanted.length) {
+        return res.status(400).json({ success: false, error: '没有可用的 DAST 工具，请先安装 nikto / nmap / nuclei' });
+      }
+      usedTools = wanted;
+      raw = await runSecUrlScan(url, wanted, { timeoutMs: 180000 });
+      scanTarget = url;
+    } else {
+      // 源码模式：只允许项目目录 / git-clones 内的路径，防止被用来读系统目录
+      const rootDir = target ? path.resolve(String(target)) : PLATFORM_ROOT;
+      const allowedRoots = [PLATFORM_ROOT, path.join(RUNTIME_ROOT, 'git-clones')];
+      const inAllowed = allowedRoots.some(r => rootDir === r || rootDir.startsWith(r + path.sep));
+      if (!inAllowed) {
+        return res.status(403).json({ success: false, error: '源码扫描路径必须位于项目目录或 git-clones 内' });
+      }
+      const wanted = (Array.isArray(tools) && tools.length ? tools : ['semgrep', 'trivy', 'bandit'])
+        .filter(t => available.has(t));
+      if (!wanted.length) {
+        return res.status(400).json({ success: false, error: '没有可用的 SAST/SCA 工具，请先安装 semgrep / trivy / bandit' });
+      }
+      usedTools = wanted;
+      raw = await runSecSourceScan(rootDir, wanted, { timeoutMs: 240000 });
+      scanTarget = rootDir;
+    }
+
+    const toolMeta = raw.filter(r => r && r.findingCount !== undefined);
+    const findings = finalizeSecFindings(raw);
+    const summary = summarizeSecFindings(findings);
+
+    // 落库为安全报告（复用现有表结构，scanner 标为真实扫描）
+    const scanId = `real-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const reportId = await securityDAO.createSecurityReport({
+      scanId,
+      target: scanTarget.slice(0, 500),
+      scanType,
+      testDomain,
+      status: 'completed',
+      createdBy: userId,
+    });
+
+    await securityDAO.updateSecurityReport(reportId, {
+      overall_score: summary.score,
+      severity_dist: JSON.stringify(summary.severityDist),
+      findings_count: findings.length,
+      recommendations: `真实工具扫描（${usedTools.join(', ')}）产出 ${findings.length} 条发现`,
+      duration_ms: toolMeta.reduce((s, t) => s + (t.durationMs || 0), 0),
+      test_domain: testDomain,
+      report_json: {
+        mode,
+        tools: toolMeta.map(t => ({ tool: t.tool, ok: t.ok, findings: t.findingCount, durationMs: t.durationMs })),
+        byTool: summary.byTool,
+        byCategory: summary.byCategory,
+        riskLevel: summary.severityDist.critical > 0 ? 'critical'
+          : summary.severityDist.high > 0 ? 'high'
+          : summary.severityDist.medium > 0 ? 'medium' : 'low',
+        summary: `真实扫描完成：${findings.length} 条（critical ${summary.severityDist.critical} / high ${summary.severityDist.high}）`,
+      },
+    });
+
+    if (findings.length > 0) {
+      await securityDAO.bulkCreateVulnerabilities(findings.map(f => ({
+        reportId,
+        title: f.title,
+        severity: f.severity,
+        vuln_type: f.category,
+        description: f.description,
+        location: f.location,
+        evidence: f.evidence,
+        recommendation: f.remediation,
+        cve_id: f.cve,
+        cwe_id: f.cwe,
+        cvss: f.cvss,
+        extJson: { source: f.tool, fingerprint: f.fingerprint, raw: f.raw, verified: true },
+      })));
+    }
+
+    res.json({
+      success: true,
+      data: {
+        reportId,
+        scanId,
+        target: scanTarget,
+        mode,
+        findings,
+        summary,
+        tools: toolMeta.map(t => ({
+          tool: t.tool, ok: t.ok, findings: t.findingCount,
+          durationMs: t.durationMs, error: t.error, timedOut: t.timedOut,
+        })),
+      },
+    });
+  } catch (err) {
+    console.error('[SecurityRealScan] 失败:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 发起安全扫描（创建报告记录）
 app.post('/api/security/scan', authenticate, async (req, res) => {
   try {
-    const { target, scanType = 'full', testDomain = 'web', files, retestOf = null } = req.body;
+    const { target, scanType = 'full', testDomain = 'web', files, retestOf = null, sourcePath = '' } = req.body;
     if (!target) return res.status(400).json({ success: false, error: '缺少扫描目标' });
     const userId = req.user?.id || req.user?.userId;
     const scanId = `scan-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -13872,10 +14014,29 @@ app.post('/api/security/scan', authenticate, async (req, res) => {
       readDeliverableTemplate('安全测试报告模板')
     ]);
 
+    // 真实扫描（若目标/源码路径可扫）：把工具证据注入到 LLM 输入，避免凭空生成漏洞
+    let realScanEvidence = null;
+    try {
+      realScanEvidence = await runRealSecurityScanForWorkflow({ target, description: '', testDomain, sourcePath });
+      sseBroadcast({
+        type: 'security_real_scan_completed', workflowId: scanId,
+        tools: realScanEvidence.tools, summary: realScanEvidence.summary,
+        findings: realScanEvidence.findings.length, userId,
+      });
+    } catch (e) {
+      console.warn(`[SecurityScan] 真实扫描失败，仅走 LLM: ${e.message}`);
+    }
+    const evidenceSection = realScanEvidence && realScanEvidence.findings.length
+      ? `\n## 真实扫描工具证据（必须纳入报告，不得改写结论）\n工具: ${realScanEvidence.tools.map(t => `${t.tool}=${t.findings}`).join(', ')}\n` +
+        realScanEvidence.findings.slice(0, 60).map((f, i) =>
+          `${i + 1}. [${f.severity.toUpperCase()}][${f.tool}] ${f.title}\n   位置: ${f.location || '-'}\n   ${(f.description || '').slice(0, 200)}`
+        ).join('\n') + '\n'
+      : '';
+
     // 注入上传文档内容（前端传入的文件内容）
     const enrichedInput = await injectFilesToInput(
       `## 安全扫描目标\n请对以下目标进行全面的安全测试:\n${target}\n\n## 扫描类型\n${scanType}\n\n## 测试域(domain)\n${testDomain}\n\n` +
-      `## 安全测试方案模板\n${schemeTemplate}\n\n## 安全测试报告模板\n${reportTemplate}\n\n`,
+      `## 安全测试方案模板\n${schemeTemplate}\n\n## 安全测试报告模板\n${reportTemplate}\n\n` + evidenceSection,
       files || []
     );
 
@@ -15117,7 +15278,7 @@ async function warmupAgents() {
 
 // 【修复】将安全测试结构化结果组装为 Markdown 报告(替代 agent 直接输出的 JSON)
 // 供前端 dashboard-chat-panel 直接渲染为可读的安全测试报告
-function buildSecurityReportMarkdown({ workflowId, target, scanType, status, report, findings, stages, durationMs }) {
+function buildSecurityReportMarkdown({ workflowId, target, scanType, status, report, findings, stages, durationMs, realScanSummary, realScanTools }) {
   const now = new Date().toISOString();
   const lines = [];
   lines.push(`# 🛡️ 安全测试报告`);
@@ -15133,7 +15294,24 @@ function buildSecurityReportMarkdown({ workflowId, target, scanType, status, rep
   lines.push(`| 扫描类型 | ${scanType || 'full'} |`);
   lines.push(`| 执行状态 | ${status === 'completed' ? '✅ 完成' : '❌ 失败'} |`);
   lines.push(`| 总耗时 | ${durationMs ? (durationMs / 1000).toFixed(1) + ' 秒' : '-'} |`);
+  if (Array.isArray(realScanTools) && realScanTools.length > 0) {
+    lines.push(`| 真实扫描工具 | ${realScanTools.map(t => `${t.tool}(${t.findings})`).join(', ')} |`);
+  }
   lines.push('');
+
+  // 真实扫描证据摘要（区分工具实测与 LLM 推断）
+  if (realScanSummary && realScanSummary.total != null) {
+    lines.push('## 🧪 真实扫描证据');
+    lines.push('');
+    lines.push(`- 工具实测发现: **${realScanSummary.total}** 条（critical ${realScanSummary.severityDist?.critical || 0} / high ${realScanSummary.severityDist?.high || 0} / medium ${realScanSummary.severityDist?.medium || 0} / low ${realScanSummary.severityDist?.low || 0}）`);
+    if (realScanSummary.byTool) {
+      lines.push(`- 按工具: ${Object.entries(realScanSummary.byTool).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+    }
+    if (realScanSummary.byCategory) {
+      lines.push(`- 按类型: ${Object.entries(realScanSummary.byCategory).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+    }
+    lines.push('');
+  }
 
   // 安全评分
   const score = typeof report?.securityScore === 'number' ? report.securityScore : (typeof report?.overallScore === 'number' ? report.overallScore : null);
@@ -15225,6 +15403,58 @@ function buildSecurityReportMarkdown({ workflowId, target, scanType, status, rep
   return lines.join('\n');
 }
 
+/**
+ * 安全测试工作流用的真实扫描入口。
+ * 目标类型自动判定：
+ *   - target 是 http(s) URL  → DAST（nikto/nmap，nuclei 若已安装）
+ *   - 提供 sourcePath 或 target 是本地路径 → SAST/SCA（semgrep/trivy/bandit）
+ *   - 两者都做不了（比如只给了域名没给源码）→ 返回空结果，由 LLM 阶段降级处理
+ */
+async function runRealSecurityScanForWorkflow({ target, description = '', testDomain = 'web', sourcePath = '' }) {
+  const status = await getSecScannerStatus();
+  const available = new Set(status.filter(s => s.available).map(s => s.id));
+  const t = String(target || '').trim();
+  const looksLikeUrl = /^https?:\/\//i.test(t);
+
+  const runs = [];
+  const raw = [];
+
+  if (looksLikeUrl) {
+    const wanted = ['nikto', 'nmap', 'nuclei'].filter(x => available.has(x));
+    if (wanted.length) {
+      const r = await runSecUrlScan(t, wanted, { timeoutMs: 180000 });
+      raw.push(...r);
+      runs.push(...r.filter(x => x.findingCount !== undefined));
+    }
+  }
+
+  // 源码扫描：显式 sourcePath 优先；否则若 target 是本地目录也接受
+  let rootDir = String(sourcePath || '').trim();
+  if (!rootDir && !looksLikeUrl && t && path.isAbsolute(t)) rootDir = t;
+  if (rootDir) {
+    const allowedRoots = [PLATFORM_ROOT, path.join(RUNTIME_ROOT, 'git-clones')];
+    const resolved = path.resolve(rootDir);
+    const inAllowed = allowedRoots.some(r => resolved === r || resolved.startsWith(r + path.sep));
+    if (inAllowed) {
+      const wanted = ['semgrep', 'trivy', 'bandit'].filter(x => available.has(x));
+      if (wanted.length) {
+        const r = await runSecSourceScan(resolved, wanted, { timeoutMs: 240000 });
+        raw.push(...r);
+        runs.push(...r.filter(x => x.findingCount !== undefined));
+      }
+    } else {
+      console.warn(`[SecurityWorkflow] 源码路径不在允许范围内，跳过源码扫描: ${resolved}`);
+    }
+  }
+
+  const findings = finalizeSecFindings(raw);
+  return {
+    findings,
+    tools: runs.map(r => ({ tool: r.tool, ok: r.ok, findings: r.findingCount, durationMs: r.durationMs, error: r.error })),
+    summary: summarizeSecFindings(findings),
+  };
+}
+
 async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
   console.error('[SecurityWorkflow] START workflowId=' + workflowId + ' target=' + (taskInput?.target || '?'));
   // 写入 workflows Map,供 sseBroadcast 的 workflow userId 查找兜底(security workflow 不走 syncWorkflow)
@@ -15235,7 +15465,7 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
     id: workflowId, userId, username: secUser?.name || null,
     status: 'running', scenario: '安全测试', mode: 'security', startedAt: new Date().toISOString()
   });
-  const { target, scanType = 'full', description = '', testDomain = 'web' } = taskInput;
+  const { target, scanType = 'full', description = '', testDomain = 'web', sourcePath = '' } = taskInput;
   const startTime = Date.now();
   const results = { stages: [], status: 'running', findings: [], allArtifacts: [] };
 
@@ -15330,8 +15560,38 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
     broadcast({ type: 'workflow_stage_completed', workflowId, stage: '安全测试用例生成', success: !!testCases, outputFiles: sec1Files, artifacts: sec1Art });
 
     // ========== 阶段3: 执行安全扫描 ==========
+    // 2026-10-20 深度改造：先跑真实开源扫描器（semgrep/trivy/bandit/nikto/nmap），
+    // 把工具产出的证据交给 LLM 汇总成报告，而不是让 LLM 凭空想象漏洞。
     broadcast({ type: 'workflow_stage_started', workflowId, stage: '执行安全扫描', agentId: 'security-sentinel' });
     const scanTemplate = await readSecurityTemplate('安全测试报告模板');
+
+    let realScan = { findings: [], tools: [], summary: null };
+    try {
+      broadcast({ type: 'security_real_scan_started', workflowId, target, mode: 'auto' });
+      realScan = await runRealSecurityScanForWorkflow({ target, description, testDomain, sourcePath: taskInput.sourcePath });
+      broadcast({
+        type: 'security_real_scan_completed', workflowId,
+        tools: realScan.tools, summary: realScan.summary, findings: realScan.findings.length,
+      });
+      if (realScan.findings.length > 0) {
+        results.findings.push(...realScan.findings.map(f => ({
+          ...f,
+          source: `真实扫描(${f.tool})`,
+          verified: true,
+        })));
+      }
+    } catch (e) {
+      console.error(`[SecurityWorkflow] 真实扫描失败(降级为 LLM 扫描): ${e.message}`);
+      realScan.error = e.message;
+      broadcast({ type: 'security_real_scan_failed', workflowId, error: e.message });
+    }
+
+    const realEvidenceBrief = realScan.findings.length
+      ? realScan.findings.slice(0, 60).map((f, i) =>
+          `${i + 1}. [${f.severity.toUpperCase()}][${f.tool}/${f.category}] ${f.title}\n   位置: ${f.location || '-'}\n   说明: ${(f.description || '').slice(0, 300)}\n   建议: ${(f.remediation || '').slice(0, 200)}`
+        ).join('\n')
+      : '（真实扫描器未产出结果，请基于方案与用例做保守分析，不得虚构已验证漏洞）';
+
     const scanInput = {
       target,
       scanType,
@@ -15339,7 +15599,19 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
       description,
       scheme: scheme || {},
       testCases: testCases?.testCases || [],
-      template: scanTemplate
+      template: scanTemplate,
+      // 真实证据（强约束：报告必须以这些为准）
+      realScanEvidence: {
+        engine: realScan.tools.map(t => ({ tool: t.tool, ok: t.ok, findings: t.findings, durationMs: t.durationMs })),
+        summary: realScan.summary,
+        findings: realScan.findings.slice(0, 80).map(f => ({
+          title: f.title, severity: f.severity, category: f.category, tool: f.tool,
+          location: f.location, description: f.description,
+          cve: f.cve, cwe: f.cwe, cvss: f.cvss, remediation: f.remediation,
+        })),
+        instruction: '以下 findings 来自真实扫描工具，必须原样纳入报告；不要编造未列出的已验证漏洞，可以补充需要人工验证的风险假设并明确标注未验证。',
+      },
+      evidenceBrief: realEvidenceBrief,
     };
 
     const scanResult = await spawnAgentSession(
@@ -15349,17 +15621,30 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
       null, true, [], userId
     );
     const scanOutput = extractJson(scanResult.text || scanResult.content || '');
-    results.stages.push({ stage: '执行安全扫描', agentId: 'security-sentinel', success: !!scanOutput, output: scanOutput?.findings?.length || 0 });
+    results.stages.push({
+      stage: '执行安全扫描', agentId: 'security-sentinel', success: !!scanOutput,
+      output: scanOutput?.findings?.length || 0,
+      realFindings: realScan.findings.length,
+      tools: realScan.tools.map(t => `${t.tool}:${t.findings}`).join(' '),
+    });
     // 落盘本阶段三格式交付物(md + docx + xlsx)
     const sec2Files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', '执行安全扫描', 2, scanResult.text || scanResult.content || '');
     const sec2Art = buildWorkflowArtifacts(workflowId, sec2Files, 'sec2');
     results.allArtifacts.push(...sec2Art);
     broadcast({ type: 'workflow_stage_completed', workflowId, stage: '执行安全扫描', success: !!scanOutput, outputFiles: sec2Files, artifacts: sec2Art });
 
-    // 保存扫描发现的漏洞
+    // 补充 LLM 在真实证据之外提出的发现（标记为待验证）
     if (scanOutput?.findings?.length > 0) {
-      results.findings.push(...scanOutput.findings.map(f => ({ ...f, source: '自动扫描' })));
+      const realKeys = new Set(realScan.findings.map(f => `${(f.title || '').toLowerCase()}|${f.location || ''}`));
+      const extra = scanOutput.findings
+        .filter(f => !realKeys.has(`${(f.title || f.name || '').toLowerCase()}|${f.location || ''}`))
+        .map(f => ({ ...f, source: '自动扫描(LLM补充,待验证)', verified: false }));
+      if (extra.length) results.findings.push(...extra);
     }
+
+    // 记录真实扫描摘要，供报告阶段使用
+    results.realScanSummary = realScan.summary;
+    results.realScanTools = realScan.tools;
 
     // ========== 阶段4: 执行手工渗透 ==========
     broadcast({ type: 'workflow_stage_started', workflowId, stage: '执行手工渗透', agentId: 'security-sentinel' });
@@ -15434,7 +15719,9 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
       report: report || null,
       findings: results.findings,
       stages: results.stages,
-      durationMs: Date.now() - startTime
+      durationMs: Date.now() - startTime,
+      realScanSummary: results.realScanSummary || null,
+      realScanTools: results.realScanTools || null,
     });
     // 落盘报告阶段三格式交付物(md + docx + xlsx),以可读 Markdown 报告为正文
     const sec4Files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', '安全报告生成', 4, results.fullReportText || reportResult.text || '');
@@ -15525,7 +15812,7 @@ async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
 // POST /api/security/workflow
 app.post('/api/security/workflow', authenticate, async (req, res) => {
   try {
-    const { target, scanType = 'full', description = '', testDomain = 'web' } = req.body;
+    const { target, scanType = 'full', description = '', testDomain = 'web', sourcePath = '' } = req.body;
     const stageIdx = parseInt(req.query.stage);
     if (!target) return res.status(400).json({ error: '缺少 target 参数' });
 
@@ -15541,6 +15828,33 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
 
       // 临时 workflowId 用于 SSE 广播
       const singleWfId = `sec-single-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+      // 扫描/渗透阶段：先跑真实工具，把证据注入提示词（深度来自工具而非模型想象）
+      let stageRealScan = null;
+      if (phase === 'scan' || phase === 'pentest') {
+        try {
+          sseBroadcast({ type: 'security_real_scan_started', workflowId: singleWfId, target, mode: 'auto', userId });
+          stageRealScan = await runRealSecurityScanForWorkflow({ target, description, testDomain, sourcePath });
+          phaseInput.realScanEvidence = {
+            engine: stageRealScan.tools,
+            summary: stageRealScan.summary,
+            findings: stageRealScan.findings.slice(0, 80).map(f => ({
+              title: f.title, severity: f.severity, category: f.category, tool: f.tool,
+              location: f.location, description: f.description,
+              cve: f.cve, cwe: f.cwe, cvss: f.cvss, remediation: f.remediation,
+            })),
+            instruction: '以下 findings 来自真实扫描工具，必须原样纳入报告；不要编造未列出的已验证漏洞。',
+          };
+          sseBroadcast({
+            type: 'security_real_scan_completed', workflowId: singleWfId,
+            tools: stageRealScan.tools, summary: stageRealScan.summary,
+            findings: stageRealScan.findings.length, userId,
+          });
+        } catch (e) {
+          console.error(`[SecurityWorkflow] 单阶段真实扫描失败: ${e.message}`);
+          sseBroadcast({ type: 'security_real_scan_failed', workflowId: singleWfId, error: e.message, userId });
+        }
+      }
 
       // 写入 tasks 表，使单阶段任务在任务列表可见
       await taskDAO.createTask({
@@ -15623,7 +15937,7 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
     sseBroadcast({ type: 'workflow_stage_started', workflowId, stage: '安全测试', agentId: 'security-sentinel', userId });
     res.json({ success: true, workflowId, taskId, target, scanType, message: '安全智能体正在执行完整测试，请等待...' });
 
-    executeSecurityWorkflow(workflowId, { target, scanType, domain: testDomain, description: maskedDesc }, userId)
+    executeSecurityWorkflow(workflowId, { target, scanType, domain: testDomain, description: maskedDesc, sourcePath }, userId)
       .then(async (wr) => {
         const status = wr && wr.status === 'completed' ? 'completed' : 'failed';
         // 全工作流预估工时:基于域规模估算(全域/全量约为单域 2 倍)
