@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """139邮箱登录测试脚本 - 修正版"""
 import asyncio
+import os
 from playwright.async_api import async_playwright
 
 async def main():
@@ -39,7 +40,7 @@ async def main():
                 print('Account filled')
             
             if await pwd_input.count() > 0:
-                await pwd_input.fill('I2ss56tb@')
+                await pwd_input.fill(os.environ.get('TEST_USER_PASSWORD', ''))
                 print('Password filled')
             
             # 点击同意复选框

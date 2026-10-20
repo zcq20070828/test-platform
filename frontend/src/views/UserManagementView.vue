@@ -153,7 +153,7 @@ const validatePassword = (rule: any, value: string, callback: Function) => {
     callback(new Error('密码须包含数字'))
     return
   }
-  if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(value)) {
+  if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/.test(value)) {
     callback(new Error('密码须包含特殊字符'))
     return
   }

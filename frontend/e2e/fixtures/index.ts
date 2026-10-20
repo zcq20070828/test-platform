@@ -87,7 +87,7 @@ export const test = base.extend<{
     // 使用与后端 users.json 一致的测试账号
     const testCredentials = {
       username: process.env.TEST_USER_USERNAME || 'admin',
-      password: process.env.TEST_USER_PASSWORD || 'I2ss56tb@'
+      password: process.env.TEST_USER_PASSWORD || ''
     }
 
     // 执行登录

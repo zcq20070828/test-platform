@@ -11,7 +11,7 @@ test.describe("智能体管理", () => {
 
     // 使用现有的管理员账号登录
     const loginRes = await page.request.post(`${API}/api/auth/login`, {
-      data: { username: "admin", password: "I2ss56tb@" }
+      data: { username: process.env.TEST_USER_NAME || "admin", password: process.env.TEST_USER_PASSWORD || "" }
     });
 
     const body = await loginRes.json();

@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { ElMessage } from 'element-plus'
 import type { KnowledgeDoc } from '@/types'
+import { highlightSafe } from '@/utils/safe-html'
 
 const emit = defineEmits<{
   (e: 'view-document', doc: KnowledgeDoc): void
@@ -108,11 +109,9 @@ function formatScore(score: number): string {
   return (score * 100).toFixed(0) + '%'
 }
 
-// 高亮关键词
+// 高亮关键词：先转义正文与关键词，再做字面量匹配（防止 ReDoS 与 HTML 注入）
 function highlightText(text: string, keyword: string): string {
-  if (!keyword) return text
-  const regex = new RegExp(`(${keyword})`, 'gi')
-  return text.replace(regex, '<mark>$1</mark>')
+  return highlightSafe(text, keyword, 200)
 }
 </script>
 

@@ -4,9 +4,10 @@ import { useMainStore } from '@/stores/main'
 import { ElMessage } from 'element-plus'
 import type { Agent, ChatMessage, ThinkingStep, AttachmentFile } from '@/types'
 import VoiceInput from '@/components/VoiceInput.vue'
-import { marked } from 'marked'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
+import { Marked } from 'marked'
+import { sanitizeHtml, renderMarkdownSafe, escapeHtml } from '@/utils/safe-html'
 import {
   CircleClose, User, ChatDotRound,
   InfoFilled, Loading, SuccessFilled,
@@ -14,28 +15,34 @@ import {
   EditPen, DataAnalysis, PictureFilled, FolderOpened, View, Download, CopyDocument, ArrowRight
 } from '@element-plus/icons-vue'
 
-// ===== 全局 marked 配置：highlight.js 语法高亮 + 复制按钮 =====
+// ===== 局部 marked 实例：避免多个组件用 marked.use() 互相覆盖 renderer =====
 const ThinkingIcon = 'Setting'
 const Tools = 'Tools'
-const _codeRenderer = new marked.Renderer()
-_codeRenderer.code = ({ text, lang }: { text: string; lang?: string }) => {
+const localMarked = new Marked({ breaks: true, gfm: true })
+
+function renderCodeBlock(text: string, lang?: string): string {
   const language = lang || ''
-  const uid = 'cb-' + Math.random().toString(36).substr(2, 8)
   let highlighted: string
   try {
     highlighted = (language && hljs.getLanguage(language))
       ? hljs.highlight(text, { language }).value
       : hljs.highlightAuto(text).value
   } catch {
-    highlighted = text
+    highlighted = escapeHtml(text)
   }
-  const copyScript = `navigator.clipboard.writeText(document.getElementById("${uid}").textContent||"").then(()=>{const b=this;b.textContent="已复制!";setTimeout(()=>b.textContent="复制",1500)}).catch(()=>{this.textContent="失败"})`
-  return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${language || 'code'}</span><button class="code-block-copy" onclick="${copyScript}">复制</button></div><pre class="code-block-pre"><code id="${uid}" class="hljs language-${language}">${highlighted}</code></pre></div>`
+  // 复制交互由组件事件委托处理，不写内联 onclick（CSP 友好，也去掉一个注入面）
+  return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${escapeHtml(language || 'code')}</span><button class="code-block-copy" type="button" data-copy>复制</button></div><pre class="code-block-pre"><code class="hljs language-${escapeHtml(language)}">${highlighted}</code></pre></div>`
 }
-marked.use({ renderer: _codeRenderer, breaks: true, gfm: true })
+
+localMarked.use({
+  renderer: {
+    code({ text, lang }: { text: string; lang?: string }) { return renderCodeBlock(text, lang) },
+  },
+})
+
 function renderMarkdown(text: string): string {
   if (!text) return ''
-  try { return marked.parse(text) as string } catch { return escapeHtml(text) }
+  return renderMarkdownSafe(text, localMarked)
 }
 function renderContent(text: string): string { return renderMarkdown(text) }
 
@@ -72,23 +79,24 @@ const previewRenderedContent = ref('')
 function openPreview(artifact: any) {
   previewArtifact.value = artifact
   if (artifact.content) {
-    const renderer = new marked.Renderer()
-    renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
-      const language = lang || ''
-      let highlighted: string
-      try {
-        if (language && hljs.getLanguage(language)) {
-          highlighted = hljs.highlight(text, { language }).value
-        } else {
-          highlighted = hljs.highlightAuto(text).value
-        }
-      } catch {
-        highlighted = text
-      }
-      return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${language || 'code'}</span></div><pre class="code-block-pre"><code class="hljs language-${language}">${highlighted}</code></pre></div>`
-    }
-    marked.use({ renderer, breaks: true, gfm: true })
-    previewRenderedContent.value = marked.parse(artifact.content) as string
+    const previewMarked = new Marked({ breaks: true, gfm: true })
+    previewMarked.use({
+      renderer: {
+        code({ text, lang }: { text: string; lang?: string }) {
+          const language = lang || ''
+          let highlighted: string
+          try {
+            highlighted = (language && hljs.getLanguage(language))
+              ? hljs.highlight(text, { language }).value
+              : hljs.highlightAuto(text).value
+          } catch {
+            highlighted = escapeHtml(text)
+          }
+          return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${escapeHtml(language || 'code')}</span></div><pre class="code-block-pre"><code class="hljs language-${escapeHtml(language)}">${highlighted}</code></pre></div>`
+        },
+      },
+    })
+    previewRenderedContent.value = renderMarkdownSafe(artifact.content, previewMarked)
   } else {
     previewRenderedContent.value = '<p style="color:#999;text-align:center;">无预览内容</p>'
   }
@@ -253,10 +261,26 @@ function formatFileSize(bytes: number): string {
 
 // 预览输出物
 // HTML 转义
-function escapeHtml(text: string): string {
+function escapeHtmlLegacy(text: string): string {
   const div = document.createElement('div')
   div.textContent = text
   return div.innerHTML
+}
+
+// 代码块「复制」按钮:事件委托,替代原先的内联 onclick
+function onMessageAreaClick(e: MouseEvent) {
+  const target = e.target as HTMLElement | null
+  const btn = target?.closest?.('[data-copy]') as HTMLElement | null
+  if (!btn) return
+  const wrapper = btn.closest('.code-block-wrapper')
+  const codeEl = wrapper?.querySelector('code')
+  if (!codeEl) return
+  navigator.clipboard.writeText(codeEl.textContent || '')
+    .then(() => {
+      btn.textContent = '已复制!'
+      setTimeout(() => { btn.textContent = '复制' }, 1500)
+    })
+    .catch(() => { btn.textContent = '失败' })
 }
 
 // 编辑输出物
@@ -435,7 +459,7 @@ onMounted(() => {
     </div>
 
     <!-- 消息区域 -->
-    <div class="messages-container" ref="messagesContainer">
+    <div class="messages-container" ref="messagesContainer" @click="onMessageAreaClick">
       <div v-if="messages.length === 0" class="empty-state">
         <div class="empty-icon-wrap">
           <el-icon :size="48"><ChatDotRound /></el-icon>
@@ -525,9 +549,10 @@ onMounted(() => {
               </el-collapse>
             </div>
 
-            <!-- 消息文本 -->
+            <!-- 消息文本:流式阶段按纯文本插值,结束才走 Markdown 渲染+清洗(v-html 不允许直出原文) -->
             <div class="message-text" v-if="msg.content" :class="{ 'is-streaming-text': msg.isStreaming }">
-              <span v-html="msg.isStreaming ? msg.content : renderContent(msg.content)"></span><span v-if="msg.isStreaming" class="typing-cursor">▊</span>
+              <span v-if="msg.isStreaming" class="streaming-plaintext">{{ msg.content }}</span>
+              <span v-else v-html="renderContent(msg.content)"></span><span v-if="msg.isStreaming" class="typing-cursor">▊</span>
             </div>
             
             <!-- 输出物列表 -->
@@ -1114,14 +1139,18 @@ onMounted(() => {
 }
 
 /* 打字光标 */
+.is-streaming-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.streaming-plaintext {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .typing-cursor {
   animation: blink-cursor 0.8s steps(2) infinite;
   color: var(--el-color-primary);
   font-weight: bold;
-}
-
-.is-streaming-text {
-  position: relative;
 }
 
 /* 动画关键帧 */

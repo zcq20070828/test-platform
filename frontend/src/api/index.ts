@@ -13,6 +13,49 @@ export function getAuthHeaders(): Record<string, string> {
   return {}
 }
 
+// 401 静默续期：single-flight（并发 401 只发一次刷新，避免后到的请求用旧 token 失败）
+let refreshPromise: Promise<string | null> | null = null
+
+function refreshAccessToken(): Promise<string | null> {
+  if (refreshPromise) return refreshPromise
+  const refreshToken = localStorage.getItem('refreshToken')
+  if (!refreshToken) return Promise.resolve(null)
+
+  refreshPromise = (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      })
+      if (!res.ok) return null
+      const data = await res.json()
+      if (!data?.token) return null
+      localStorage.setItem('token', data.token)
+      // 同步 localStorage.user，避免刷新页面后 user.token 仍是旧值
+      const storedUser = localStorage.getItem('user')
+      if (storedUser) {
+        try {
+          const parsed = JSON.parse(storedUser)
+          parsed.token = data.token
+          localStorage.setItem('user', JSON.stringify(parsed))
+        } catch { /* ignore */ }
+      }
+      // 通知 Pinia（SSE 重连等仍持有旧 token 的地方）刷新内存态
+      try {
+        window.dispatchEvent(new CustomEvent('auth:token-refreshed', { detail: { token: data.token } }))
+      } catch { /* ignore */ }
+      return data.token as string
+    } catch {
+      return null
+    } finally {
+      // 释放锁放到微任务，保证同一事件循环内的并发请求共享同一个 promise
+      setTimeout(() => { refreshPromise = null }, 0)
+    }
+  })()
+  return refreshPromise
+}
+
 // 通用请求方法
 export async function request<T>(
   endpoint: string,
@@ -20,62 +63,35 @@ export async function request<T>(
 ): Promise<ApiResponse<T>> {
   try {
     const isRaw = options?.raw && options?.body instanceof FormData
-    const headers = isRaw
-      ? { ...getAuthHeaders(), ...options?.headers }
-      : { 'Content-Type': 'application/json', ...getAuthHeaders(), ...options?.headers }
+    const buildHeaders = (token?: string | null) => {
+      const auth = token ? { 'Authorization': `Bearer ${token}` } : getAuthHeaders()
+      return isRaw
+        ? { ...auth, ...options?.headers }
+        : { 'Content-Type': 'application/json', ...auth, ...options?.headers }
+    }
 
     const response = await fetch(`${API_BASE}${endpoint}`, {
       ...options,
-      headers
+      headers: buildHeaders()
     })
 
-    // 401 未授权 → 尝试用 refreshToken 静默续期，失败才触发会话过期（登录/刷新接口除外）
+    // 401 未授权 → single-flight 刷新后重试一次，仍失败才触发会话过期
     if (response.status === 401) {
-      // 登录/刷新接口失败不应该触发 session:expired
-      if (endpoint !== '/api/auth/login' && endpoint !== '/api/auth/register' && endpoint !== '/api/auth/refresh') {
-        // 静默续期：local 与 keycloak 共用 /api/auth/refresh，刷新成功则重试原请求
-        const refreshToken = localStorage.getItem('refreshToken')
-        if (refreshToken) {
-          let refreshed = false
-          try {
-            const refreshRes = await fetch(`${API_BASE}/api/auth/refresh`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ refreshToken })
-            })
-            if (refreshRes.ok) {
-              const refreshData = await refreshRes.json()
-              localStorage.setItem('token', refreshData.token)
-              // 同步更新 localStorage.user，避免 user.value.token 仍是旧值导致刷新页面后登出
-              const storedUser = localStorage.getItem('user')
-              if (storedUser) {
-                try {
-                  const parsedUser = JSON.parse(storedUser)
-                  parsedUser.token = refreshData.token
-                  localStorage.setItem('user', JSON.stringify(parsedUser))
-                } catch { /* ignore */ }
-              }
-              // 用新 token 重试原始请求
-              const retryHeaders = isRaw
-                ? { 'Authorization': `Bearer ${refreshData.token}`, ...options?.headers }
-                : { 'Content-Type': 'application/json', 'Authorization': `Bearer ${refreshData.token}`, ...options?.headers }
-              const retryResponse = await fetch(`${API_BASE}${endpoint}`, {
-                ...options,
-                headers: retryHeaders
-              })
-              if (retryResponse.ok) {
-                const retryData = await retryResponse.json()
-                return { success: true, data: retryData }
-              }
-              refreshed = true
-            }
-          } catch {
-            // 刷新失败，继续走正常的 401 处理
+      const isAuthEndpoint = endpoint === '/api/auth/login' || endpoint === '/api/auth/register' || endpoint === '/api/auth/refresh'
+      if (!isAuthEndpoint) {
+        const newToken = await refreshAccessToken()
+        if (newToken) {
+          const retryResponse = await fetch(`${API_BASE}${endpoint}`, {
+            ...options,
+            headers: buildHeaders(newToken)
+          })
+          if (retryResponse.ok) {
+            const retryData = await retryResponse.json().catch(() => ({}))
+            try { autoLogAction((options?.method || 'GET').toUpperCase(), endpoint) } catch { /* ignore */ }
+            return { success: true, data: retryData }
           }
-          if (!refreshed) {
-            // refreshToken 无效或已过期，清理后触发登出
-            localStorage.removeItem('refreshToken')
-          }
+        } else {
+          localStorage.removeItem('refreshToken')
         }
         window.dispatchEvent(new CustomEvent('session:expired'))
       }
@@ -84,13 +100,17 @@ export async function request<T>(
     }
 
     if (!response.ok) {
-      return { success: false, error: `HTTP ${response.status}` }
+      const data = await response.json().catch(() => ({}))
+      return { success: false, error: data.error || `HTTP ${response.status}` }
     }
 
-    const data = await response.json()
+    // 204 / 空响应不强行 json()，避免正常请求被包装成失败
+    if (response.status === 204) return { success: true, data: undefined as unknown as T }
+    const text = await response.text()
+    const data = text ? JSON.parse(text) : undefined
     // 自动记录关键用户行为（防抖，失败静默忽略）
     try { autoLogAction((options?.method || 'GET').toUpperCase(), endpoint) } catch { /* ignore */ }
-    return { success: true, data }
+    return { success: true, data: data as T }
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -160,17 +180,12 @@ export const tokenStatsApi = {
 export const authApi = {
   // 登录
   async login(username: string, password: string): Promise<{ token: string; refreshToken: string; user: any } | null> {
-    console.log('[authApi.login] 调用登录 API')
-    console.log('[authApi.login] username:', username)
-    console.log('[authApi.login] password:', password)
-    console.log('[authApi.login] 请求体:', JSON.stringify({ username, password }))
-
+    // 安全整改(2026-10-19): 删除所有凭据日志(此前 password 明文进控制台并打进生产包)
     const res = await request<{ token: string; refreshToken: string; user: any }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password })
     })
 
-    console.log('[authApi.login] 响应:', res)
     if (res.success) return res.data!
     // 将后端错误信息附加到返回值，供视图显示
     const errMsg = res.error || '登录失败'
@@ -969,8 +984,8 @@ export const performanceTestApi = {
     const r = await request(`/api/performance-test/findings/${id}`, { method: 'PUT', body: JSON.stringify(patch) })
     return r.success
   },
-  async getStats(): Promise<Record<string, unknown> | null> {
-    const res = await request<{ data: Record<string, unknown> }>('/api/performance-test/stats')
+  async getStats(): Promise<{ totalReports: number; openFindings: number; avgScore: number | null; severityDist: Record<string, number> } | null> {
+    const res = await request<{ data: { totalReports: number; openFindings: number; avgScore: number | null; severityDist: Record<string, number> } }>('/api/performance-test/stats')
     return res.success ? (res.data as any).data : null
   },
   async downloadReportMd(id: number): Promise<void> {

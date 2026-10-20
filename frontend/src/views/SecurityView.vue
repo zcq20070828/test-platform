@@ -609,7 +609,7 @@
         <div v-if="detailReport.report_json && detailReport.report_json.attackChains && detailReport.report_json.attackChains.length" class="detail-attack-chains">
           <h4 class="detail-section-title">🎯 攻击链</h4>
           <div v-for="(ac, i) in detailReport.report_json.attackChains" :key="i" class="attack-chain-item">
-            <div class="attack-chain-name">{{ i + 1 }}. {{ ac.name }}</div>
+            <div class="attack-chain-name">{{ Number(i) + 1 }}. {{ ac.name }}</div>
             <ol class="attack-chain-steps">
               <li v-for="(s, j) in (ac.steps || [])" :key="j">{{ s }}</li>
             </ol>

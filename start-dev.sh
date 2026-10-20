@@ -110,7 +110,7 @@ start_backend(){
     fi
     while IFS='=' read -r k v; do
       case "$k" in
-        DB_HOST|DB_PORT|DB_USER|DB_PASSWORD|DB_NAME|DEEPSEEK_API_KEY|AI_API_KEY|AI_BASE_URL|AI_MODEL|PLATFORM_PYTHON_PATH)
+        DB_HOST|DB_PORT|DB_USER|DB_PASSWORD|DB_NAME|DEEPSEEK_API_KEY|AI_API_KEY|AI_BASE_URL|AI_MODEL|PLATFORM_PYTHON_PATH|LOCAL_JWT_SECRET|DEFAULT_ADMIN_PASSWORD|ALLOWED_ORIGINS|BIND_HOST|TRUST_PROXY|WARMUP_ENABLED)
           v="${v%\"}"; v="${v#\"}"   # 去掉可能的行尾/行首双引号
           [ -n "$v" ] && DB_ENV_ARGS+=("$k=$v")
           ;;

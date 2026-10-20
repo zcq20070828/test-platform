@@ -107,7 +107,7 @@ function resetOutput() {
 
 function extractUrl(text: string): string {
   const m = text.match(/(https?:\/\/[^\s一-龥]+)/)
-  return m ? m[1] : ''
+  return m?.[1] ?? ''
 }
 
 const TEXT_EXTS = ['.txt', '.md', '.json', '.csv', '.log', '.yaml', '.yml', '.xml', '.html', '.js', '.ts', '.py', '.java', '.go', '.sql']

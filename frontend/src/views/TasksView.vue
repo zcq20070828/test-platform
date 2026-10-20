@@ -5,6 +5,7 @@ import { useMainStore } from '@/stores/main'
 import { taskApi, getAuthHeaders } from '@/api'
 import type { Task, TaskStatus, Artifact } from '@/types'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { escapeHtml as escapeHtmlUtil } from '@/utils/safe-html'
 import {
   Search, Refresh, CopyDocument, RefreshRight,
   Document, EditPen, DataAnalysis, PictureFilled, FolderOpened, View, Download
@@ -213,11 +214,16 @@ async function previewArtifact(artifact: Artifact) {
   }
   const previewWindow = window.open('', '_blank')
   if (previewWindow) {
+    // 断开 opener,避免新窗口通过 window.opener 读回本页 localStorage.token
+    try { previewWindow.opener = null } catch { /* 跨域时忽略 */ }
+    // 安全整改(2026-10-19): artifact.name 来自 AI/用户文件名,此前未转义直接进 HTML,
+    // `</h3><img src=x onerror=...>` 可在新窗口执行。这里名称与正文都统一转义。
+    const safeName = escapeHtml(artifact.name)
     previewWindow.document.write(`
       <html>
-        <head><title>预览 - ${artifact.name}</title></head>
+        <head><title>预览 - ${safeName}</title></head>
         <body style="font-family: monospace; padding: 20px; background: #f5f5f5;">
-          <h3>${artifact.name}</h3>
+          <h3>${safeName}</h3>
           <pre style="background: white; padding: 16px; border-radius: 8px; overflow: auto;">${escapeHtml(content)}</pre>
         </body>
       </html>
@@ -226,11 +232,9 @@ async function previewArtifact(artifact: Artifact) {
   }
 }
 
-// HTML 转义
+// HTML 转义：统一使用 safe-html 工具，避免三处重复实现
 function escapeHtml(text: string): string {
-  const div = document.createElement('div')
-  div.textContent = text
-  return div.innerHTML
+  return escapeHtmlUtil(text)
 }
 
 // 下载输出物
@@ -276,7 +280,7 @@ async function downloadFullOutput(task: Task) {
   try {
     ElMessage.info('正在获取完整输出物...')
     
-    const response = await fetch(`/api/tasks/${task.id}/output`)
+    const response = await fetch(`/api/tasks/${task.id}/output`, { headers: getAuthHeaders() })
     const data = await response.json()
     
     if (!response.ok) {

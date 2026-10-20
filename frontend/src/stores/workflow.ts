@@ -192,9 +192,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   // 获取智能体名称
-  function getAgentName(agentId: string): string {
-    return agentInfo[agentId]?.name || agentId
-  }
 
   // 获取智能体完整信息
   function getAgentDetail(agentId: string) {

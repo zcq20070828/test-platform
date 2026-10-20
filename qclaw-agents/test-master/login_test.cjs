@@ -36,7 +36,7 @@ const { chromium } = require('playwright');
       console.log('Account filled');
     }
     if (await pwdInput.count() > 0) {
-      await pwdInput.fill('I2ss56tb@');
+      await pwdInput.fill(process.env.TEST_USER_PASSWORD || '');
       console.log('Password filled');
     }
     

@@ -21,8 +21,8 @@ export const useFileStore = defineStore('file', () => {
   const isLoading = ref(false)
   const history = ref<string[]>([])
 
-  // 根目录
-  const rootPath = ref('/Users/zhaochengqing')
+  // 根目录：由后端 /api/fs/browse 返回的 HOME 决定，不在前端硬编码开发机路径
+  const rootPath = ref('')
 
   // 计算属性
   const currentDir = computed(() => {
@@ -35,6 +35,11 @@ export const useFileStore = defineStore('file', () => {
 
   // 初始化
   async function init() {
+    // 先向后端要默认目录（服务端 HOME），避免泄漏/写死某台机器的用户名
+    try {
+      const root = await fsApi.browse()
+      if (root?.path) rootPath.value = root.path
+    } catch { /* 后端不可用时保持空根目录，由调用方提示 */ }
     currentPath.value = rootPath.value
     await loadDirectory(currentPath.value)
   }
@@ -74,10 +79,12 @@ export const useFileStore = defineStore('file', () => {
     await loadDirectory(path)
   }
 
-  // 返回上级目录
+  // 返回上级目录（此前只计算了父路径却没有真正跳转，功能是坏的）
   async function goBack() {
     if (!hasParent.value) return
-    const parentPath = currentPath.value.substring(0, currentPath.value.lastIndexOf('/')) || rootPath.value
+    const idx = currentPath.value.lastIndexOf('/')
+    const parentPath = idx > 0 ? currentPath.value.slice(0, idx) : rootPath.value
+    await loadDirectory(parentPath || rootPath.value)
   }
 
   // 返回历史
@@ -115,16 +122,16 @@ export const useFileStore = defineStore('file', () => {
     selectedFiles.value = []
   }
 
-  // 上传到知识库
+  // 上传到知识库：文件已在服务端，直接走 /api/kb/import（此前伪造 File 对象必然失败）
   async function uploadToKnowledge(paths: string[]): Promise<boolean> {
     try {
-      // 逐个上传文件
-      for (const filePath of paths) {
-        const fileName = filePath.split('/').pop() || 'file'
-        const res = await knowledgeApi.upload({ name: fileName } as File, 'general')
-        if (!res.success) return false
+      if (!paths.length) return false
+      const result = await knowledgeApi.importFromPaths(paths, 'general')
+      if (!result) return false
+      if (Array.isArray(result.errors) && result.errors.length > 0) {
+        console.warn('[FileStore] 部分文件导入失败:', result.errors)
       }
-      return true
+      return result.imported > 0
     } catch {
       return false
     }
