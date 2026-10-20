@@ -16,9 +16,24 @@
 | pip-audit | SCA | Python 依赖 advisory | `pip install pip-audit` |
 | Nikto | DAST | Web 服务器配置/危险文件 | `brew install nikto` |
 | Nmap | DAST | 端口与服务暴露面 | `brew install nmap` |
-| Nuclei | DAST | 模板化 Web 漏洞验证（可选） | `brew install nuclei` |
+| Gitleaks | Secrets | 硬编码密钥/凭据（800+ 规则） | `brew install gitleaks` 或 GitHub Releases |
+| OSV-Scanner | SCA | 依赖漏洞（Google OSV 库，覆盖多生态） | `brew install osv-scanner` 或 GitHub Releases |
+| Nuclei | DAST | 模板化 Web 漏洞验证（14,000+ 社区模板） | `brew install nuclei` + `nuclei -update-templates` |
 
 工具缺失时接口会明确返回 `available: false` 与安装提示，**不会伪造结果**。
+
+## 各工具的默认调用策略
+
+| 工具 | 默认参数要点 |
+| --- | --- |
+| Semgrep | `--config p/security-audit --config p/secrets`，排除 node_modules/dist/output |
+| Trivy | 只跑 `--scanners vuln`（secret 全量遍历要 3-4 分钟，已由 semgrep 覆盖），DB 源用 `public.ecr.aws` |
+| Bandit | `-x` 用**相对路径前缀**排除（glob 形式会静默失效） |
+| Gitleaks | 排除路径写进 config 的 `allowlists.paths`（**正则**，8.x 没有 `--exclude-path`） |
+| OSV-Scanner | `scan --recursive`，自动识别 lockfile |
+| Nuclei | `-jsonl -tags cve,exposure,misconfig,default-login,panel,takeover -no-interactsh`（不限定 tags 会跑 1.4 万模板，单目标 3 分钟以上） |
+| Nikto | `-Format json -nointeractive`，JSON 结构为 `[{host,vulnerabilities[]}]` |
+| Nmap | `-F -T4 -Pn -oX -`，只报开放端口 |
 
 ## API
 
@@ -36,7 +51,9 @@ LLM 补充的、工具未验证的发现会标记 `verified: false` 并在来源
 
 ## 安全约束
 
-- 一律 `execFile` + 参数数组，不经 shell；
+- 一律 `spawn` + 参数数组（`stdin: 'ignore'`），不经 shell。
+  注意：不能用 `execFile`——它的 stdin 是管道，nuclei 会一直等 stdin EOF，
+  实测 90 秒仍不退出；换成 spawn 后 61 秒正常完成；
 - 源码扫描路径限制在项目目录与 `runtime/git-clones` 内；
 - 每个工具独立超时，单工具失败不影响其它工具；
 - 只做只读扫描，不执行 exploit。

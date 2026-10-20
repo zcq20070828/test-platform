@@ -23,7 +23,7 @@
  *   5. 工具缺失时返回明确的 unavailable 状态，绝不伪造结果。
  */
 
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -99,6 +99,28 @@ export const SCANNERS = {
     bin: 'bandit',
     versionArgs: ['--version'],
   },
+  gitleaks: {
+    id: 'gitleaks',
+    name: 'Gitleaks',
+    category: 'secret',
+    kind: 'source',
+    description: '硬编码密钥/凭据扫描（800+ 规则，支持 Git 历史）',
+    homepage: 'https://github.com/gitleaks/gitleaks',
+    license: 'MIT',
+    bin: 'gitleaks',
+    versionArgs: ['version'],
+  },
+  osv_scanner: {
+    id: 'osv_scanner',
+    name: 'OSV-Scanner',
+    category: 'sca',
+    kind: 'source',
+    description: '依赖漏洞（Google OSV 数据库，覆盖 npm/pip/go/maven 等）',
+    homepage: 'https://github.com/google/osv-scanner',
+    license: 'Apache-2.0',
+    bin: 'osv-scanner',
+    versionArgs: ['--version'],
+  },
   nuclei: {
     id: 'nuclei',
     name: 'Nuclei',
@@ -135,24 +157,56 @@ export const SCANNERS = {
 };
 
 // ============ 执行封装 ============
+// 用 spawn 而不是 execFile：execFile 的 stdin 是管道，nuclei 会等 stdin 读到 EOF
+// 才退出（实测 execFile 90s 仍未结束，spawn + stdin:ignore 61s 正常完成）。
 function runTool(bin, args, { timeoutMs = DEFAULT_TIMEOUT_MS, cwd } = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
-    execFile(
-      bin,
-      args,
-      { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, cwd, env: RUN_ENV },
-      (err, stdout, stderr) => {
-        resolve({
-          ok: !err,
-          timedOut: !!(err && err.killed),
-          exitCode: err ? (err.code ?? -1) : 0,
-          stdout: String(stdout || ''),
-          stderr: String(stderr || ''),
-          durationMs: Date.now() - started,
-        });
-      }
-    );
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+
+    const child = spawn(bin, args, {
+      cwd,
+      env: RUN_ENV,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        ok: code === 0,
+        timedOut,
+        exitCode: code ?? -1,
+        stdout: stdout.slice(0, MAX_OUTPUT_BYTES),
+        stderr: stderr.slice(0, MAX_OUTPUT_BYTES),
+        durationMs: Date.now() - started,
+      });
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      // 给 3 秒收尾，仍不退则强杀
+      setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } }, 3000);
+    }, timeoutMs);
+
+    child.stdout?.on('data', (d) => {
+      stdout += d.toString();
+      if (stdout.length > MAX_OUTPUT_BYTES * 2) stdout = stdout.slice(0, MAX_OUTPUT_BYTES);
+    });
+    child.stderr?.on('data', (d) => {
+      stderr += d.toString();
+      if (stderr.length > MAX_OUTPUT_BYTES * 2) stderr = stderr.slice(0, MAX_OUTPUT_BYTES);
+    });
+    child.on('error', (err) => {
+      stderr += `\n[spawn error] ${err.message}`;
+      finish(err.code === 'ENOENT' ? 127 : -1);
+    });
+    child.on('close', (code) => finish(code));
   });
 }
 
@@ -164,7 +218,9 @@ export async function getScannerStatus({ refresh = false } = {}) {
   const entries = await Promise.all(
     Object.values(SCANNERS).map(async (meta) => {
       const probe = await runTool(meta.bin, meta.versionArgs, { timeoutMs: 8000 });
-      const firstLine = (probe.stdout || probe.stderr || '').split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
+      // 去掉 ANSI 颜色码（nuclei 的版本输出带颜色）
+      const clean = (probe.stdout || probe.stderr || '').replace(/\x1b\[[0-9;]*m/g, '');
+      const firstLine = clean.split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
       const status = {
         id: meta.id,
         name: meta.name,
@@ -190,7 +246,9 @@ function installHint(meta) {
     case 'trivy': return 'brew install trivy（或从 GitHub Releases 下载二进制到 ~/.local/bin）';
     case 'pip_audit': return 'pip install pip-audit';
     case 'bandit': return 'pip install bandit';
-    case 'nuclei': return 'brew install nuclei（或从 GitHub Releases 下载）';
+    case 'nuclei': return 'brew install nuclei（或从 GitHub Releases 下载）；需执行 nuclei -update-templates';
+    case 'gitleaks': return 'brew install gitleaks（或从 GitHub Releases 下载二进制到 ~/.local/bin）';
+    case 'osv_scanner': return 'brew install osv-scanner（或从 GitHub Releases 下载二进制到 ~/.local/bin）';
     case 'nikto': return 'brew install nikto';
     case 'nmap': return 'brew install nmap';
     case 'npm_audit': return '随 Node.js 安装';
@@ -524,6 +582,36 @@ export function normalizeHostTarget(target) {
 // ============ 扫描编排 ============
 
 /**
+ * 生成 gitleaks 配置：默认规则 + 路径 allowlist。
+ * 注意：gitleaks 的 allowlist.paths 是**正则**，不是普通路径。
+ * 排除的都是构建产物/第三方代码/运行时输出，源码里的真实密钥仍会被报出。
+ */
+function buildGitleaksConfig() {
+  const patterns = [
+    String.raw`(^|/)\.env$`,
+    String.raw`(^|/)\.env\..*`,
+    String.raw`(^|/)node_modules/`,
+    String.raw`(^|/)output/`,
+    String.raw`(^|/)dist/`,
+    String.raw`(^|/)\.git/`,
+    String.raw`(^|/)test-results/`,
+    String.raw`(^|/)vector_data/`,
+  ].map(p => `'''${p}'''`);
+  return [
+    'title = "test-platform-scan"',
+    '[extend]',
+    'useDefault = true',
+    '',
+    '[[allowlists]]',
+    'description = "skip build artifacts, third-party deps and generated runtime output"',
+    'paths = [',
+    `  ${patterns.join(',\n  ')}`,
+    ']',
+    '',
+  ].join('\n');
+}
+
+/**
  * 源码/依赖扫描（本地路径）
  * @param {string} rootDir 绝对路径
  * @param {string[]} tools 指定工具，默认全部可用的 source 类工具
@@ -617,6 +705,46 @@ export async function runSourceScan(rootDir, tools = ['semgrep', 'trivy'], opts 
     })());
   }
 
+  if (tools.includes('gitleaks')) {
+    tasks.push((async () => {
+      const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitleaks-'));
+      const reportPath = path.join(workDir, 'report.json');
+      const configPath = path.join(workDir, 'gitleaks.toml');
+      // gitleaks 8.x 没有 --exclude-path，排除路径只能走 config allowlist
+      await fs.writeFile(configPath, buildGitleaksConfig(), 'utf8');
+      const r = await runTool('gitleaks', [
+        'dir', root,
+        '--config', configPath,
+        '--no-banner',
+        '--report-format', 'json',
+        '--report-path', reportPath,
+        '--redact',
+        '--exit-code', '0',
+      ], { timeoutMs: 180000 });
+      let findings = [];
+      try {
+        findings = parseGitleaks(JSON.parse(await fs.readFile(reportPath, 'utf8')));
+      } catch { /* 无报告=无发现 */ }
+      await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
+      return { tool: 'gitleaks', ok: r.ok, durationMs: r.durationMs, findings, error: r.ok ? null : truncate(r.stderr, 500), timedOut: r.timedOut };
+    })());
+  }
+
+  if (tools.includes('osv_scanner')) {
+    tasks.push((async () => {
+      // 递归扫 lockfile；只读本地包信息，不扫 node_modules 内容
+      const r = await runTool('osv-scanner', ['scan', '--format', 'json', '--recursive', '--verbosity', 'error', root], { timeoutMs: 240000 });
+      return {
+        tool: 'osv_scanner',
+        ok: r.ok || !!r.stdout.trim().startsWith('{'),
+        durationMs: r.durationMs,
+        findings: safeParseJson(r.stdout, parseOsv),
+        error: r.ok ? null : truncate(r.stderr, 500),
+        timedOut: r.timedOut,
+      };
+    })());
+  }
+
   if (tools.includes('pip_audit')) {
     tasks.push((async () => {
       const r = await runTool('pip-audit', ['--format', 'json', '--progress-spinner', 'off'], { cwd: root, timeoutMs: 180000 });
@@ -665,11 +793,17 @@ export async function runUrlScan(target, tools = ['nikto', 'nmap'], opts = {}) {
       const r = await runTool('nuclei', [
         '-u', url,
         '-jsonl', '-silent',
+        // 不加 -tags 会跑全部 1.4 万模板，单目标要 3 分钟以上；
+        // 这里只挑高价值、误报低的类别，配合并发/限速压到 1 分钟内。
+        '-tags', 'cve,exposure,misconfig,default-login,panel,takeover',
         '-severity', 'critical,high,medium',
-        '-timeout', '10',
+        '-timeout', '8',
         '-retries', '1',
-        '-no-mhe',    // 关闭自动请求头变形，避免误报
-      ], { timeoutMs: opts.timeoutMs || DEFAULT_TIMEOUT_MS });
+        '-concurrency', '25',
+        '-rate-limit', '200',
+        '-no-mhe',        // 关闭自动请求头变形，避免误报
+        '-no-interactsh', // 不连外部 OAST 服务：国内网络下会卡住直到超时
+      ], { timeoutMs: opts.timeoutMs || 180000 });
       return { tool: 'nuclei', ok: r.ok, durationMs: r.durationMs, findings: parseNucleiJsonl(r.stdout), error: r.ok ? null : truncate(r.stderr, 500), timedOut: r.timedOut };
     })());
   }
@@ -703,6 +837,74 @@ export async function runUrlScan(target, tools = ['nikto', 'nmap'], opts = {}) {
     results.push(...s.findings);
   }
   return results;
+}
+
+/** Gitleaks JSON -> findings */
+export function parseGitleaks(json) {
+  const items = Array.isArray(json) ? json : [];
+  return items.slice(0, MAX_FINDINGS).map((x) => {
+    const file = x.File || x.file || '';
+    const line = x.StartLine || x.startLine || 0;
+    const secretPreview = String(x.Secret || '').slice(0, 4);
+    return makeFinding({
+      tool: 'gitleaks',
+      category: 'secret',
+      // gitleaks 本身不分级：硬编码生产凭据按 high，其余 medium
+      severity: /private-key|aws|gcp|azure|github|gitlab|openai|deepseek|slack|stripe/i.test(x.RuleID || '') ? 'high' : 'medium',
+      title: `硬编码凭据: ${x.RuleID || x.Description || 'secret'}`,
+      description: `${x.Description || x.RuleID || '检测到疑似硬编码凭据'}${x.Match ? `（匹配片段已脱敏，前缀 ${secretPreview}…）` : ''}`,
+      location: file ? `${file}:${line}` : null,
+      evidence: x.Match ? String(x.Match).slice(0, 120).replace(/([A-Za-z0-9_\-]{4})[A-Za-z0-9_\-]{4,}/g, '$1***') : null,
+      remediation: '移除硬编码凭据，改从环境变量/密钥管理服务读取，并**立即轮换**该凭据；同时清理 Git 历史中的残留',
+      confidence: 'high',
+      fingerprint: `gitleaks:${x.RuleID}:${file}:${line}`,
+      raw: { rule: x.RuleID, file, line, commit: x.Commit || null },
+    });
+  });
+}
+
+/** OSV-Scanner JSON -> findings */
+export function parseOsv(json) {
+  const out = [];
+  for (const r of (json?.results || [])) {
+    const source = r.source?.path || '';
+    for (const pkg of (r.packages || [])) {
+      const name = pkg.package?.name || '';
+      const version = pkg.package?.version || '';
+      for (const v of (pkg.vulnerabilities || [])) {
+        const groups = pkg.groups || [];
+        const group = groups.find(g => (g.ids || []).includes(v.id));
+        const fixed = (group?.fixed || []).concat(v.affected?.flatMap(a => (a.ranges || []).flatMap(rg => rg.events || []).map(e => e.fixed).filter(Boolean)) || []).filter(Boolean);
+        const aliases = v.aliases || [];
+        const cve = [v.id, ...aliases].find(a => /^CVE-/i.test(a || '')) || null;
+        const severity = severityFromOsv(v, fixed);
+        out.push(makeFinding({
+          tool: 'osv_scanner',
+          category: 'sca',
+          severity,
+          title: `${v.id} ${name}${version ? `@${version}` : ''}`,
+          description: pickFirstString(v.summary, v.details, v.id).slice(0, 1000),
+          location: `${source || 'lockfile'} (${name}${version ? ` ${version}` : ''})`,
+          evidence: fixed.length ? `修复版本: ${[...new Set(fixed)].join(', ')}` : null,
+          remediation: fixed.length ? `升级 ${name} 到 ${[...new Set(fixed)].pop()} 或更高` : '关注上游修复版本',
+          cve,
+          confidence: 'high',
+          fingerprint: `osv:${v.id}:${name}:${version}`,
+          raw: { source, pkg: name, version, id: v.id, aliases },
+        }));
+      }
+    }
+  }
+  return out.slice(0, MAX_FINDINGS);
+}
+
+function severityFromOsv(v, fixed) {
+  const s = (v.database_specific?.severity || '').toString().toLowerCase();
+  if (['critical', 'high', 'moderate', 'medium', 'low'].includes(s)) {
+    return s === 'moderate' ? 'medium' : s;
+  }
+  // 无显式等级时：有修复版本按 high，否则 medium
+  return fixed && fixed.length ? 'high' : 'medium';
 }
 
 /** Nuclei JSONL -> findings */

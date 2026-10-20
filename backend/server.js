@@ -13918,7 +13918,7 @@ app.post('/api/security/scan/real', authenticate, async (req, res) => {
       if (!inAllowed) {
         return res.status(403).json({ success: false, error: '源码扫描路径必须位于项目目录或 git-clones 内' });
       }
-      const wanted = (Array.isArray(tools) && tools.length ? tools : ['semgrep', 'trivy', 'bandit'])
+      const wanted = (Array.isArray(tools) && tools.length ? tools : ['semgrep', 'trivy', 'bandit', 'gitleaks', 'osv_scanner'])
         .filter(t => available.has(t));
       if (!wanted.length) {
         return res.status(400).json({ success: false, error: '没有可用的 SAST/SCA 工具，请先安装 semgrep / trivy / bandit' });
@@ -15436,7 +15436,7 @@ async function runRealSecurityScanForWorkflow({ target, description = '', testDo
     const resolved = path.resolve(rootDir);
     const inAllowed = allowedRoots.some(r => resolved === r || resolved.startsWith(r + path.sep));
     if (inAllowed) {
-      const wanted = ['semgrep', 'trivy', 'bandit'].filter(x => available.has(x));
+      const wanted = ['semgrep', 'trivy', 'bandit', 'gitleaks', 'osv_scanner'].filter(x => available.has(x));
       if (wanted.length) {
         const r = await runSecSourceScan(resolved, wanted, { timeoutMs: 240000 });
         raw.push(...r);
