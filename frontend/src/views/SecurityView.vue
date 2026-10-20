@@ -57,6 +57,10 @@
     <el-card class="main-card">
       <el-tabs v-model="activeTab">
         <!-- 报告列表 -->
+        <el-tab-pane label="🔬 深度扫描" name="realscan">
+          <SecurityRealScanPanel />
+        </el-tab-pane>
+
         <el-tab-pane label="🚀 测试执行" name="execute">
           <DomainTestExecutor domain="security" />
         </el-tab-pane>
@@ -675,6 +679,7 @@
 import { ref, onMounted, onUnmounted, reactive, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
+import SecurityRealScanPanel from '@/components/SecurityRealScanPanel.vue'
 import { securityApi, toolsApi } from '@/api'
 import DomainTestExecutor from '@/components/DomainTestExecutor.vue'
 

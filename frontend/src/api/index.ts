@@ -844,6 +844,17 @@ export const securityApi = {
     return res.success ? { reports: (res.data as any).data || (res.data as any) || [], total: (res.data as any).total || 0 } : null
   },
 
+  // ── 开源真实扫描器 ──
+  // 工具可用性与版本
+  async getScanners(refresh = false): Promise<any[] | null> {
+    const res = await request<{ data: any[] }>(`/api/security/scanners${refresh ? '?refresh=1' : ''}`)
+    return res.success ? (res.data as any)?.data ?? [] : null
+  },
+  // 执行真实扫描（mode=source 跑 SAST/SCA；mode=url 跑 DAST）
+  async runRealScan(payload: { mode: 'source' | 'url'; target: string; tools?: string[]; testDomain?: string }): Promise<any | null> {
+    const res = await request<any>('/api/security/scan/real', { method: 'POST', body: JSON.stringify(payload) })
+    return res.success ? (res.data as any) : null
+  },
   // 发起安全测试工作流（5阶段自动串联）
   async startWorkflow(target: string, scanType?: string, description?: string, stage?: number) {
     const url = stage !== undefined ? `/api/security/workflow?stage=${stage}` : '/api/security/workflow'
