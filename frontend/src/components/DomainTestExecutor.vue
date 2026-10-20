@@ -16,7 +16,7 @@ const LABEL = computed(() => (props.domain === 'security' ? '安全测试' : '�
 const isSecurity = computed(() => props.domain === 'security')
 
 const STAGES: Record<'security' | 'performance', string[]> = {
-  security: ['方案生成', '用例生成', '漏洞扫描', '手工渗透', '报告生成'],
+  security: ['方案生成', '用例生成', '漏洞扫描', '手工验证', '报告生成'],
   performance: ['需求分析', '方案制定', '场景设计', '脚本实现', '执行压测', '瓶颈分析', '报告生成'],
 }
 const stages = computed(() => STAGES[props.domain])
@@ -133,7 +133,17 @@ function resetOutput() {
 
 function extractUrl(text: string): string {
   const m = text.match(/(https?:\/\/[^\s一-龥]+)/)
-  return m?.[1] ?? ''
+  return m?.[1]?.replace(/[，。；,;）)】]+$/, '') ?? ''
+}
+
+// 真实引擎支持两种目标：URL（黑盒）或本机源码绝对路径（白盒）
+function extractTarget(text: string): { target: string; sourcePath: string } {
+  const url = extractUrl(text)
+  if (url) return { target: url, sourcePath: '' }
+  const m = text.match(/(?:^|\s)(\/(?:Users|home|opt|srv|var|tmp|data|workspace|app)\/[^\s，。；,;）)】]+)/)
+  const p = m?.[1] || ''
+  if (p) return { target: p, sourcePath: p }
+  return { target: '', sourcePath: '' }
 }
 
 const TEXT_EXTS = ['.txt', '.md', '.json', '.csv', '.log', '.yaml', '.yml', '.xml', '.html', '.js', '.ts', '.py', '.java', '.go', '.sql']
@@ -241,22 +251,32 @@ async function run() {
   submitting.value = true
   try {
     const text = input.value.trim()
-    // URL 直接写在输入内容里，执行时自动提取（无 URL 时单阶段回退 uploaded-docs，完整工作流会被下方校验拦截）
-    const rawTarget = extractUrl(text)
+    // URL / 本机源码路径直接写在输入内容里，执行时自动提取
+    const extracted = extractTarget(text)
+    const rawTarget = extracted.target
     let desc = text
     if (files.value.length) {
       const contents: string[] = []
       for (const f of files.value) contents.push(await readAttachmentContent(f))
       desc = contents.join('\n\n---\n\n') + '\n\n用户需求：' + desc
     }
-    if (e.isFull && !rawTarget.startsWith('http')) {
+    // 安全测试只走真实工具执行引擎，必须拿到可执行目标
+    if (isSecurity.value && !rawTarget) {
+      ElMessage.warning('安全测试需要目标：请输入被测 URL（http/https），或项目目录内的源码绝对路径（如 /Users/you/.../test-platform/backend）')
+      submitting.value = false
+      return
+    }
+    if (e.isFull && !rawTarget) {
       ElMessage.warning(`完整${LABEL.value}请在输入内容中包含目标地址（http/https 链接），或选择单个阶段执行`)
       submitting.value = false
       return
     }
     const finalTarget = rawTarget || 'uploaded-docs'
     const result = isSecurity.value
-      ? await securityApi.startWorkflow(finalTarget, scanType.value, desc, e.stageIdx)
+      ? await securityApi.startWorkflow(
+          finalTarget, scanType.value, desc, e.stageIdx,
+          testDomain.value, extracted.sourcePath,
+        )
       : await performanceTestApi.startWorkflow(finalTarget, desc, e.stageIdx)
     if (result) {
       // 后端单阶段返回 taskId、完整工作流返回 workflowId/testId，统一兜底
