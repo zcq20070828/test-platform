@@ -11247,21 +11247,67 @@ async function convertMarkdownTablesToXlsx(mdContent, outPath) {
 
 // 输出物在线预览:docx -> HTML(经 pandoc)
 async function convertDocxToHtml(filePath) {
-  return new Promise((resolve) => {
-    // 安全整改(2026-10-19): --sandbox 限制 pandoc 读写,markdown-raw_html 去掉原始 HTML 块,
-    // 避免 docx 内的 <script>/<img onerror> 经预览接口以同源 HTML 返回形成存储型 XSS。
-    const args = [filePath, '-f', 'markdown-raw_html', '-t', 'html', '--wrap=none', '--sandbox'];
-    execFile(PANDOC_PATH, args, (err, stdout, stderr) => {
-      if (err) {
-        // 老版本 pandoc 不支持 --sandbox 时回退(仍保留 raw_html 过滤)
-        execFile(PANDOC_PATH, [filePath, '-f', 'markdown-raw_html', '-t', 'html', '--wrap=none'], (err2, out2) => {
-          if (err2) { console.error(`[Preview][Docx] pandoc 失败: ${stderr || err.message}`); resolve(null); }
-          else resolve(out2);
-        });
-        return;
-      }
-      resolve(stdout);
-    });
+  // 安全整改(2026-10-19): --sandbox 限制 pandoc 读写外部文件。
+  // 修复(2026-10-20): 输入是二进制 docx，不能强制 -f markdown（会报 binary data 直接失败）；
+  // 让 pandoc 按扩展名自动识别 docx reader。防 XSS 靠响应头 CSP sandbox + 前端 DOMPurify。
+  // 图片处理：pandoc 默认输出 src="media/image1.png"，浏览器无法解析；
+  // 用 --extract-media 抽到临时目录后内联为 data URI（CSP 已允许 img-src data:）。
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'docx-preview-'));
+  const run = (args) => new Promise((resolve) => {
+    execFile(PANDOC_PATH, args, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => resolve(err ? null : stdout));
+  });
+  try {
+    const baseArgs = [filePath, '-t', 'html', '--wrap=none', `--extract-media=${tmpDir}`];
+    let html = await run([...baseArgs, '--sandbox']);
+    // 老版本 pandoc 不支持 --sandbox 时回退（仍由响应 CSP + 前端清洗兜底）
+    if (html == null) html = await run(baseArgs);
+    if (html == null) {
+      console.error('[Preview][Docx] pandoc 失败');
+      return null;
+    }
+    return await inlineDocxImages(html, tmpDir);
+  } finally {
+    fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
+ * 把 pandoc 抽出的图片内联成 data URI。
+ * 只处理落在 mediaDir 内的路径，且限制单张/总量，避免响应体过大。
+ */
+async function inlineDocxImages(html, mediaDir) {
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+  const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+  const mimeByExt = {
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp',
+    '.svg': 'image/svg+xml', '.emf': 'image/emf', '.wmf': 'image/wmf', '.tiff': 'image/tiff',
+  };
+  const srcRe = /(<img\b[^>]*\bsrc=")([^"]+)(")/gi;
+  const unique = new Set();
+  for (const m of html.matchAll(srcRe)) unique.add(m[2]);
+
+  const dataUriBySrc = new Map();
+  let total = 0;
+  for (const src of unique) {
+    if (/^data:/i.test(src)) continue;
+    const abs = path.resolve(mediaDir, src);
+    const ext = path.extname(abs).toLowerCase();
+    const mime = mimeByExt[ext];
+    // 只允许 mediaDir 内部文件
+    if (!mime || !abs.startsWith(path.resolve(mediaDir) + path.sep)) continue;
+    try {
+      const stat = await fs.stat(abs);
+      if (stat.size > MAX_IMAGE_BYTES || total + stat.size > MAX_TOTAL_BYTES) continue;
+      const buf = await fs.readFile(abs);
+      total += buf.length;
+      dataUriBySrc.set(src, `data:${mime};base64,${buf.toString('base64')}`);
+    } catch { /* 图片缺失不影响正文 */ }
+  }
+  if (dataUriBySrc.size === 0) return html;
+  return html.replace(srcRe, (full, pre, src, post) => {
+    const uri = dataUriBySrc.get(src);
+    return uri ? `${pre}${uri}${post}` : full;
   });
 }
 
