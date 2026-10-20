@@ -6,7 +6,7 @@ test.describe('聊天面板输入修复验证', () => {
     await page.goto('http://localhost:5174/')
     await page.waitForURL('**/login')
     await page.getByPlaceholder('请输入用户名').fill('admin')
-    await page.getByPlaceholder('请输入密码').fill('I2ss56tb@')
+    await page.getByPlaceholder('请输入密码').fill(process.env.TEST_USER_PASSWORD || '')
     await page.getByRole('button', { name: '登录' }).click()
     await page.waitForURL('**/', { timeout: 10000 })
     

@@ -41,3 +41,35 @@ backend/vector/chroma_db/
 backend/vector/bm25_index.json
 __pycache__/
 *.pyc
+
+# ============================================================
+# 2026-10-19 Git 卫生整改：以下产物此前被跟踪，现已停止跟踪
+# ============================================================
+# 后端遗留静态目录（实际服务的是 frontend/dist，backend/public 不被使用）
+backend/public/
+# 后端子模块构建产物
+backend/server.dist.mjs
+backend/server.js.bak*
+# Agent 运行时输出：任务产物/会话状态，每跑一次就变，不应入库
+qclaw-agents/*/output/
+qclaw-agents/*/output-*/
+qclaw-agents/*/reports/
+qclaw-agents/*/test-results/
+qclaw-agents/*/.openclaw/
+qclaw-agents/*/*/.openclaw/
+qclaw-agents/*/*/output/
+qclaw-agents/*/node_modules/
+# 前端 e2e 截图产物
+frontend/tests/e2e/screenshots/
+frontend/tests/e2e/report/
+frontend/test-results/
+frontend/playwright-report/
+# 本地重复嵌套目录（rsync 误产生，2026-10-19 已从索引移除）
+database/database/
+deploy/deploy/
+# 编辑器/备份文件
+*.bak
+*.backup
+*~
+qclaw-agents/*/*/test-results/
+qclaw-agents/*/calculator-ui-tests/test-results/

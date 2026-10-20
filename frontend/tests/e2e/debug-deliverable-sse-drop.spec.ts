@@ -7,7 +7,7 @@ test('SSE断开时, 轮询兜底仍应显示交付物卡片', async ({ page }) =
   await page.goto('http://localhost:5174/')
   await page.waitForURL('**/login')
   await page.locator('input[placeholder="用户名"]').fill('admin')
-  await page.locator('input[placeholder="密码"]').fill('I2ss56tb@')
+  await page.locator('input[placeholder="密码"]').fill(process.env.TEST_USER_PASSWORD || '')
   await page.locator('button:has-text("登 录")').click()
   await page.waitForURL('**/', { timeout: 10000 })
 

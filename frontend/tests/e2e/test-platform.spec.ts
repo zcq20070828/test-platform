@@ -25,13 +25,13 @@ async function loginIfNeeded(page: Page): Promise<void> {
     // 填写用户名
     await page.locator('input[placeholder="用户名"]').fill('admin')
     // 填写密码
-    await page.locator('input[placeholder="密码"]').fill('I2ss56tb@')
+    await page.locator('input[placeholder="密码"]').fill(process.env.TEST_USER_PASSWORD || '')
     // 点击登录
     await page.locator('button:has-text("登 录")').click()
     
     // 等待导航离开登录页
     await page.waitForFunction(() => !window.location.pathname.includes('/login'), { timeout: 10000 })
-    console.log('✓ 登录成功 (admin/I2ss56tb@)')
+    console.log('✓ 登录成功')
     await page.waitForTimeout(500)
   }
 }
