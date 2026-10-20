@@ -40,6 +40,8 @@ export interface ReviewResult {
 // 任务类型
 export interface Task {
   id: string
+  // 任务业务类型（general / security-scan / performance-test 等，后端透传）
+  type?: string
   agent: string
   agentName: string
   input: string
@@ -60,6 +62,14 @@ export interface Task {
   reviewPassed?: boolean  // 审核是否通过
   reviewFailed?: boolean  // 审核是否永久失败（达到最大重试次数）
   reviewResults?: ReviewResult[]  // 审核结果列表
+  // 后端返回的原始字段（任务列表/详情直接透传，组件已在读取）
+  result?: string | null
+  error?: string | null
+  userId?: string
+  agentId?: string
+  createdAt?: string
+  updatedAt?: string
+  completedAt?: string
   // 成本统计字段（数据库 tasks 表映射）
   manualHours?: number | null
   actualCost?: number | null
@@ -171,6 +181,10 @@ export interface ChatMessage {
   isWorkflowFailed?: boolean
   // 所属工作流 ID（性能/安全等工作流事件消息携带，供按 workflowId 过滤）
   workflowId?: string
+  // 输出物版本标签（多轮迭代生成时展示 v1/v2）
+  versionLabel?: string
+  // 所属阶段名称（性能/安全等工作流事件消息）
+  stage?: string
 }
 
 // API 响应

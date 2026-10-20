@@ -322,9 +322,9 @@ const loadingReports = ref(false)
 const submitting = ref(false)
 const submittingReportId = ref('')
 const detailDrawerVisible = ref(false)
-const reports = ref<Record<string, unknown>[]>([])
+const reports = ref<Record<string, any>[]>([])
 const totalReports = ref(0)
-const selectedReport = ref<Record<string, unknown> | null>(null)
+const selectedReport = ref<Record<string, any> | null>(null)
 const page = ref(1)
 const pageSize = 20
 const activeTab = ref('execute')
@@ -343,8 +343,8 @@ const testForm = reactive({
 // 计算属性
 const failedResults = computed(() => {
   if (!selectedReport.value?.reportData) return []
-  return (selectedReport.value.reportData as Record<string, unknown>[]).filter(
-    (r: Record<string, unknown>) => r.status === 'failed' || r.status === 'error'
+  return (selectedReport.value.reportData as Record<string, any>[]).filter(
+    (r: Record<string, any>) => r.status === 'failed' || r.status === 'error'
   )
 })
 
@@ -381,10 +381,10 @@ function getResultTitle(browser: string, viewport: string): string {
   const errs = (r.consoleErrors || []).map((e: Record<string, string>) => e.text).join('; ')
   return `${label(browser)} × ${vlabel(viewport)}：失败 ${errs ? '— ' + errs.slice(0, 60) : ''}`
 }
-function getResult(browser: string, viewport: string): Record<string, unknown> | null {
+function getResult(browser: string, viewport: string): Record<string, any> | null {
   if (!selectedReport.value?.reportData) return null
-  return (selectedReport.value.reportData as Record<string, unknown>[]).find(
-    (r: Record<string, unknown>) => r.browser === browser && r.viewport === viewport
+  return (selectedReport.value.reportData as Record<string, any>[]).find(
+    (r: Record<string, any>) => r.browser === browser && r.viewport === viewport
   ) || null
 }
 
@@ -405,7 +405,7 @@ async function loadReports() {
   try {
     const res = await compatApi.getReports({ limit: pageSize, offset: (page.value - 1) * pageSize })
     if (res) {
-      reports.value = res.data as Record<string, unknown>[]
+      reports.value = res.data as Record<string, any>[]
       totalReports.value = res.total || 0
     }
   } catch { /* silent */ }
@@ -441,11 +441,11 @@ async function submitTest() {
 }
 
 // 查看报告
-async function viewReport(row: Record<string, unknown>) {
+async function viewReport(row: Record<string, any>) {
   try {
     const data = await compatApi.getReport(row.id as string)
     if (data) {
-      selectedReport.value = data as Record<string, unknown>
+      selectedReport.value = data as Record<string, any>
       detailDrawerVisible.value = true
     } else {
       ElMessage.error('报告不存在')
@@ -456,7 +456,7 @@ async function viewReport(row: Record<string, unknown>) {
 }
 
 // 导出三格式交付物（md / docx / xlsx），由后端生成真实 Word/Excel
-async function exportReport(row: Record<string, unknown>, format: 'md' | 'docx' | 'xlsx') {
+async function exportReport(row: Record<string, any>, format: 'md' | 'docx' | 'xlsx') {
   try {
     await compatApi.exportReport(row.id as string, format)
     ElMessage.success(`已导出${format === 'md' ? ' Markdown' : format === 'docx' ? ' Word' : ' Excel'}交付物`)

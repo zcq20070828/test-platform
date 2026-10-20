@@ -275,12 +275,12 @@ const loadingFindings = ref(false)
 const detailDrawerVisible = ref(false)
 
 // 列表数据
-const reports = ref<Record<string, unknown>[]>([])
+const reports = ref<Record<string, any>[]>([])
 const totalReports = ref(0)
-const findings = ref<Record<string, unknown>[]>([])
+const findings = ref<Record<string, any>[]>([])
 const totalFindings = ref(0)
-const reportFindings = ref<Record<string, unknown>[]>([])
-const selectedReport = ref<Record<string, unknown> | null>(null)
+const reportFindings = ref<Record<string, any>[]>([])
+const selectedReport = ref<Record<string, any> | null>(null)
 
 // 分页
 const page = ref(1)
@@ -331,7 +331,7 @@ async function loadReports() {
     const res = await performanceTestApi.getReports({ status: filterStatus.value || undefined, limit: pageSize, offset: (page.value - 1) * pageSize })
     console.log('[PerfDebug] getReports result:', JSON.stringify(res)?.slice(0, 300))
     if (res) {
-      reports.value = res.reports as Record<string, unknown>[]
+      reports.value = res.reports as Record<string, any>[]
       totalReports.value = res.total
       console.log('[PerfDebug] reports count:', reports.value.length, 'total:', res.total)
     } else {
@@ -354,7 +354,7 @@ async function loadFindings() {
       offset: (findingPage.value - 1) * pageSize,
     })
     if (res) {
-      findings.value = res.findings as Record<string, unknown>[]
+      findings.value = res.findings as Record<string, any>[]
       totalFindings.value = res.total
     }
   } finally {
@@ -363,12 +363,12 @@ async function loadFindings() {
 }
 
 // 查看报告详情
-async function viewReport(row: Record<string, unknown>) {
+async function viewReport(row: Record<string, any>) {
   selectedReport.value = row
   const data = await performanceTestApi.getReport(row.id as number)
   if (data) {
     selectedReport.value = { ...row, ...data }
-    reportFindings.value = (data.findings as Record<string, unknown>[]) || []
+    reportFindings.value = (data.findings as Record<string, any>[]) || []
   } else {
     reportFindings.value = []
   }
@@ -376,7 +376,7 @@ async function viewReport(row: Record<string, unknown>) {
 }
 
 // 下载 Markdown
-async function downloadMd(row: Record<string, unknown>) {
+async function downloadMd(row: Record<string, any>) {
   try {
     await performanceTestApi.downloadReportMd(row.id as number)
   } catch {
@@ -385,7 +385,7 @@ async function downloadMd(row: Record<string, unknown>) {
 }
 
 // 删除报告
-async function deleteReport(row: Record<string, unknown>) {
+async function deleteReport(row: Record<string, any>) {
   try {
     await ElMessageBox.confirm('确认删除此报告？', '提示', { type: 'warning' })
     const ok = await performanceTestApi.deleteReport(row.id as number)
@@ -398,7 +398,7 @@ async function deleteReport(row: Record<string, unknown>) {
 }
 
 // 瓶颈状态更新
-async function handleFindingStatus(row: Record<string, unknown>, status: string) {
+async function handleFindingStatus(row: Record<string, any>, status: string) {
   const ok = await performanceTestApi.updateFinding(row.id as number, { status })
   if (ok) {
     row.status = status

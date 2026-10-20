@@ -176,22 +176,17 @@ router.onError((error) => {
   }
 })
 
-router.beforeEach((to, from) => {
+router.beforeEach((to, _from) => {
   // 获取 store 实例（Pinia 已在 main.ts 中初始化）
   const mainStore = useMainStore()
 
-  // 详细诊断日志
-  console.log('[Router beforeEach]', to.name, '| user.value:', !!mainStore.user, '| isLoggedIn:', mainStore.isLoggedIn, '| localStorage user:', !!localStorage.getItem('user'), '| localStorage token:', !!localStorage.getItem('token'))
-
   // 检查是否需要登录
   if (to.meta.requiresAuth && !mainStore.isLoggedIn) {
-    console.log('[Router] 未登录，跳转 /login')
     return { name: 'Login' }
   }
 
   // 如果已登录且访问登录页，重定向到首页
   if (to.name === 'Login' && mainStore.isLoggedIn) {
-    console.log('[Router] 已登录，跳转 /dashboard')
     return { name: 'Dashboard' }
   }
 

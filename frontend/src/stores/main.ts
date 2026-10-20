@@ -88,7 +88,7 @@ function extractArtifacts(content: string, _opts?: { stageName?: string }): any[
   // 识别 Markdown 报告结构（标题 / 表格 / 列表），作为交付物展示
   // 与后端 server.js 的 extractArtifacts 保持一致：长文本含 markdown 结构即视为报告
   const hasMarkdownStructure =
-    /(^|\n)\s*(#{1,6}\s+|\|\|?[^|\n]+(\|[^|\n]+)+\|?|[\-*]\s+[^\n]+\n)/m.test(content)
+    /(^|\n)\s*(#{1,6}\s+|\|\|?[^|\n]+(\|[^|\n]+)+\|?|[-*]\s+[^\n]+\n)/m.test(content)
     && content.trim().length > 200
 
   if (hasMarkdownStructure) {
@@ -118,7 +118,7 @@ function extractArtifacts(content: string, _opts?: { stageName?: string }): any[
             createdAt: new Date().toISOString()
           })
         }
-      } catch (_) { /* not JSON, skip */ }
+      } catch { /* not JSON, skip */ }
     }
   }
 
@@ -191,14 +191,6 @@ export const useMainStore = defineStore('main', () => {
   //   - 安全测试（wfId 以 security- 开头）→ Dashboard（store.messages）
   //   - 普通工作流 + 任务级事件 → WorkflowView（workflowMessages）
   //   - 任务创建/完成（无 workflowId）→ TasksView（全局任务列表 + messages）
-  function belongsToSecurityWorkflow(data: any): boolean {
-    const wfId = data?.workflowId || data?.task?.workflowId
-    return typeof wfId === 'string' && wfId.startsWith('security-')
-  }
-  function belongsToActiveWorkflow(data: any): boolean {
-    const wfId = data?.workflowId || data?.task?.workflowId
-    return !!wfId && !belongsToSecurityWorkflow(data)
-  }
 
   // 计算属性
   const agentCount = computed(() => agents.value.length)
@@ -237,6 +229,12 @@ export const useMainStore = defineStore('main', () => {
     statsLoading.value = false
     currentAgent.value = null
     streamingMap.clear()
+    // 安全整改(2026-10-19): 此前漏清 workflowMessages + localStorage,
+    // A 登出 B 登录后仍能看到 A 的工作流消息与交付物。
+    try {
+      workflowMessages.value = []
+      localStorage.removeItem(WF_STORAGE_KEY)
+    } catch { /* store 尚未初始化时忽略 */ }
     // 🔒 重置所有其他 store
     try {
       const { useKnowledgeStore } = await import('./knowledge')
@@ -315,6 +313,8 @@ export const useMainStore = defineStore('main', () => {
       tokenRefreshInterval = null
     }
     // 🔒 用户隔离：退出登录时清理所有用户相关状态，防止下一用户看到上一用户数据
+    // 同时关闭 SSE，避免登出后连接残留继续推送事件
+    disconnectRealtimeEvents()
     await resetUserState()
 
     // 如果是 Keycloak 用户，先调用 SSO 退出获取重定向 URL
@@ -390,7 +390,6 @@ export const useMainStore = defineStore('main', () => {
   }
 
   function loadUserFromStorage() {
-    console.log('[Auth] loadUserFromStorage called, storedUser:', !!localStorage.getItem('user'), 'storedToken:', !!localStorage.getItem('token'))
     const storedUser = localStorage.getItem('user')
     const storedToken = localStorage.getItem('token')
     const storedRefreshToken = localStorage.getItem('refreshToken')
@@ -535,6 +534,18 @@ export const useMainStore = defineStore('main', () => {
     isForcingLogout = true
     console.warn('[Session] 检测到 401，强制登出')
     logout().finally(() => { isForcingLogout = false })
+  })
+
+  // 请求层单飞刷新成功后同步内存 token，并重建 SSE（EventSource 无法自动续 token）
+  window.addEventListener('auth:token-refreshed', (e: Event) => {
+    const newToken = (e as CustomEvent<{ token?: string }>).detail?.token
+    if (!newToken) return
+    token.value = newToken
+    if (user.value) {
+      user.value = { ...user.value, token: newToken }
+      disconnectRealtimeEvents()
+      connectRealtimeEvents()
+    }
   })
 
   // 加载智能体列表
@@ -688,7 +699,7 @@ export const useMainStore = defineStore('main', () => {
           try {
             const _d = await taskApi.getById(taskId)
             if (_d && Array.isArray(_d.artifacts) && _d.artifacts.length > 0) baseArtifacts = _d.artifacts
-          } catch (_) { /* 忽略,退化为 report 提取 */ }
+          } catch { /* 忽略,退化为 report 提取 */ }
         }
         const taskArtifacts = baseArtifacts.length > 0 ? baseArtifacts : reportArtifacts
         const agentId = task.agentId || task.agent
@@ -819,15 +830,23 @@ export const useMainStore = defineStore('main', () => {
   }
 
   // 连接 SSE 并处理实时事件
+  let sseReconnectTimer: ReturnType<typeof setTimeout> | null = null
   function connectRealtimeEvents() {
     if (eventSource) {
       eventSource.close()
+    }
+    if (sseReconnectTimer) {
+      clearTimeout(sseReconnectTimer)
+      sseReconnectTimer = null
     }
 
     const authToken = token.value
     if (!authToken) {
       console.warn('[SSE] No auth token available, skipping connection')
-      setTimeout(connectRealtimeEvents, 5000)
+      // 只在仍登录时重试，避免登出后无限自旋
+      sseReconnectTimer = setTimeout(() => {
+        if (user.value) connectRealtimeEvents()
+      }, 5000)
       return
     }
     eventSource = new EventSource('/api/events?token=' + encodeURIComponent(authToken))
@@ -971,7 +990,7 @@ export const useMainStore = defineStore('main', () => {
       }
       
       // 性能测试统一写到 Dashboard messages；同时写入 workflowMessages 以便持久化历史（PerfTestExecutor 重进时回显）
-      const perfMsg = {
+      const perfMsg: ChatMessage = {
         id,
         role: 'assistant',
         type: 'system',
@@ -1122,6 +1141,9 @@ export const useMainStore = defineStore('main', () => {
 
       case 'reviewer_started':
         // 与流水线页一致：🛡️ AI质量审核-X 开始审核（第X/3个）
+        // 同时给实时日志面板留一条摘要（原重复 case 的 message/status 语义合并至此）
+        message = `🛡️ ${data.reviewerName || data.reviewerId} 开始审核（第${data.reviewerIndex}/${data.totalReviewers}个）`
+        status = 'info'
         writeMsg({
           id: `reviewer-started-${data.taskId || Date.now()}-${data.reviewerIndex}`,
           role: 'assistant',
@@ -1182,7 +1204,7 @@ export const useMainStore = defineStore('main', () => {
           const idx = tasks.value.findIndex(t => t.id === taskData.id)
           if (idx >= 0) {
             // 合并：保留已有 username（GET /api/tasks 拉的完整数据），用 SSE 数据补全其余字段
-            tasks.value[idx] = { ...tasks.value[idx], ...taskData, username: taskData.username || tasks.value[idx].username }
+            tasks.value[idx] = { ...tasks.value[idx]!, ...taskData, username: taskData.username || tasks.value[idx]!.username }
           } else {
             // [FIX-USERNAME] 新行也要带用户名，否则任务列表"用户"列显示为空占位符
             tasks.value.unshift({ ...taskData, username: taskData.username || user.value?.name || null })
@@ -1342,7 +1364,6 @@ export const useMainStore = defineStore('main', () => {
           }
           // 将审核通过和输出物同步到 messages，供聊天面板显示
           const taskArtifacts = data.artifacts || []
-          const outputFiles = data.outputFiles || []
           if (taskArtifacts.length > 0) {
             const artifactMsgs = `\n\n📦 输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
             writeMsg({
@@ -1370,7 +1391,7 @@ export const useMainStore = defineStore('main', () => {
           const idx = tasks.value.findIndex(t => t.id === data.task.id)
           if (idx >= 0) {
             // [FIX-USERNAME] 整体替换会抹掉 username（SSE 的 task 对象常常不带该字段），改为合并并保留
-            tasks.value[idx] = { ...tasks.value[idx], ...data.task, username: data.task.username || tasks.value[idx].username }
+            tasks.value[idx] = { ...tasks.value[idx]!, ...data.task, username: data.task.username || tasks.value[idx]!.username }
           } else {
             tasks.value.unshift({ ...data.task, username: data.task.username || user.value?.name || null })
           }
@@ -1465,6 +1486,8 @@ export const useMainStore = defineStore('main', () => {
             tasks.value = updatedTasks
             console.log(`[Workflow] Task ${data.workflowId} status updated to failed`)
           }
+          // 通知监听方（原重复 case 里的语义合并至此）
+          window.dispatchEvent(new CustomEvent('workflow-failed', { detail: data }))
           // 发送工作流失败消息到聊天面板
           writeMsg({
             id: `wf-failed-${data.workflowId}-${Date.now()}`,
@@ -1566,14 +1589,6 @@ export const useMainStore = defineStore('main', () => {
         }
         break
 
-      case 'reviewer_started':
-        message = `🛡️ ${data.reviewerName || data.reviewerId} 开始审核（第${data.reviewerIndex}/${data.totalReviewers}个）`
-        status = 'info'
-        break
-      case 'reviewer_completed':
-        message = `🛡️ ${data.reviewerName || data.reviewerId} 审核完成（${data.score}分 ${data.veto ? '❌否决' : '✅' }）`
-        status = data.veto ? 'error' : 'success'
-        break
       case 'parallel_review_completed':
         message = `🛡️ 并行审核完成: ${data.taskId}`
         status = 'success'
@@ -1609,13 +1624,6 @@ export const useMainStore = defineStore('main', () => {
         window.dispatchEvent(new CustomEvent('workflow-auto-retry', { detail: data }));
         break
 
-      case 'workflow_failed':
-        message = `❌ 工作流失败：已达最大重试次数（${data.reason || '审核未通过'}）`
-        status = 'error'
-        console.log(`[SSE] Workflow ${data.workflowId} failed after max retries`);
-        // 通知前端显示失败消息
-        window.dispatchEvent(new CustomEvent('workflow-failed', { detail: data }));
-        break
 
       case 'workflow_consensus_passed':
         message = `✅ 共识通过: ${data.workflowId}`
@@ -1881,6 +1889,10 @@ export const useMainStore = defineStore('main', () => {
     if (eventSource) {
       eventSource.close()
       eventSource = null
+    }
+    if (sseReconnectTimer) {
+      clearTimeout(sseReconnectTimer)
+      sseReconnectTimer = null
     }
     if (statsInterval) {
       clearInterval(statsInterval)

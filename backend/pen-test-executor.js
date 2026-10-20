@@ -65,35 +65,31 @@ const TOOL_WHITELIST = {
     allowedArgs: [
       // 裸 flag（值单独在下一参数，已被 isBareArg 放行）
       '^-H$', '-A$', '^-X$', '^-d$', '^-F$', '^-o$', '^-c$', '^-b$',
-      '^-L$', '^-I$', '^-s$', '^-k$', '^-v$', '^-T$', '^-w$', '^-m$',
+      '^-L$', '^-I$', '^-s$', '^-k$', '^-v$', '^-w$', '^-m$',
       // 同行的值
       '^-H [\'"][^"\']+[\'"]$',                 // 请求头（同引号）
       '^-A [\'"][^\'"]+[\'"]$',                 // User-Agent（同引号）
       '^-X [A-Z]+$',                            // 请求方法
-      '^-d @[^\s]+$',                           // POST 文件
       '^-F [^\s]+=[^\s]+$',                     // 表单数据
-      '--data-binary [^\s]+$',                  // 二进制数据
       '--insecure$',                             // 忽略证书（长形式）
       '--location$',                             // 跟随重定向（长形式）
       '--head$',                                 // HEAD 请求（长形式）
       '--silent$',                               // 静默（长形式）
       '--connect-timeout [0-9]+$',               // 连接超时
       '--max-time [0-9]+$',                       // 最大时间
-      '--proxy [^\s]+$',                         // 代理（长形式）
       '--user [^\s]+:[^\s]+$',                   // 认证（长形式）
-      '-o [^\s]+$',                              // 输出到文件
       '^-w [\x00-\x7F]+$',                       // 输出格式
-      '^-x [^\s]+$',                             // 代理
-      '^-U [^\s]+:[^\s]+$',                      // 认证
     ],
     denyArgs: [],
+    // 安全整改(2026-10-19): 移除 -d @文件 / -T / --data-binary / -o 文件 / --proxy / -x,
+    // 这些能力可把服务器本地文件外传到攻击者地址,或借代理绕过网络边界。
     highRisk: false,
     brewPackage: 'curl',
     aptPackage: 'curl',
     wingetId: 'cURL.cURL',
     chocoPackage: 'curl',
     versionFlag: '--version',
-    denyPatterns: ['--output-dir', '-o /', '-O /', 'file://', '/etc/passwd', '../'],
+    denyPatterns: ['--output-dir', '-o /', '-O /', 'file://', '/etc/passwd', '../', '-d @', '--data-binary', '-T ', '--proxy', '-x '],
   },
 
   'dig': {

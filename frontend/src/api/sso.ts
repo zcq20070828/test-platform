@@ -1,5 +1,4 @@
 // SSO (Keycloak OIDC) 统一认证 API
-import type { ApiResponse } from '@/types'
 import { request } from './index'
 
 export interface SsoConfig {

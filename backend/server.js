@@ -68,7 +68,7 @@ process.on('exit', () => {
 });
 
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer } from 'ws';
@@ -140,8 +140,22 @@ const ssoConfig = {
   redirectUri: envConfig.KC_REDIRECT_URI || 'http://localhost:5174/auth/callback',
   accessTokenExpires: parseInt(envConfig.ACCESS_TOKEN_EXPIRES || '1800'),
   refreshTokenExpires: parseInt(envConfig.REFRESH_TOKEN_EXPIRES || '28800'),
-  jwtSecret: envConfig.LOCAL_JWT_SECRET || 'change-me-in-production',
+  jwtSecret: envConfig.LOCAL_JWT_SECRET || '',
 };
+
+// 安全整改(2026-10-19): JWT 密钥禁止使用公开默认值。
+// - 未配置时开发环境生成随机临时密钥(重启后所有登录态失效,凭证加密同步失效);
+// - 生产环境(process.env 或 .env 任一声明 production)直接拒绝启动,由运维显式注入密钥。
+const IS_PROD = process.env.NODE_ENV === 'production' || envConfig.NODE_ENV === 'production';
+if (!ssoConfig.jwtSecret) {
+  if (IS_PROD) {
+    console.error('[Security] 缺少 LOCAL_JWT_SECRET,生产环境拒绝启动。请在 backend/.env 配置(openssl rand -hex 32 生成)。');
+    process.exit(1);
+  }
+  const nodeCrypto = await import('node:crypto');
+  ssoConfig.jwtSecret = nodeCrypto.randomBytes(48).toString('hex');
+  console.warn('[Security] 未配置 LOCAL_JWT_SECRET,已生成临时密钥(重启后所有登录态失效)。请在 .env 配置 LOCAL_JWT_SECRET。');
+}
 
 // Keycloak OIDC Endpoints
 const kcEndpoints = {
@@ -166,17 +180,149 @@ const DATA_ROOT = path.join(RUNTIME_ROOT, 'data');
 const GIT_CLONES_DIR = path.join(RUNTIME_ROOT, 'git-clones');
 const TEST_RUNS_DIR = path.join(RUNTIME_ROOT, 'test-runs');
 
+// ============================================================================
+// 路径沙箱(2026-10-19 安全整改)
+// 统一用 realpath + 前缀比较,防止 `../`、URL 编码穿越与符号链接逃逸。
+// 所有「用户传路径」的入口都必须经过这里,不要再用 startsWith 做字符串校验。
+// ============================================================================
+const KB_TYPES = ['general', 'project-test', 'project-biz', 'deliverable-templates'];
+
+function assertSafeRelative(p) {
+  if (typeof p !== 'string' || p.length === 0) throw new Error('路径不能为空');
+  if (p.includes('\0')) throw new Error('路径包含非法字符');
+  // 允许中文/空格,但拒绝绝对路径与 .. 段
+  if (path.isAbsolute(p)) throw new Error('不允许绝对路径');
+  const segs = p.split(/[\\/]+/);
+  if (segs.some(s => s === '..')) throw new Error('路径不允许包含 ..');
+}
+
+/**
+ * 将 userPath 解析到 root 之下,越界直接抛错。
+ * 目标可以尚不存在(上传/创建场景):此时对最近的已存在父目录做 realpath 再拼接剩余部分。
+ */
+async function resolveWithin(root, userPath = '') {
+  const rootReal = await fs.realpath(root);
+  const candidate = path.resolve(rootReal, userPath);
+  if (candidate !== rootReal && !candidate.startsWith(rootReal + path.sep)) {
+    throw new Error('路径越界');
+  }
+  let probe = candidate;
+  const tail = [];
+  // 找到最近的存在祖先,realpath 后再拼回剩余段,防止 symlink 指向外部
+  while (true) {
+    try {
+      const real = await fs.realpath(probe);
+      const finalPath = tail.length ? path.join(real, ...tail.reverse()) : real;
+      if (finalPath !== rootReal && !finalPath.startsWith(rootReal + path.sep)) {
+        throw new Error('路径越界');
+      }
+      return finalPath;
+    } catch (e) {
+      if (e.code !== 'ENOENT' || probe === rootReal) {
+        if (e.message === '路径越界') throw e;
+        if (e.code === 'ENOENT') throw new Error('路径不存在');
+        throw e;
+      }
+      tail.push(path.basename(probe));
+      probe = path.dirname(probe);
+    }
+  }
+}
+
+/** 校验 kbType 只能是白名单枚举(防止 kbType=../backend 覆写源码) */
+function assertKbType(kbType) {
+  if (!KB_TYPES.includes(kbType)) throw new Error(`不支持的知识库类型: ${kbType}`);
+  return kbType;
+}
+
+/** 文件名净化:去掉目录部分与危险字符 */
+function safeBaseName(name) {
+  const base = path.basename(String(name || '')).replace(/[\0<>:"|?*\x00-\x1f]/g, '_').trim();
+  if (!base || base === '.' || base === '..') throw new Error('非法文件名');
+  return base;
+}
+
+// ============================================================================
+// SSRF 防护(2026-10-19 安全整改)
+// 抓取外部链接前先解析 DNS,拒绝回环/私网/链路本地/云元数据地址。
+// 重定向手动逐跳校验,避免 302 到内网绕过首跳检查。
+// ============================================================================
+const net = await import('node:net');
+const dns = await import('node:dns/promises');
+
+function isPrivateIp(ip) {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    if (a === 10) return true;
+    if (a === 127) return true;
+    if (a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+    if (a >= 224) return true; // 组播/保留
+    return false;
+  }
+  if (net.isIPv6(ip)) {
+    const low = ip.toLowerCase();
+    if (low === '::1' || low === '::') return true;
+    if (low.startsWith('fe80') || low.startsWith('fc') || low.startsWith('fd')) return true;
+    if (low.startsWith('::ffff:')) return isPrivateIp(low.slice(7));
+    return false;
+  }
+  return true; // 无法识别的一律拒绝
+}
+
+async function isBlockedSsrfTarget(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host) return true;
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+  if (host === 'metadata.google.internal') return true;
+  if (net.isIP(host)) return isPrivateIp(host);
+  try {
+    const records = await dns.lookup(host, { all: true, verbatim: true });
+    return records.length === 0 || records.some(r => isPrivateIp(r.address));
+  } catch {
+    return true; // 解析失败直接拒绝,避免 DNS rebinding 后的二次解析
+  }
+}
+
+
+
 // 初始化Express
 
 
 const app = express();
-app.use(cors());
+
+// 安全整改(2026-10-19): CORS 收敛为 ALLOWED_ORIGINS 白名单(此前 cors() 允许任意源)
+const allowedOrigins = String(envConfig.ALLOWED_ORIGINS || process.env.ALLOWED_ORIGINS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+app.use(cors({
+  origin(origin, cb) {
+    // 无 Origin(同源请求/curl/服务端调用)放行;其余必须在白名单内
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      return cb(null, true);
+    }
+    return cb(null, false);
+  },
+  credentials: true,
+}));
+// 反向代理(nginx)后需要 trust proxy 才能拿到真实 IP,否则限流全部按 127.0.0.1 计
+if (String(envConfig.TRUST_PROXY || process.env.TRUST_PROXY || '') === '1') {
+  app.set('trust proxy', 1);
+}
 app.use(cookieParser());
 app.use(helmet({
   contentSecurityPolicy: false, // 关闭CSP避免与前端Vue冲突
   crossOriginEmbedderPolicy: false,
 }));
-app.use(express.json({ limit: '50mb' }));
+// 安全整改(2026-10-19): 仅文档解析/任务输入这类接口允许大 body,其余保持 2MB
+const jsonLarge = express.json({ limit: '50mb' });
+app.use('/api/parse', jsonLarge);
+app.use('/api/tasks', jsonLarge);
+app.use('/api/workflow', jsonLarge);
+app.use('/api/evaluation', jsonLarge);
+app.use(express.json({ limit: '2mb' }));
 
 // 存储
 const tasks = new Map();
@@ -1024,7 +1170,11 @@ async function createDefaultAdmin() {
 
     // DB 没有→创建
     const adminId = uuidv4();
-    const defaultPwd = envConfig.DEFAULT_ADMIN_PASSWORD || 'admin123';
+    // 安全整改(2026-10-19): 禁止硬编码 admin123 弱口令。
+    // 未配置 DEFAULT_ADMIN_PASSWORD 时生成一次性随机密码,且只在日志打印一次(不落库明文)。
+    const configuredPwd = envConfig.DEFAULT_ADMIN_PASSWORD || process.env.DEFAULT_ADMIN_PASSWORD || '';
+    const isGenerated = !configuredPwd;
+    const defaultPwd = configuredPwd || (await import('node:crypto')).randomBytes(12).toString('base64url');
     const hashed = hashPassword(defaultPwd);
 
     // 先写 DB(密码只存 DB)
@@ -1043,7 +1193,11 @@ async function createDefaultAdmin() {
       role: 'admin',
       createdAt: new Date().toISOString()
     });
-    console.log(`[Users] 创建了默认管理员用户: admin / ${defaultPwd}`);
+    if (isGenerated) {
+      console.log(`[Users] 已创建默认管理员 admin,初始密码(仅本次打印,请登录后立即修改): ${defaultPwd}`);
+    } else {
+      console.log('[Users] 已创建默认管理员 admin,密码来自 DEFAULT_ADMIN_PASSWORD 配置');
+    }
   } catch (err) {
     console.warn('[Users] createDefaultAdmin 失败,可能是 DB 暂不可用:', err.message);
   }
@@ -1073,55 +1227,45 @@ function isAdmin(user) {
 // HTML转义工具(XSS防御)
 function escapeHTML(s){return(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function escapeDoc(d){if(!d||typeof d!=='object')return d;if(Array.isArray(d))return d.map(escapeDoc);const r={...d};if('name'in r)r.name=escapeHTML(r.name);if('title'in r)r.title=escapeHTML(r.title);for(const k of Object.keys(r)){if(typeof r[k]==='object')r[k]=escapeDoc(r[k])}return r;}
-// 认证中间件(支持本地 token 和 JWT token)
+// 认证中间件(仅接受签名的 JWT;2026-10-19 安全整改移除「token 即用户 ID」的 legacy 分支)
 async function authenticate(req, res, next) {
   const authHeader = req.headers['authorization'] || req.query.token;
-  if (!authHeader && (req.path === '/api/auth/executing-task')) {
-    console.log('[Auth DEBUG] executing-task no auth header, user:', req.user?.id, 'headers keys:', Object.keys(req.headers));
-  }
   if (!authHeader) {
     return res.status(401).json({ error: '未提供认证令牌' });
   }
 
-  const tokenStr = authHeader.replace('Bearer ', '');
+  const tokenStr = String(authHeader).replace(/^Bearer\s+/i, '');
 
-  // 尝试 JWT 验证(新方式)
+  let decoded;
   try {
-    const decoded = jwt.verify(tokenStr, ssoConfig.jwtSecret, {
+    decoded = jwt.verify(tokenStr, ssoConfig.jwtSecret, {
+      algorithms: ['HS256'],
       issuer: 'test-platform',
       audience: 'test-platform-api',
     });
-    // 优先从内存 Map 读取（服务器正常运行时有）
-    let user = users.get(decoded.sub);
-    // 内存 Map 未命中时回退到数据库（服务器重启后 Map 丢失的恢复场景）
-    if (!user) {
-      user = await userDAO.getUserById(decoded.sub);
-      if (user) {
-        users.set(user.id, user);  // 回填到内存 Map，下次直接命中
-        console.log(`[Auth] 从DB恢复用户到内存: ${user.username} (${user.id})`);
-      }
-    }
-    if (user) {
-      req.user = user;
-      req.authSource = decoded.authSource || 'jwt';
-      return next();
-    }
   } catch (e) {
-    // JWT 验证失败,尝试旧方式
+    return res.status(401).json({ error: '无效或已过期的认证令牌' });
   }
 
-  // 兼容旧方式:token 就是用户 ID
-  let user = users.get(tokenStr);
+  // refresh token 只能用于 /api/auth/refresh,不能当访问令牌调用业务 API
+  if (decoded.type !== 'access') {
+    return res.status(401).json({ error: '无效的令牌类型' });
+  }
+
+  // 优先从内存 Map 读取（服务器正常运行时有）
+  let user = users.get(decoded.sub);
+  // 内存 Map 未命中时回退到数据库（服务器重启后 Map 丢失的恢复场景）
   if (!user) {
-    // 回退到数据库
-    user = await userDAO.getUserById(tokenStr);
-    if (user) users.set(user.id, user);
+    user = await userDAO.getUserById(decoded.sub);
+    if (user) {
+      users.set(user.id, user);  // 回填到内存 Map，下次直接命中
+    }
   }
   if (!user) {
-    return res.status(401).json({ error: '无效的认证令牌' });
+    return res.status(401).json({ error: '用户不存在' });
   }
   req.user = user;
-  req.authSource = 'local-legacy';
+  req.authSource = decoded.authSource || 'jwt';
   next();
 }
 
@@ -1254,6 +1398,7 @@ function signLocalToken(user) {
   return jwt.sign(
     {
       sub: user.id,
+      type: 'access',
       username: user.username,
       name: user.name,
       role: user.role,
@@ -1291,13 +1436,57 @@ function signRefreshToken(user) {
 // 认证 API
 // ============================================================================
 
+// 登录/注册限流(安全整改 2026-10-19):
+// - 移除 skip,任何请求都计数(此前空 username 可绕过);
+// - 登录按 IP + 用户名双维度限流,防止撞库;
+// - 注册单独限流,防止批量造号后打未授权接口。
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: '请求过于频繁，请稍后再试' },
+});
+
+const loginUserLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  // 用 ipKeyGenerator 处理 IPv6 分组(直接拼 req.ip 会被 express-rate-limit 判为不安全)
+  keyGenerator: (req) => `${ipKeyGenerator(req.ip)}:${String(req.body?.username || 'anonymous').toLowerCase()}`,
+  message: { error: '该账号尝试次数过多，请稍后再试' },
+});
+
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: '注册请求过于频繁，请稍后再试' },
+});
+
+// 密码策略(最小可用):长度 >= 8,且不能是常见弱口令
+function validatePasswordStrength(pwd) {
+  if (typeof pwd !== 'string' || pwd.length < 8) return '密码长度至少 8 位';
+  if (pwd.length > 128) return '密码长度不能超过 128 位';
+  const weak = ['12345678', '123456789', 'password', 'admin123', 'qwerty123', '11111111', '88888888'];
+  if (weak.includes(pwd.toLowerCase())) return '密码过于简单，请更换';
+  return null;
+}
+
 // 用户注册
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', registerLimiter, async (req, res) => {
   const { username, password, name } = req.body;
 
   if (!username || !password) {
     return res.status(400).json({ error: '用户名和密码不能为空' });
   }
+  if (typeof username !== 'string' || !/^[A-Za-z0-9_.-]{3,64}$/.test(username)) {
+    return res.status(400).json({ error: '用户名需为 3-64 位字母、数字、下划线、点或短横线' });
+  }
+  const pwdErr = validatePasswordStrength(password);
+  if (pwdErr) return res.status(400).json({ error: pwdErr });
 
   // 检查用户名是否已存在(DB 优先)
   try {
@@ -1312,56 +1501,56 @@ app.post('/api/auth/register', async (req, res) => {
     }
   }
 
-  const userId = uuidv4();
-  const hashed = hashPassword(password);
+  try {
+    const userId = uuidv4();
+    const hashed = hashPassword(password);
 
-  // 先写 DB(DB 是权威源)
-  await userDAO.createUser({
-    id: userId,
-    username,
-    passwordHash: hashed,
-    name: name || username,
-    role: 'user'
-  });
+    // 先写 DB(DB 是权威源)
+    await userDAO.createUser({
+      id: userId,
+      username,
+      passwordHash: hashed,
+      name: name || username,
+      role: 'user'
+    });
 
-  // 后同步 Map(不含密码)
-  const newUser = {
-    id: userId,
-    username,
-    name: name || username,
-    role: 'user',
-    createdAt: new Date().toISOString()
-  };
-  users.set(userId, newUser);
+    // 后同步 Map(不含密码)
+    const newUser = {
+      id: userId,
+      username,
+      name: name || username,
+      role: 'user',
+      createdAt: new Date().toISOString()
+    };
+    users.set(userId, newUser);
 
-  res.status(201).json({
-    id: userId,
-    username: newUser.username,
-    name: newUser.name,
-    role: newUser.role
-  });
-});
-
-// 登录限流: 按IP，每15分钟最多100次（防暴力破解）
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: '请求过于频繁，请稍后再试' },
-  // 跳过无效请求（没有用户名/密码字段的不计数）
-  skip: (req) => !req.body?.username,
+    res.status(201).json({
+      id: userId,
+      username: newUser.username,
+      name: newUser.name,
+      role: newUser.role
+    });
+  } catch (err) {
+    console.error('[Auth] 注册失败:', err.message);
+    res.status(500).json({ error: '注册失败，请稍后重试' });
+  }
 });
 
 // 用户登录
-app.post('/api/auth/login', loginLimiter, async (req, res) => {
+app.post('/api/auth/login', loginLimiter, loginUserLimiter, async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
     return res.status(400).json({ error: '用户名和密码不能为空' });
   }
 
-  const user = await verifyUserCredentialsDB(username, password);
+  let user;
+  try {
+    user = await verifyUserCredentialsDB(username, password);
+  } catch (err) {
+    console.error('[Auth] 登录校验异常:', err.message);
+    return res.status(500).json({ error: '登录失败，请稍后重试' });
+  }
   if (!user) {
     return res.status(401).json({ error: '用户名或密码错误' });
   }
@@ -1533,6 +1722,7 @@ app.post('/api/auth/refresh', async (req, res) => {
 
   try {
     const decoded = jwt.verify(refreshToken, ssoConfig.jwtSecret, {
+      algorithms: ['HS256'],
       issuer: 'test-platform',
       audience: 'test-platform-api',
     });
@@ -2296,6 +2486,28 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// 就绪检查(安全整改 2026-10-19): 校验数据库可用,DB 挂了返回 503 供负载均衡摘流量
+app.get('/api/readyz', async (req, res) => {
+  const started = Date.now();
+  try {
+    await query('SELECT 1');
+    res.json({
+      status: 'ready',
+      db: 'ok',
+      latencyMs: Date.now() - started,
+      uptimeSec: Math.round(process.uptime()),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(503).json({
+      status: 'not_ready',
+      db: 'unavailable',
+      error: err.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 // ============================================================================
 // 性能监控
 // ============================================================================
@@ -2862,6 +3074,20 @@ function canAccessTask(task, req) {
 }
 
 /**
+ * 检查当前用户是否有权访问某条报告(安全/性能/兼容性/缺陷等按 created_by 归属的资源)
+ * 安全整改(2026-10-19): 此前这些详情/导出/删除接口只校验登录,任何用户拿到 id 就能
+ * 读写他人报告(IDOR)。createdBy 为空的历史数据按「管理员可见、普通用户不可见」处理。
+ */
+function canAccessOwnedRecord(record, req) {
+  if (!record) return false;
+  if (isAdmin(req.user)) return true;
+  const owner = record.created_by || record.createdBy || null;
+  if (!owner) return false;
+  const userId = req.user.id || req.user.sub;
+  return owner === userId;
+}
+
+/**
  * 解析任务的 artifact 解析上下文（内存优先，DB 回退）
  * 修复：scan/workflow 完成后可能从内存 Map 清理（tasks.delete），或进程重启后
  * 历史任务不在内存中，导致预览/下载 404。这里在内存缺失时从 MySQL tasks 表
@@ -3068,16 +3294,20 @@ app.get('/api/tasks/:taskId/artifacts/:artifactId/preview', authenticate, async 
 
   const ext = (artifact.path.split('.').pop() || '').toLowerCase();
   try {
+    // 安全整改(2026-10-19): 预览 HTML 返回同源,必须加 CSP sandbox 禁止脚本执行
+    const sandboxCsp = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:";
     if (ext === 'docx') {
       const html = await convertDocxToHtml(artifact.path);
       if (html == null) return res.status(500).json({ error: 'docx 转换失败' });
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Content-Security-Policy', sandboxCsp);
       return res.send(html);
     }
     if (ext === 'xlsx') {
       const html = await convertXlsxToHtml(artifact.path);
       if (html == null) return res.status(500).json({ error: 'xlsx 转换失败' });
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Content-Security-Policy', sandboxCsp);
       return res.send(html);
     }
     return res.status(415).json({ error: '该格式不支持在线预览' });
@@ -3214,7 +3444,7 @@ function getExtension(language) {
 const interactionPromises = new Map();
 
 // 用户提交交互回复
-app.post('/api/tasks/:id/interact', (req, res) => {
+app.post('/api/tasks/:id/interact', authenticate, (req, res) => {
   const { reply } = req.body;
   const taskId = req.params.id;
 
@@ -3576,7 +3806,7 @@ async function pushDecisionMessage(workflowId, phaseName, reviewResults, reason)
 }
 
 // WebSocket调试端点
-app.get('/api/debug/ws', (req, res) => {
+app.get('/api/debug/ws', authenticate, requireAdmin, (req, res) => {
   const clientCount = wsClients.size;
   const clients = [];
   wsClients.forEach((client, idx) => {
@@ -3594,7 +3824,7 @@ app.get('/api/debug/ws', (req, res) => {
 });
 
 // 测试WebSocket广播
-app.get('/api/debug/test-broadcast', (req, res) => {
+app.get('/api/debug/test-broadcast', authenticate, requireAdmin, (req, res) => {
   broadcast({
     type: 'debug_test',
     message: 'This is a test broadcast from the server',
@@ -3604,11 +3834,15 @@ app.get('/api/debug/test-broadcast', (req, res) => {
 });
 
 // 取消任务
-app.delete('/api/tasks/:id', (req, res) => {
+app.delete('/api/tasks/:id', authenticate, (req, res) => {
   const taskId = req.params.id;
   const task = tasks.get(taskId);
   if (!task) {
     return res.status(404).json({ error: 'Task not found' });
+  }
+  // 安全整改(2026-10-19): 仅任务所有者或管理员可删除
+  if (!canAccessTask(task, req)) {
+    return res.status(403).json({ error: '无权删除此任务' });
   }
 
   // 真正删除任务
@@ -3827,8 +4061,17 @@ app.post('/api/kb/import', authenticate, async (req, res) => {
   if (!paths || !Array.isArray(paths) || paths.length === 0) {
     return res.status(400).json({ error: 'paths 不能为空' });
   }
-  const targetKb = kbType || 'general';
-  const kbDir = path.join(KB_ROOT, targetKb);
+
+  // 安全整改(2026-10-19): kbType 枚举 + 源路径限制在用户可访问的目录 + 文件名净化
+  let kbDir;
+  try {
+    kbDir = path.join(KB_ROOT, assertKbType(String(kbType || 'general')));
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+  const homeDir = process.env.HOME || process.env.USERPROFILE;
+  const allowedRoots = [homeDir, '/Volumes', '/Network'].filter(Boolean);
+  const blocked = [/(^|[\\/])\.env(\.|$)/i, /credentials\.json$/i, /(^|[\\/])id_(rsa|dsa|ecdsa|ed25519)$/i, /\.pem$/i, /\.key$/i];
 
   // 确保目标目录存在
   try {
@@ -3838,24 +4081,34 @@ app.post('/api/kb/import', authenticate, async (req, res) => {
 
   const results = [];
   const errors = [];
-  for (const filePath of paths) {
+  for (const rawPath of paths) {
     try {
-      const stat = fsSync.statSync(filePath);
+      const resolved = path.resolve(String(rawPath));
+      const root = allowedRoots.find(r => resolved === r || resolved.startsWith(r + path.sep));
+      if (!root) throw new Error('源路径不在允许的目录内');
+      const filePath = await resolveWithin(root, path.relative(root, resolved));
+      if (blocked.some(re => re.test(filePath))) throw new Error('该文件类型禁止导入知识库');
+
+      const stat = await fs.stat(filePath);
       if (stat.isFile()) {
-        const name = path.basename(filePath);
-        const destPath = path.join(kbDir, name);
+        const name = safeBaseName(path.basename(filePath));
+        const destPath = await resolveWithin(kbDir, name);
+        try {
+          await fs.access(destPath);
+          errors.push({ path: rawPath, error: `目标已存在，跳过: ${name}` });
+          continue;
+        } catch { /* 不存在,继续 */ }
 
         // 复制文件到知识库目录
-        const data = fsSync.readFileSync(filePath);
-        fsSync.writeFileSync(destPath, data);
+        const data = await fs.readFile(filePath);
+        await fs.writeFile(destPath, data, { flag: 'wx' });
 
-        results.push({ path: filePath, dest: destPath, name, status: 'imported' });
-        console.log(`[KB Import] Copied: ${filePath} → ${destPath}`);
+        results.push({ path: rawPath, dest: destPath, name, status: 'imported' });
       } else {
-        errors.push({ path: filePath, error: '不是文件' });
+        errors.push({ path: rawPath, error: '不是文件' });
       }
     } catch (e) {
-      errors.push({ path: filePath, error: e.message });
+      errors.push({ path: rawPath, error: e.message });
     }
   }
   broadcast({ type: 'kb_updated' });
@@ -4279,11 +4532,25 @@ app.post('/api/kb/upload', authenticate, (req, res, next) => {
     return res.status(400).json({ error: 'No file uploaded' });
   }
 
-  const kbType = req.body.kbType || 'general';
-  const destDir = path.join(KB_ROOT, kbType);
-  const destPath = path.join(destDir, req.file.originalname);
+  // 安全整改(2026-10-19): kbType 必须是枚举、文件名必须净化,防止覆盖后端源码
+  let kbType, originalName, destDir, destPath;
+  try {
+    kbType = assertKbType(String(req.body.kbType || 'general'));
+    originalName = safeBaseName(req.file.originalname);
+    destDir = path.join(KB_ROOT, kbType);
+    await fs.mkdir(destDir, { recursive: true });
+    destPath = await resolveWithin(destDir, originalName);
+  } catch (e) {
+    await fs.unlink(req.file.path).catch(() => {});
+    return res.status(400).json({ success: false, error: e.message });
+  }
 
-  // 移动文件到正确的知识库目录
+  // 移动文件到正确的知识库目录(已存在则拒绝覆盖,避免误删他人文档)
+  try {
+    await fs.access(destPath);
+    await fs.unlink(req.file.path).catch(() => {});
+    return res.status(409).json({ success: false, error: `文档已存在: ${originalName}` });
+  } catch { /* 不存在,继续 */ }
   try {
     await fs.rename(req.file.path, destPath);
   } catch (e) {
@@ -4297,8 +4564,8 @@ app.post('/api/kb/upload', authenticate, (req, res, next) => {
   }
 
   const doc = {
-    id: `${kbType}/${escapeHTML(req.file.originalname)}`,
-    name: escapeHTML(req.file.originalname),
+    id: `${kbType}/${originalName}`,
+    name: escapeHTML(originalName),
     kbType,
     size: req.file.size,
     modified: new Date().toISOString()
@@ -4306,7 +4573,7 @@ app.post('/api/kb/upload', authenticate, (req, res, next) => {
 
   // 记录上传者
   const currentUser = req.user || {};
-  addKBMetaUploader(kbType, req.file.originalname, currentUser.id || currentUser.sub, currentUser.name || currentUser.username || '未知').catch(
+  addKBMetaUploader(kbType, originalName, currentUser.id || currentUser.sub, currentUser.name || currentUser.username || '未知').catch(
     e => console.warn('[KB Meta] 记录上传者失败:', e.message)
   );
 
@@ -4316,7 +4583,7 @@ app.post('/api/kb/upload', authenticate, (req, res, next) => {
       const kbType2 = kbType || 'general';
       const docId2 = doc.id;
       // 读取文件内容
-      const filePath2 = path.join(KB_ROOT, kbType2, req.file.originalname);
+      const filePath2 = destPath;
       let fileContent = '';
       try {
         const ext2 = path.extname(filePath2).toLowerCase();
@@ -4343,7 +4610,7 @@ app.post('/api/kb/upload', authenticate, (req, res, next) => {
       const vr = await callVectorService('process', {
         docId: docId2,
         kbType: kbType2,
-        name: req.file.originalname,
+        name: originalName,
         content: enhancedContent
       });
       console.log(`[KB Upload] 自动向量化完成: ${docId2}, chunks=${vr.chunks || 0}`);
@@ -4411,7 +4678,14 @@ function sanitizeKBFileName(name) {
 }
 
 app.post('/api/kb/fetch-url', authenticate, async (req, res) => {
-  const { url, name, kbType = 'general' } = req.body || {};
+  const { url, name } = req.body || {};
+  // 安全整改(2026-10-19): kbType 必须是枚举,防止以 ../ 写到源码目录
+  let kbType;
+  try {
+    kbType = assertKbType(String(req.body?.kbType || 'general'));
+  } catch (e) {
+    return res.status(400).json({ success: false, error: e.message });
+  }
   if (!url || typeof url !== 'string') {
     return res.status(400).json({ success: false, error: '缺少 url' });
   }
@@ -4424,18 +4698,43 @@ app.post('/api/kb/fetch-url', authenticate, async (req, res) => {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return res.status(400).json({ success: false, error: '仅支持 http / https 链接' });
   }
+  // 安全整改(2026-10-19): 阻断指向内网/回环/云元数据地址的 SSRF
+  if (await isBlockedSsrfTarget(parsed.hostname)) {
+    return res.status(400).json({ success: false, error: '不允许抓取内网或本机地址' });
+  }
 
   const MAX_BYTES = 8 * 1024 * 1024;
   let html = '';
   try {
-    const resp = await fetch(parsed.href, {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(20000),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; AITestPlatform-KBFetcher/1.0)',
-        'Accept': 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
-      },
-    });
+    // 手动跟随重定向,每一跳都重新做 SSRF 校验(默认 follow 可被 302 到内网绕过)
+    let currentUrl = parsed;
+    let resp = null;
+    for (let hop = 0; hop < 5; hop++) {
+      resp = await fetch(currentUrl.href, {
+        redirect: 'manual',
+        signal: AbortSignal.timeout(20000),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; AITestPlatform-KBFetcher/1.0)',
+          'Accept': 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
+        },
+      });
+      if (resp.status >= 300 && resp.status < 400 && resp.headers.get('location')) {
+        const next = new URL(resp.headers.get('location'), currentUrl);
+        if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+          return res.status(400).json({ success: false, error: '重定向到了不支持的协议' });
+        }
+        if (await isBlockedSsrfTarget(next.hostname)) {
+          return res.status(400).json({ success: false, error: '不允许抓取内网或本机地址' });
+        }
+        currentUrl = next;
+        continue;
+      }
+      break;
+    }
+    if (!resp) throw new Error('抓取失败');
+    if (resp.status >= 300 && resp.status < 400) {
+      return res.status(502).json({ success: false, error: '目标跳转次数过多' });
+    }
     if (!resp.ok) {
       return res.status(502).json({ success: false, error: `抓取失败: 目标返回 HTTP ${resp.status}` });
     }
@@ -4471,12 +4770,21 @@ app.post('/api/kb/fetch-url', authenticate, async (req, res) => {
   if (!base) base = sanitizeKBFileName(parsed.hostname) || 'webpage';
   const fileName = base.toLowerCase().endsWith('.md') ? base : base + '.md';
   const destDir = path.join(KB_ROOT, kbType);
-  const destPath = path.join(destDir, fileName);
+  let destPath;
   try {
     await fs.mkdir(destDir, { recursive: true });
-    const md = `# ${title || base}\n\n> 来源: ${parsed.href}\n> 抓取时间: ${new Date().toISOString()}\n\n${text}\n`;
-    await fs.writeFile(destPath, md, 'utf-8');
+    destPath = await resolveWithin(destDir, fileName);
   } catch (e) {
+    return res.status(400).json({ success: false, error: e.message });
+  }
+  try {
+    const md = `# ${title || base}\n\n> 来源: ${parsed.href}\n> 抓取时间: ${new Date().toISOString()}\n\n${text}\n`;
+    // wx: 目标已存在则失败,避免静默覆盖同名知识库文档
+    await fs.writeFile(destPath, md, { encoding: 'utf-8', flag: 'wx' });
+  } catch (e) {
+    if (e.code === 'EEXIST') {
+      return res.status(409).json({ success: false, error: `同名文档已存在: ${fileName}` });
+    }
     return res.status(500).json({ success: false, error: `写入知识库失败: ${e.message}` });
   }
 
@@ -4519,6 +4827,17 @@ app.get('/api/kb/deliverable-templates/download', authenticate, (req, res) => {
   if (!format || !template) {
     return res.status(400).json({ success: false, error: '缺少 format 或 template 参数' });
   }
+  // 安全整改(2026-10-19): format 白名单 + template 净化,防止 ../ 读取任意文件
+  const ALLOWED_FORMATS = ['md', 'docx', 'xlsx', 'doc'];
+  if (!ALLOWED_FORMATS.includes(String(format))) {
+    return res.status(400).json({ success: false, error: '不支持的格式' });
+  }
+  let templateName;
+  try {
+    templateName = safeBaseName(String(template));
+  } catch (e) {
+    return res.status(400).json({ success: false, error: e.message });
+  }
   const TEMPLATE_DIRS = {
     ai:     path.join(os.homedir(), 'Desktop/AI学习资料/交付件模板/AI化模板'),
     manual: path.join(os.homedir(), 'Desktop/AI学习资料/交付件模板/人工测试模板'),
@@ -4532,7 +4851,7 @@ app.get('/api/kb/deliverable-templates/download', authenticate, (req, res) => {
   for (const dir of searchDirs) {
     if (!fsSync.existsSync(dir)) continue;
     // 精确匹配
-    const exact = path.join(dir, `${template}.${format}`);
+    const exact = path.join(dir, `${templateName}.${format}`);
     if (fsSync.existsSync(exact)) { filePath = exact; break; }
     // 模糊匹配(文件名含 template 关键字,不区分前后缀)
     const entries = fsSync.readdirSync(dir, { withFileTypes: true });
@@ -4542,7 +4861,7 @@ app.get('/api/kb/deliverable-templates/download', authenticate, (req, res) => {
         const subDir = path.join(dir, entry.name);
         const subEntries = fsSync.readdirSync(subDir);
         for (const sub of subEntries) {
-          if (sub.includes(template) && sub.endsWith('.' + format)) {
+          if (sub.includes(templateName) && sub.endsWith('.' + format)) {
             filePath = path.join(subDir, sub);
             break;
           }
@@ -4575,7 +4894,23 @@ app.get('/api/kb/deliverable-templates/download', authenticate, (req, res) => {
 app.get('/api/kb/:kbType/*', authenticate, async (req, res) => {
   const { kbType } = req.params;
   const filepath = req.params[0]; // 获取通配符部分
-  const filePath = path.join(KB_ROOT, kbType, filepath);
+
+  // 安全整改(2026-10-19): kbType 枚举 + realpath 沙箱,阻断 ../ 读取任意文件
+  let filePath;
+  try {
+    assertKbType(kbType);
+    assertSafeRelative(filepath);
+    filePath = await resolveWithin(path.join(KB_ROOT, kbType), filepath);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  // 权限:project-test / project-biz 仅本地上传者与管理员可读(与删除口径一致)
+  const user = req.user || {};
+  const kbMeta = await loadKBMeta(kbType).catch(() => null);
+  if (!canViewKBDoc(user, kbType, kbMeta?.[filepath] || {})) {
+    return res.status(403).json({ error: '无权查看该知识库文档' });
+  }
 
   try {
     const content = await fs.readFile(filePath, 'utf-8');
@@ -4603,6 +4938,14 @@ app.delete('/api/kb/:kbType/*', authenticate, async (req, res) => {
     return res.status(403).json({ error: '禁止删除知识库元数据文件' });
   }
 
+  // 安全整改(2026-10-19): kbType 枚举 + 相对路径校验,阻断 ../ 删任意文件
+  try {
+    assertKbType(kbType);
+    assertSafeRelative(filepath);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
   // 权限校验
   const kbMeta = await loadKBMeta(kbType);
   const metaEntry = kbMeta?.[filepath]; // 【修复】kbMeta 为 null 时不会崩溃
@@ -4614,16 +4957,18 @@ app.delete('/api/kb/:kbType/*', authenticate, async (req, res) => {
   const kbPath = path.join(KB_ROOT, kbType);
   let deleted = false;
 
-  // 尝试1: 直接路径(正常 UTF-8 文件名)
-  const directPath = path.join(kbPath, filepath);
+  // 尝试1: 直接路径(正常 UTF-8 文件名),经 realpath 沙箱确认不越界
+  let directPath = null;
   try {
+    directPath = await resolveWithin(kbPath, filepath);
     await fs.unlink(directPath);
     deleted = true;
   } catch (e) {
     // 尝试2: 双编码路径(旧文件,macOS 上传导致的双编码文件名)
-    const fixedFilename = encodeToDiskName(filepath);
-    const doubleEncodedPath = path.join(kbPath, fixedFilename);
     try {
+      const fixedFilename = encodeToDiskName(filepath);
+      assertSafeRelative(fixedFilename);
+      const doubleEncodedPath = await resolveWithin(kbPath, fixedFilename);
       await fs.unlink(doubleEncodedPath);
       deleted = true;
     } catch (e2) {
@@ -4718,6 +5063,15 @@ app.post('/api/kb/batch-delete', authenticate, async (req, res) => {
         continue;
       }
 
+      // 安全整改(2026-10-19): kbType 枚举 + 相对路径校验,阻断批量删除越界
+      try {
+        assertKbType(docKbType);
+        assertSafeRelative(filepath);
+      } catch (e) {
+        results.push({ ...doc, success: false, error: e.message });
+        continue;
+      }
+
       // 权限校验
       const metaEntryForCheck = kbMetaCache[docKbType] ? kbMetaCache[docKbType][filepath] : null;
       if (!canDeleteKBDoc(user, docKbType, filepath, metaEntryForCheck)) {
@@ -4733,16 +5087,17 @@ app.post('/api/kb/batch-delete', authenticate, async (req, res) => {
       const kbPath = path.join(KB_ROOT, docKbType);
       let deleted = false;
 
-      // 尝试1: 直接路径(正常 UTF-8 文件名)
-      const directPath = path.join(kbPath, filepath);
+      // 尝试1: 直接路径(正常 UTF-8 文件名),经 realpath 沙箱确认不越界
       try {
+        const directPath = await resolveWithin(kbPath, filepath);
         await fs.unlink(directPath);
         deleted = true;
       } catch (e) {
         // 尝试2: 双编码路径(旧文件)
-        const fixedFilename = encodeToDiskName(filepath);
-        const doubleEncodedPath = path.join(kbPath, fixedFilename);
         try {
+          const fixedFilename = encodeToDiskName(filepath);
+          assertSafeRelative(fixedFilename);
+          const doubleEncodedPath = await resolveWithin(kbPath, fixedFilename);
           await fs.unlink(doubleEncodedPath);
           deleted = true;
         } catch (e2) {
@@ -5183,28 +5538,38 @@ app.post('/api/parse/word', authenticate, async (req, res) => {
  * 支持 .docx .xlsx .pdf .pptx 等二进制格式
  * {filename, base64}
  */
-app.post('/api/parse', async (req, res) => {
+app.post('/api/parse', authenticate, async (req, res) => {
+  let tmpDir = null;
   try {
     const { filename, base64 } = req.body;
     if (!base64) return res.status(400).json({ error: '缺少base64参数' });
     if (!filename) return res.status(400).json({ error: '缺少filename参数' });
 
-    const ext = '.' + (filename.split('.').pop() || '').toLowerCase();
+    // 安全整改(2026-10-19): 扩展名白名单 + mkdtemp 独立目录,失败也必定清理
+    const ext = '.' + (String(filename).split('.').pop() || '').toLowerCase();
+    const ALLOWED_PARSE_EXT = ['.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.pdf'];
+    if (!ALLOWED_PARSE_EXT.includes(ext)) {
+      return res.status(400).json({ error: `不支持解析该文件类型: ${ext}` });
+    }
     const buffer = Buffer.from(base64, 'base64');
-    const tmpDir = os.tmpdir();
-    const tmpPath = path.join(tmpDir, `parse-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+    if (buffer.length > 50 * 1024 * 1024) {
+      return res.status(413).json({ error: '文件超过 50MB' });
+    }
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'parse-'));
+    const tmpPath = path.join(tmpDir, `input${ext}`);
 
     await fs.writeFile(tmpPath, buffer);
 
     const text = await parseDocumentContent(tmpPath);
 
-    // 清理临时文件
-    try { await fs.unlink(tmpPath); } catch (_) {}
-
     res.json({ success: true, filename, text: text.substring(0, 50000) });
   } catch (error) {
     console.error('[Parse] 文档解析失败:', error);
     res.status(500).json({ error: error.message });
+  } finally {
+    if (tmpDir) {
+      try { await fs.rm(tmpDir, { recursive: true, force: true }); } catch (_) {}
+    }
   }
 });
 
@@ -6167,12 +6532,16 @@ async function executeAutoNativeWorkflow(workflowId, taskInput) {
 }
 
 // API端点:获取工作流状态
-app.get('/api/workflow', (req, res) => {
-  const running = [...tasks.values()].filter(t => t.status === 'running');
+app.get('/api/workflow', authenticate, (req, res) => {
+  // 安全整改(2026-10-19): 只返回当前用户的工作流(管理员可见全部)
+  const isAdminUser = isAdmin(req.user);
+  const userId = req.user.id || req.user.sub;
+  const mine = [...tasks.values()].filter(t => isAdminUser || t.userId === userId || t.user_id === userId);
+  const running = mine.filter(t => t.status === 'running');
   res.json({
     active: running.length,
     workflows: running.map(t => ({ id: t.id, agentId: t.agentId, description: t.description, status: t.status, progress: t.progress || 0 })),
-    recent: [...tasks.values()].filter(t => t.status === 'completed' || t.status === 'failed').slice(-5).map(t => ({ id: t.id, agentId: t.agentId, status: t.status }))
+    recent: mine.filter(t => t.status === 'completed' || t.status === 'failed').slice(-5).map(t => ({ id: t.id, agentId: t.agentId, status: t.status }))
   });
 });
 
@@ -6184,13 +6553,27 @@ app.get('/api/workflow', (req, res) => {
  * GET /api/workflow/:workflowId/download
  * 下载工作流的输出文件(交付件)
  */
-app.get('/api/workflow/:workflowId/download', async (req, res) => {
+app.get('/api/workflow/:workflowId/download', authenticate, async (req, res) => {
   const { workflowId } = req.params;
 
   console.log(`[Download] === START === workflowId=${workflowId}`);
 
   if (!workflowId) {
     return res.status(400).json({ error: '缺少 workflowId' });
+  }
+
+  // 安全整改(2026-10-19): 交付物只允许所有者或管理员下载
+  const wfOwner = workflows.get(workflowId)?.userId || workflows.get(workflowId)?.user_id || null;
+  const memTask = tasks.get(workflowId);
+  let ownerId = wfOwner || memTask?.userId || memTask?.user_id || null;
+  if (!ownerId) {
+    try {
+      const dbWf = await workflowDAO.getWorkflow(workflowId);
+      ownerId = dbWf?.userId || dbWf?.user_id || null;
+    } catch { /* DB 不可用时仅凭内存判断 */ }
+  }
+  if (ownerId && !isAdmin(req.user) && ownerId !== (req.user.id || req.user.sub)) {
+    return res.status(403).json({ error: '无权下载此工作流交付物' });
   }
 
   // 尝试从 workflows Map 中获取输出文件路径
@@ -7137,6 +7520,14 @@ app.post('/api/workflow/:id/decision', authenticate, async (req, res) => {
     return res.status(404).json({ error: '工作流不存在' });
   }
 
+  // 安全整改(2026-10-19): 工作流操作仅限所有者或管理员(IDOR)
+  {
+    const wf = workflows.get(workflowId);
+    if (wf && !isAdmin(req.user) && (wf.userId || wf.user_id) && (wf.userId || wf.user_id) !== (req.user.id || req.user.sub)) {
+      return res.status(403).json({ error: '无权操作此工作流' });
+    }
+  }
+
   if (!['continue', 'manual_edit', 'retry', 'stop'].includes(action)) {
     return res.status(400).json({ error: '无效的操作,请选择 continue / manual_edit / retry / stop' });
   }
@@ -7178,6 +7569,14 @@ app.post('/api/workflow/:id/retry', authenticate, async (req, res) => {
   const workflowId = req.params.id;
   const { input } = req.body || {};
   const stored = workflows.get(workflowId);
+
+  // 安全整改(2026-10-19): 工作流操作仅限所有者或管理员(IDOR)
+  {
+    const wf = workflows.get(workflowId);
+    if (wf && !isAdmin(req.user) && (wf.userId || wf.user_id) && (wf.userId || wf.user_id) !== (req.user.id || req.user.sub)) {
+      return res.status(403).json({ error: '无权操作此工作流' });
+    }
+  }
   const taskInput = input || (stored ? stored.input : '');
 
   if (!taskInput) {
@@ -7203,6 +7602,14 @@ app.post('/api/workflow/:id/stop', authenticate, async (req, res) => {
   if (!workflows.has(workflowId)) {
     return res.status(404).json({ error: '工作流不存在' });
   }
+
+  // 安全整改(2026-10-19): 工作流操作仅限所有者或管理员(IDOR)
+  {
+    const wf = workflows.get(workflowId);
+    if (wf && !isAdmin(req.user) && (wf.userId || wf.user_id) && (wf.userId || wf.user_id) !== (req.user.id || req.user.sub)) {
+      return res.status(403).json({ error: '无权操作此工作流' });
+    }
+  }
   const result = await handleWorkflowDecision(workflowId, 'stop', '');
   res.json(escapeDoc(result));
 });
@@ -7213,6 +7620,14 @@ app.post('/api/workflow/:id/message', authenticate, async (req, res) => {
   const workflow = workflows.get(workflowId);
   if (!workflow) {
     return res.status(404).json({ error: 'Workflow not found' });
+  }
+
+  // 安全整改(2026-10-19): 工作流操作仅限所有者或管理员(IDOR)
+  {
+    const wf = workflows.get(workflowId);
+    if (wf && !isAdmin(req.user) && (wf.userId || wf.user_id) && (wf.userId || wf.user_id) !== (req.user.id || req.user.sub)) {
+      return res.status(403).json({ error: '无权操作此工作流' });
+    }
   }
   if (workflow.status !== 'running') {
     return res.status(400).json({ error: '工作流未在运行中' });
@@ -7271,7 +7686,7 @@ app.post('/api/workflow/execute', authenticate, async (req, res) => {
  * GET /api/input-validation/status
  * 获取当前等待输入物的会话状态
  */
-app.get('/api/input-validation/status', async (req, res) => {
+app.get('/api/input-validation/status', authenticate, requireAdmin, async (req, res) => {
   // V2 进库:Map 空时从 DB 补充(服务重启后 Map 清空)
   if (waitingInputSessions.size === 0) {
     try {
@@ -7314,7 +7729,7 @@ app.get('/api/input-validation/status', async (req, res) => {
  * POST /api/input-validation/cleanup
  * 清理所有等待输入物的挂起会话
  */
-app.post('/api/input-validation/cleanup', (req, res) => {
+app.post('/api/input-validation/cleanup', authenticate, requireAdmin, (req, res) => {
   const { reason = '手动清理' } = req.body || {};
 
   console.log(`[API] Input validation cleanup requested: ${reason}`);
@@ -7332,7 +7747,7 @@ app.post('/api/input-validation/cleanup', (req, res) => {
  * GET /api/workflow-sessions/status
  * 查看当前跟踪的智能体会话状态
  */
-app.get('/api/workflow-sessions/status', (req, res) => {
+app.get('/api/workflow-sessions/status', authenticate, requireAdmin, (req, res) => {
   const status = {};
   for (const [workflowId, sessions] of workflowAgentSessions.entries()) {
     status[workflowId] = {
@@ -7355,7 +7770,7 @@ app.get('/api/workflow-sessions/status', (req, res) => {
  * POST /api/workflow-sessions/cleanup
  * 清理指定工作流或所有工作流的智能体会话
  */
-app.post('/api/workflow-sessions/cleanup', async (req, res) => {
+app.post('/api/workflow-sessions/cleanup', authenticate, requireAdmin, async (req, res) => {
   const { workflowId, reason = '手动清理' } = req.body || {};
 
   console.log(`[API] Workflow session cleanup requested: workflowId=${workflowId || 'all'}, reason=${reason}`);
@@ -7389,7 +7804,7 @@ app.post('/api/workflow-sessions/cleanup', async (req, res) => {
  * POST /api/input-validation/validate
  * 测试输入物校验逻辑(不实际执行)
  */
-app.post('/api/input-validation/validate', (req, res) => {
+app.post('/api/input-validation/validate', authenticate, (req, res) => {
   const { agentId, taskInput, previousArtifacts = [] } = req.body || {};
 
   if (!agentId) {
@@ -7413,23 +7828,24 @@ app.post('/api/input-validation/validate', (req, res) => {
 // ============================================================================
 
 // 浏览本地文件系统
-app.get('/api/fs/browse', async (req, res) => {
+app.get('/api/fs/browse', authenticate, async (req, res) => {
   const { path: browsePath, showHidden = 'false' } = req.query;
 
-  // 安全检查:确保路径在允许的目录内
+  // 安全整改(2026-10-19): 必须在受控根目录内,并用 realpath 防 ../ 与符号链接逃逸
   const homeDir = process.env.HOME || process.env.USERPROFILE;
-  const allowedRoots = [
-    homeDir,
-    '/Volumes',
-    '/Network'
-  ];
+  const allowedRoots = [homeDir, '/Volumes', '/Network'].filter(Boolean);
 
-  let targetPath = browsePath || homeDir;
-
-  // 验证路径安全性
-  const isAllowed = allowedRoots.some(root => targetPath.startsWith(root));
-  if (!isAllowed) {
-    return res.status(400).json({ error: '路径不在允许的目录内' });
+  let targetPath;
+  try {
+    const wanted = browsePath || homeDir;
+    // 找到匹配的根,再在根内解析
+    const root = allowedRoots.find(r => path.resolve(wanted) === r || path.resolve(wanted).startsWith(r + path.sep));
+    if (!root) {
+      return res.status(400).json({ error: '路径不在允许的目录内' });
+    }
+    targetPath = await resolveWithin(root, path.relative(root, path.resolve(wanted)));
+  } catch (e) {
+    return res.status(400).json({ error: `路径不可访问: ${e.message}` });
   }
 
   try {
@@ -7484,7 +7900,7 @@ app.get('/api/fs/browse', async (req, res) => {
 
 
 // 克隆Git仓库
-app.post('/api/git/clone', async (req, res) => {
+app.post('/api/git/clone', authenticate, async (req, res) => {
   const { url, branch = 'main', targetPath, shallow = true } = req.body;
 
   if (!url) {
@@ -7496,16 +7912,23 @@ app.post('/api/git/clone', async (req, res) => {
     return res.status(400).json({ error: '无效的仓库URL' });
   }
 
-  const homeDir = process.env.HOME || process.env.USERPROFILE;
-  const gitRoot = targetPath || path.join(GIT_CLONES_DIR);
+  const gitRoot = targetPath || GIT_CLONES_DIR;
 
   try {
-    // 确保目标目录存在
+    // 安全整改(2026-10-19): 目标目录必须收敛在运行时克隆目录内
+    await fs.mkdir(GIT_CLONES_DIR, { recursive: true });
     await fs.mkdir(gitRoot, { recursive: true });
+    const safeRoot = await resolveWithin(GIT_CLONES_DIR, path.relative(GIT_CLONES_DIR, path.resolve(gitRoot)));
 
-    // 提取仓库名作为目录名
-    const repoName = url.replace(/\.git$/, '').split('/').pop();
-    const clonePath = path.join(gitRoot, repoName);
+    // 提取仓库名作为目录名,并做文件名净化
+    const repoName = safeBaseName(url.replace(/\.git$/, '').split('/').pop() || 'repo');
+
+    // 分支名白名单:拒绝以 - 开头与任何 shell 元字符
+    if (!/^[A-Za-z0-9._/-]{1,200}$/.test(branch) || branch.startsWith('-')) {
+      return res.status(400).json({ error: '无效的分支名' });
+    }
+
+    const clonePath = path.join(safeRoot, repoName);
 
     // 检查是否已存在
     let exists = false;
@@ -7525,19 +7948,21 @@ app.post('/api/git/clone', async (req, res) => {
       });
     }
 
-    // 使用child_process执行git clone
-    const execAsync = (cmd) => new Promise((resolve, reject) => {
-      exec(cmd, { cwd: gitRoot, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-        if (error) reject(error);
-        else resolve({ stdout, stderr });
+    // 用 execFile 传参数数组,彻底避免 shell 注入(不再拼字符串执行)
+    await new Promise((resolve, reject) => {
+      const args = ['clone'];
+      if (shallow) args.push('--depth', '1');
+      if (branch) args.push('-b', branch);
+      args.push(url, repoName);
+      execFile('git', args, { cwd: safeRoot, timeout: 10 * 60 * 1000, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        if (error) {
+          error.message = `${error.message}\n${String(stderr || '').slice(0, 500)}`;
+          reject(error);
+        } else {
+          resolve({ stdout, stderr });
+        }
       });
     });
-
-    const cloneCmd = shallow
-      ? `git clone --depth 1 ${branch ? `-b ${branch}` : ''} "${url}" "${repoName}"`
-      : `git clone ${branch ? `-b ${branch}` : ''} "${url}" "${repoName}"`;
-
-    await execAsync(cloneCmd);
 
     res.json({
       success: true,
@@ -7552,21 +7977,30 @@ app.post('/api/git/clone', async (req, res) => {
 });
 
 // 获取Git仓库文件列表
-app.get('/api/git/files', async (req, res) => {
+app.get('/api/git/files', authenticate, async (req, res) => {
   const { path: repoPath } = req.query;
 
   if (!repoPath) {
     return res.status(400).json({ error: '缺少仓库路径' });
   }
 
+  // 安全整改(2026-10-19): 仅允许浏览克隆目录内的仓库
+  let safeRepoPath;
   try {
-    const entries = await fs.readdir(repoPath, { withFileTypes: true });
+    await fs.mkdir(GIT_CLONES_DIR, { recursive: true });
+    safeRepoPath = await resolveWithin(GIT_CLONES_DIR, path.relative(GIT_CLONES_DIR, path.resolve(repoPath)));
+  } catch (e) {
+    return res.status(400).json({ error: '仓库路径不在允许范围内' });
+  }
+
+  try {
+    const entries = await fs.readdir(safeRepoPath, { withFileTypes: true });
 
     const items = [];
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue;
 
-      const fullPath = path.join(repoPath, entry.name);
+      const fullPath = path.join(safeRepoPath, entry.name);
       let size = 0;
       let modified = null;
 
@@ -7593,7 +8027,7 @@ app.get('/api/git/files', async (req, res) => {
     });
 
     res.json({
-      path: repoPath,
+      path: safeRepoPath,
       items
     });
   } catch (error) {
@@ -7602,19 +8036,32 @@ app.get('/api/git/files', async (req, res) => {
 });
 
 // 读取文件内容
-app.get('/api/fs/read', async (req, res) => {
-  const { path: filePath, encoding = 'utf-8', maxSize = '1048576' } = req.query; // 默认1MB
+app.get('/api/fs/read', authenticate, async (req, res) => {
+  const { path: requestedPath, encoding = 'utf-8', maxSize = '1048576' } = req.query; // 默认1MB
 
-  if (!filePath) {
+  if (!requestedPath) {
     return res.status(400).json({ error: '缺少文件路径' });
   }
 
-  // 安全检查
+  // 安全整改(2026-10-19): realpath 校验防 ../ 与符号链接逃逸
   const homeDir = process.env.HOME || process.env.USERPROFILE;
-  const allowedRoots = [homeDir, '/Volumes', '/Network'];
-  const isAllowed = allowedRoots.some(root => filePath.startsWith(root));
-  if (!isAllowed) {
-    return res.status(400).json({ error: '路径不在允许的目录内' });
+  const allowedRoots = [homeDir, '/Volumes', '/Network'].filter(Boolean);
+  let filePath;
+  try {
+    const resolved = path.resolve(String(requestedPath));
+    const root = allowedRoots.find(r => resolved === r || resolved.startsWith(r + path.sep));
+    if (!root) {
+      return res.status(400).json({ error: '路径不在允许的目录内' });
+    }
+    filePath = await resolveWithin(root, path.relative(root, resolved));
+  } catch (e) {
+    return res.status(400).json({ error: `路径不可访问: ${e.message}` });
+  }
+
+  // 拒绝读取凭证/密钥类文件(即便是登录用户)
+  const blocked = [/(^|[\\/])\.env(\.|$)/i, /credentials\.json$/i, /(^|[\\/])id_(rsa|dsa|ecdsa|ed25519)$/i, /\.pem$/i, /\.key$/i];
+  if (blocked.some(re => re.test(filePath))) {
+    return res.status(403).json({ error: '该文件类型不允许通过接口读取' });
   }
 
   try {
@@ -7690,22 +8137,60 @@ app.get('/api/fs/read', async (req, res) => {
 // ============================================================================
 
 const server = createServer(app);
-const wss = new WebSocketServer({ server });
+// 安全整改(2026-10-19): WebSocket 改为 noServer + 握手校验 JWT。
+// 此前任意客户端连上即可收到全部用户的 task_created/task_progress(含完整输入与结果)。
+const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+
+server.on('upgrade', async (req, socket, head) => {
+  // 只处理 / 或 /ws 的升级请求,其余(如 Vite HMR)直接关闭
+  let token = null;
+  try {
+    const url = new URL(req.url, 'http://localhost');
+    token = url.searchParams.get('token')
+      || (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '')
+      || null;
+  } catch { /* 忽略 */ }
+
+  let user = null;
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, ssoConfig.jwtSecret, {
+        algorithms: ['HS256'], issuer: 'test-platform', audience: 'test-platform-api',
+      });
+      if (decoded.type === 'access') {
+        user = users.get(decoded.sub) || await userDAO.getUserById(decoded.sub).catch(() => null);
+      }
+    } catch { /* 验签失败按未认证处理 */ }
+  }
+  if (!user) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    ws.userId = user.id;
+    ws.userRole = user.role;
+    wss.emit('connection', ws, req);
+  });
+});
 
 wss.on('connection', (ws) => {
   wsClients.add(ws);
-  console.log('[WS] Client connected');
+  console.log(`[WS] Client connected (user=${ws.userId})`);
 
   ws.on('close', () => {
     wsClients.delete(ws);
     console.log('[WS] Client disconnected');
   });
+  ws.on('error', () => {
+    wsClients.delete(ws);
+  });
 
-  // 发送初始状态
+  // 发送初始状态(不泄露全局任务数)
   ws.send(JSON.stringify({
     type: 'connected',
     agents: Object.keys(AGENTS),
-    taskCount: tasks.size
   }));
 });
 
@@ -7799,11 +8284,12 @@ function broadcast(message) {
   }
   console.log(`[Broadcast] type=${message.type}, taskId=${message.taskId || message.task?.id || 'N/A'}, userId=${message.userId || 'N/A'}, targetUserId=${message.targetUserId || 'N/A'}`);
   const data = JSON.stringify(message);
-  // WebSocket 广播
+  // WebSocket 广播(安全整改 2026-10-19: 与 SSE 同一隔离策略,按 targetUserId 过滤)
+  const targetUid = message.targetUserId || message.userId || null;
   wsClients.forEach(client => {
-    if (client.readyState === 1) {
-      client.send(data);
-    }
+    if (client.readyState !== 1) return;
+    if (targetUid && client.userRole !== 'admin' && client.userId !== targetUid) return;
+    client.send(data);
   });
   // SSE 广播
   sseBroadcast(message);
@@ -7819,8 +8305,10 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || envConfig.DEEPSEEK_API_
 if (!DEEPSEEK_API_KEY) {
   console.warn('[Deepseek] 未配置 DEEPSEEK_API_KEY,agent 调用将失败,请在 .env 中配置');
 }
-// 启动时打印(隐藏后4位)
-const maskedKey = DEEPSEEK_API_KEY ? DEEPSEEK_API_KEY.replace(/^(.{20}).*(.{4})$/, '$1***$2') : '(未配置)';
+// 启动时打印(只露末 4 位,避免日志泄露 Key 前缀)
+const maskedKey = DEEPSEEK_API_KEY
+  ? `${DEEPSEEK_API_KEY.slice(0, 3)}***${DEEPSEEK_API_KEY.slice(-4)}`
+  : '(未配置)';
 console.log(`[Deepseek] API Key: ${maskedKey}`);
 
 // ========== 智能体会话跟踪与清理 ==========
@@ -10760,9 +11248,19 @@ async function convertMarkdownTablesToXlsx(mdContent, outPath) {
 // 输出物在线预览:docx -> HTML(经 pandoc)
 async function convertDocxToHtml(filePath) {
   return new Promise((resolve) => {
-    execFile(PANDOC_PATH, [filePath, '-t', 'html', '--wrap=none'], (err, stdout, stderr) => {
-      if (err) { console.error(`[Preview][Docx] pandoc 失败: ${stderr || err.message}`); resolve(null); }
-      else resolve(stdout);
+    // 安全整改(2026-10-19): --sandbox 限制 pandoc 读写,markdown-raw_html 去掉原始 HTML 块,
+    // 避免 docx 内的 <script>/<img onerror> 经预览接口以同源 HTML 返回形成存储型 XSS。
+    const args = [filePath, '-f', 'markdown-raw_html', '-t', 'html', '--wrap=none', '--sandbox'];
+    execFile(PANDOC_PATH, args, (err, stdout, stderr) => {
+      if (err) {
+        // 老版本 pandoc 不支持 --sandbox 时回退(仍保留 raw_html 过滤)
+        execFile(PANDOC_PATH, [filePath, '-f', 'markdown-raw_html', '-t', 'html', '--wrap=none'], (err2, out2) => {
+          if (err2) { console.error(`[Preview][Docx] pandoc 失败: ${stderr || err.message}`); resolve(null); }
+          else resolve(out2);
+        });
+        return;
+      }
+      resolve(stdout);
     });
   });
 }
@@ -11664,6 +12162,10 @@ app.get('/api/workflow/:id/info', authenticate, async (req, res) => {
       try { wf = await workflowDAO.getWorkflow(workflowId); } catch {}
     }
     if (!wf) return res.status(404).json({ success: false, error: '工作流不存在' });
+    // 安全整改(2026-10-19): 工作流信息仅所有者与管理员可见
+    if (!isAdmin(req.user) && (wf.userId || wf.user_id) && (wf.userId || wf.user_id) !== (req.user.id || req.user.sub)) {
+      return res.status(403).json({ success: false, error: '无权访问此工作流' });
+    }
     res.json({
       success: true,
       data: {
@@ -11836,12 +12338,28 @@ import { executeTests, detectTestFramework, isFrameworkInstalled, generateTestRe
  * 执行测试
  * POST /api/test-framework/execute
  */
-app.post('/api/test-framework/execute', async (req, res) => {
+app.post('/api/test-framework/execute', authenticate, async (req, res) => {
   try {
     const { testPath, framework, options = {} } = req.body;
 
     if (!testPath) {
       return res.status(400).json({ error: '缺少测试路径' });
+    }
+
+    // 安全整改(2026-10-19): 被测路径必须位于克隆目录或用户主目录内,阻断 /etc 等系统路径
+    {
+      const homeDir = process.env.HOME || process.env.USERPROFILE;
+      const allowedRoots = [GIT_CLONES_DIR, RUNTIME_ROOT, homeDir].filter(Boolean);
+      let resolved;
+      try {
+        resolved = path.resolve(String(testPath));
+      } catch {
+        return res.status(400).json({ error: '无效的测试路径' });
+      }
+      const root = allowedRoots.find(r => resolved === r || resolved.startsWith(r + path.sep));
+      if (!root) {
+        return res.status(403).json({ error: '测试路径不在允许的目录范围内' });
+      }
     }
 
     console.log(`[TestFramework] 执行测试: ${testPath}, 框架: ${framework || '自动检测'}`);
@@ -11881,7 +12399,7 @@ app.post('/api/test-framework/execute', async (req, res) => {
  * 取消正在运行的测试
  * POST /api/test-framework/cancel/:runId
  */
-app.post('/api/test-framework/cancel/:runId', (req, res) => {
+app.post('/api/test-framework/cancel/:runId', authenticate, (req, res) => {
   const { runId } = req.params;
   const ok = cancelRunningProcess(runId);
   if (ok) {
@@ -11896,7 +12414,7 @@ app.post('/api/test-framework/cancel/:runId', (req, res) => {
  * 列出当前运行中的测试进程
  * GET /api/test-framework/running
  */
-app.get('/api/test-framework/running', (req, res) => {
+app.get('/api/test-framework/running', authenticate, (req, res) => {
   res.json({ success: true, data: listRunningProcesses() });
 });
 
@@ -11904,7 +12422,7 @@ app.get('/api/test-framework/running', (req, res) => {
  * 历史测试报告列表
  * GET /api/test-framework/runs
  */
-app.get('/api/test-framework/runs', async (req, res) => {
+app.get('/api/test-framework/runs', authenticate, async (req, res) => {
   try {
     const logDir = path.join(TEST_RUNS_DIR);
     let files = [];
@@ -11936,7 +12454,7 @@ app.get('/api/test-framework/runs', async (req, res) => {
  * 获取指定测试报告内容
  * GET /api/test-framework/runs/:runId
  */
-app.get('/api/test-framework/runs/:runId', async (req, res) => {
+app.get('/api/test-framework/runs/:runId', authenticate, async (req, res) => {
   try {
     const { runId } = req.params;
     const fp = path.join(TEST_RUNS_DIR, `${runId}.log`);
@@ -11952,7 +12470,7 @@ app.get('/api/test-framework/runs/:runId', async (req, res) => {
  * 检测测试框架
  * GET /api/test-framework/detect
  */
-app.get('/api/test-framework/detect', async (req, res) => {
+app.get('/api/test-framework/detect', authenticate, async (req, res) => {
   try {
     const { testPath } = req.query;
 
@@ -11983,7 +12501,7 @@ app.get('/api/test-framework/detect', async (req, res) => {
  * 检查测试框架是否已安装
  * GET /api/test-framework/check
  */
-app.get('/api/test-framework/check', async (req, res) => {
+app.get('/api/test-framework/check', authenticate, async (req, res) => {
   try {
     const { framework } = req.query;
 
@@ -12013,7 +12531,7 @@ app.get('/api/test-framework/check', async (req, res) => {
  * 查询框架安装任务状态(含实时日志)
  * GET /api/test-framework/install/job?framework=xxx
  */
-app.get('/api/test-framework/install/job', (req, res) => {
+app.get('/api/test-framework/install/job', authenticate, (req, res) => {
   const { framework } = req.query;
   if (!framework) return res.status(400).json({ error: '缺少框架名称' });
   const job = getInstallJob(framework);
@@ -12026,7 +12544,7 @@ app.get('/api/test-framework/install/job', (req, res) => {
  * POST /api/test-framework/install
  * body: { framework: 'jest' | 'vitest' | 'pytest' | 'playwright' | 'api' }
  */
-app.post('/api/test-framework/install', async (req, res) => {
+app.post('/api/test-framework/install', authenticate, requireAdmin, async (req, res) => {
   try {
     const { framework } = req.body || {};
     if (!framework) {
@@ -13086,10 +13604,14 @@ app.get('/api/evaluation/download/:evalTaskId', authenticate, async (req, res) =
   try {
     const { evalTaskId } = req.params;
     const [rows] = await pool.execute(
-      `SELECT id, result, status FROM tasks WHERE id = ? AND agent_id = 'ai-evaluation-agent' LIMIT 1`,
+      `SELECT id, user_id, result, status FROM tasks WHERE id = ? AND agent_id = 'ai-evaluation-agent' LIMIT 1`,
       [evalTaskId]
     );
     const task = rows?.[0];
+    // 安全整改(2026-10-19): 评估报告仅所有者与管理员可下载
+    if (task && !isAdmin(req.user) && task.user_id !== (req.user.id || req.user.sub)) {
+      return res.status(403).json({ success: false, error: '无权下载此评估报告' });
+    }
     const reportMd = task?.result || '';
     if (!reportMd || reportMd.length < 50) {
       return res.status(404).json({ success: false, error: '报告不存在或内容为空' });
@@ -13574,6 +14096,7 @@ app.get('/api/security/reports/:id/markdown', authenticate, async (req, res) => 
     if (!id) return res.status(400).json({ success:false, error:'无效报告ID' });
     const report = await securityDAO.getSecurityReportById(id);
     if (!report) return res.status(404).json({ success:false, error:'报告不存在' });
+    if (!canAccessOwnedRecord(report, req)) return res.status(403).json({ success:false, error:'无权访问此报告' });
     const md = await renderSecurityReportMd(report, report.vulnerabilities || []);
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
     const safeName = `security_report_${report.id}.md`;
@@ -13595,6 +14118,7 @@ app.get('/api/security/reports/:id/export', authenticate, async (req, res) => {
     }
     const report = await securityDAO.getSecurityReportById(parseInt(id));
     if (!report) return res.status(404).json({ error: '报告不存在' });
+    if (!canAccessOwnedRecord(report, req)) return res.status(403).json({ error: '无权访问此报告' });
     const md = await renderSecurityReportMd(report, report.vulnerabilities || []);
     const asciiName = `security-report-${report.id}.${format}`;
     const utfName = `安全测试报告_${report.id}.${format}`;
@@ -13629,6 +14153,7 @@ app.get('/api/security/reports/:id', authenticate, async (req, res) => {
   try {
     const row = await securityDAO.getSecurityReportById(parseInt(req.params.id));
     if (!row) return res.status(404).json({ success: false, error: '报告不存在' });
+    if (!canAccessOwnedRecord(row, req)) return res.status(403).json({ success: false, error: '无权访问此报告' });
     res.json({ success: true, data: row });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -13638,6 +14163,9 @@ app.get('/api/security/reports/:id', authenticate, async (req, res) => {
 // 删除报告
 app.delete('/api/security/reports/:id', authenticate, async (req, res) => {
   try {
+    const existing = await securityDAO.getSecurityReportById(parseInt(req.params.id));
+    if (!existing) return res.status(404).json({ success: false, error: '报告不存在' });
+    if (!canAccessOwnedRecord(existing, req)) return res.status(403).json({ success: false, error: '无权删除此报告' });
     await securityDAO.deleteSecurityReport(parseInt(req.params.id));
     res.json({ success: true });
   } catch (err) {
@@ -13713,7 +14241,7 @@ app.post('/api/pentest/validate', authenticate, async (req, res) => {
 });
 
 // 执行命令（支持二次确认）
-app.post('/api/pentest/execute', authenticate, async (req, res) => {
+app.post('/api/pentest/execute', authenticate, requireAdmin, async (req, res) => {
   try {
     const { command, confirmed } = req.body;
     const userId = req.user?.id || req.user?.userId;
@@ -13883,7 +14411,7 @@ app.post('/api/tools/check-status', authenticate, async (req, res) => {
  * POST /api/tools/install
  * Body: { tool: 'nmap', action?: 'install' | 'upgrade' }
  */
-app.post('/api/tools/install', authenticate, async (req, res) => {
+app.post('/api/tools/install', authenticate, requireAdmin, async (req, res) => {
   const { tool, action = 'install' } = req.body
   
   if (!tool) {
@@ -14194,34 +14722,26 @@ app.get('/api/tasks/:taskId/token-usage', authenticate, async (req, res) => {
 });
 
 // ========== 用户行为日志端点 ==========
-// 写入日志：不强制要求登录（前端无 token 时也能记录页面访问）
+// 写入日志：不强制要求登录（前端 sendBeacon 等场景无 token 也能记录页面访问）。
+// 安全整改(2026-10-19): 用户身份只信任可验证的 JWT,不再信任 body.userId(防审计投毒)。
 app.post('/api/user-actions/log', async (req, res) => {
   try {
-    // 若带了 token 则尝试解析出用户（不阻断）
-    let userId = req.body.userId || null;
-    let username = req.body.username || null;
-    if (!userId) {
-      try {
-        const authHeader = req.headers['authorization'] || '';
-        const tokenStr = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
-        if (tokenStr) {
-          try {
-            const decoded = jwt.verify(tokenStr, ssoConfig.jwtSecret, {
-              issuer: 'test-platform',
-              audience: 'test-platform-api',
-            });
-            const u = users.get(decoded.sub);
-            userId = u?.id || decoded?.sub || null;
-            username = u?.name || decoded?.name || null;
-          } catch {
-            // 兼容旧方式：token 就是用户 ID
-            const u = users.get(tokenStr);
-            userId = u?.id || null;
-            username = u?.name || null;
-          }
-        }
-      } catch { /* token 无效则匿名记录 */ }
-    }
+    let userId = null;
+    let username = null;
+    try {
+      const authHeader = req.headers['authorization'] || '';
+      const tokenStr = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      if (tokenStr) {
+        const decoded = jwt.verify(tokenStr, ssoConfig.jwtSecret, {
+          algorithms: ['HS256'],
+          issuer: 'test-platform',
+          audience: 'test-platform-api',
+        });
+        const u = users.get(decoded.sub) || await userDAO.getUserById(decoded.sub).catch(() => null);
+        userId = u?.id || null;
+        username = u?.name || null;
+      }
+    } catch { /* token 无效则匿名记录 */ }
     const data = {
       userId,
       username,
@@ -14499,10 +15019,11 @@ async function start() {
   const today = new Date().toISOString().slice(0, 10);
   aggregateDailyStats(today).catch(e => console.error('[Stats] 首次聚合失败:', e));
 
-  server.listen(PORT, () => {
+  server.listen(PORT, envConfig.BIND_HOST || process.env.BIND_HOST || '0.0.0.0', () => {
     console.log(`\n🦞 测试中台后端 API`);
     const HOST = envConfig.HOST || 'localhost';
     console.log(`   HTTP: http://${HOST}:${PORT}`);
+    console.log(`   Bind: ${envConfig.BIND_HOST || process.env.BIND_HOST || '0.0.0.0'}:${PORT}`);
     console.log(`   WebSocket: ws://${HOST}:${PORT}`);
     console.log(`   KB Root: ${KB_ROOT}`);
     console.log(`\n   Agents: ${Object.keys(AGENTS).length}`);
@@ -15367,6 +15888,7 @@ app.get('/api/performance-test/reports/:id', authenticate, async (req, res) => {
   try {
     const report = await performanceDAO.getPerformanceReport(req.params.id);
     if (!report) return res.status(404).json({ error: '报告不存在' });
+    if (!canAccessOwnedRecord(report, req)) return res.status(403).json({ error: '无权访问此报告' });
     const findings = await performanceDAO.getPerformanceFindings({ reportId: report.id });
     res.json({ data: { ...report, findings } });
   } catch (err) {
@@ -15379,6 +15901,7 @@ app.get('/api/performance-test/reports/:id/markdown', authenticate, async (req, 
   try {
     const report = await performanceDAO.getPerformanceReport(req.params.id);
     if (!report) return res.status(404).json({ error: '报告不存在' });
+    if (!canAccessOwnedRecord(report, req)) return res.status(403).json({ error: '无权访问此报告' });
     const findings = await performanceDAO.getPerformanceFindings({ reportId: report.id });
     const md = await renderPerformanceReportMd(report, findings);
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
@@ -15391,6 +15914,9 @@ app.get('/api/performance-test/reports/:id/markdown', authenticate, async (req, 
 // DELETE /api/performance-test/reports/:id
 app.delete('/api/performance-test/reports/:id', authenticate, async (req, res) => {
   try {
+    const report = await performanceDAO.getPerformanceReport(req.params.id);
+    if (!report) return res.status(404).json({ error: '报告不存在' });
+    if (!canAccessOwnedRecord(report, req)) return res.status(403).json({ error: '无权删除此报告' });
     await performanceDAO.deletePerformanceReport(req.params.id);
     res.json({ success: true });
   } catch (err) {
@@ -15402,6 +15928,12 @@ app.delete('/api/performance-test/reports/:id', authenticate, async (req, res) =
 app.get('/api/performance-test/findings', authenticate, async (req, res) => {
   try {
     const { report_id, severity, status, limit = 50, offset = 0 } = req.query;
+    // 安全整改(2026-10-19): 指定 report_id 时校验报告归属
+    if (report_id) {
+      const ownerReport = await performanceDAO.getPerformanceReport(report_id);
+      if (!ownerReport) return res.status(404).json({ error: '报告不存在' });
+      if (!canAccessOwnedRecord(ownerReport, req)) return res.status(403).json({ error: '无权访问此报告的瓶颈列表' });
+    }
     const [rows, [[{ cnt }]]] = await Promise.all([
       performanceDAO.getPerformanceFindings({ reportId: report_id, severity, status, limit, offset }),
       pool.query('SELECT COUNT(*) as cnt FROM performance_findings WHERE 1=1' +
@@ -15420,6 +15952,11 @@ app.get('/api/performance-test/findings', authenticate, async (req, res) => {
 app.put('/api/performance-test/findings/:id', authenticate, async (req, res) => {
   try {
     const { status } = req.body;
+    // 安全整改(2026-10-19): 仅允许修改自己报告下的瓶颈
+    const [[finding]] = await pool.query('SELECT report_id FROM performance_findings WHERE id = ?', [Number(req.params.id)]);
+    if (!finding) return res.status(404).json({ error: '瓶颈记录不存在' });
+    const ownerReport = await performanceDAO.getPerformanceReport(finding.report_id);
+    if (!canAccessOwnedRecord(ownerReport, req)) return res.status(403).json({ error: '无权修改此瓶颈' });
     await performanceDAO.updateFinding(Number(req.params.id), { status });
     res.json({ success: true });
   } catch (err) {
@@ -15518,6 +16055,7 @@ app.get('/api/compatibility/web/reports/:id', authenticate, async (req, res) => 
   try {
     const report = await getWebCompatById(req.params.id);
     if (!report) return res.status(404).json({ error: '报告不存在' });
+    if (!canAccessOwnedRecord(report, req)) return res.status(403).json({ error: '无权访问此报告' });
     res.json(report);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -15639,6 +16177,7 @@ app.get('/api/compatibility/web/reports/:id/export', authenticate, async (req, r
     }
     const report = await getWebCompatById(id);
     if (!report) return res.status(404).json({ error: '报告不存在' });
+    if (!canAccessOwnedRecord(report, req)) return res.status(403).json({ error: '无权访问此报告' });
 
     const md = buildCompatMarkdownReport(report);
     const asciiName = `compat-report-${report.id}.${format}`;
@@ -15991,6 +16530,10 @@ async function renderPerformanceReportMd(report, findings) {
 }
 
 // 启动预热
+// 安全整改(2026-10-19): 预热会真实调用 6 个 Agent 消耗 token,改为显式开关
+if (String(envConfig.WARMUP_ENABLED || process.env.WARMUP_ENABLED || '') === 'true') {
+  warmupAgents();
+}
 
 // SPA fallback: 所有非API/非静态资源的GET请求返回index.html,由前端路由处理
 app.get('*', (req, res) => {
@@ -16001,4 +16544,43 @@ app.get('*', (req, res) => {
     res.status(404).json({ error: 'Not Found' });
   }
 });
-warmupAgents();
+
+// ============================================================================
+// 统一错误处理 + 优雅关闭(安全整改 2026-10-19)
+// Express 4 不会自动捕获 async handler 的 rejection,这里统一兜底,
+// 避免请求挂起与 unhandledRejection。
+// ============================================================================
+app.use((err, req, res, next) => {
+  console.error(`[Error] ${req.method} ${req.originalUrl}:`, err.message);
+  if (res.headersSent) return next(err);
+  const status = err.status || err.statusCode || (err.type === 'entity.too.large' ? 413 : 500);
+  res.status(status).json({ error: status === 500 ? '服务器内部错误' : err.message });
+});
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[Shutdown] 收到 ${signal},开始优雅关闭...`);
+  const force = setTimeout(() => {
+    console.error('[Shutdown] 超时,强制退出');
+    process.exit(1);
+  }, 25000);
+  force.unref();
+  try {
+    await new Promise(resolve => server.close(resolve));
+    for (const ws of wsClients) {
+      try { ws.close(1001, 'server shutting down'); } catch (_) {}
+    }
+    try { wss.close(); } catch (_) {}
+    clearInterval(memoryCheckInterval);
+    await close();
+    console.log('[Shutdown] 已关闭 HTTP/WebSocket/数据库连接');
+    process.exit(0);
+  } catch (err) {
+    console.error('[Shutdown] 关闭异常:', err);
+    process.exit(1);
+  }
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

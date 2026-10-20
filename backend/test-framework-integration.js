@@ -216,13 +216,41 @@ export function detectTestFramework(testPath) {
 // =============================================================================
 // 命令构建
 // =============================================================================
+// 安全整改(2026-10-19): 禁止用户通过 options.env 注入加载器/预加载类变量。
+// NODE_OPTIONS=--require 恶意文件曾可借 npx jest 执行任意代码;LD_PRELOAD/PYTHONPATH
+// 同理。这里改为白名单:只放行显式的业务变量,其余一律丢弃。
+const SAFE_ENV_KEYS = new Set([
+  'NODE_ENV', 'CI', 'TZ', 'LANG', 'LC_ALL',
+  'BASE_URL', 'API_BASE_URL', 'TEST_ENV', 'TEST_USER', 'TEST_PASSWORD', 'TEST_TOKEN',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
+]);
+const FORBIDDEN_ENV_KEYS = ['NODE_OPTIONS', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES', 'PYTHONPATH', 'PYTHONSTARTUP'];
+
+function sanitizeEnv(extra) {
+  const out = { ...process.env };
+  if (!extra || typeof extra !== 'object') {
+    for (const k of FORBIDDEN_ENV_KEYS) delete out[k];
+    return out;
+  }
+  for (const [k, v] of Object.entries(extra)) {
+    if (!SAFE_ENV_KEYS.has(k)) continue;
+    if (v === null || v === undefined) continue;
+    const sv = String(v);
+    if (sv.length > 4096 || sv.includes('\0')) continue;
+    out[k] = sv;
+  }
+  // 兜底:即使父进程环境被污染,也不允许加载器类变量透传给子进程
+  for (const k of FORBIDDEN_ENV_KEYS) delete out[k];
+  return out;
+}
+
 /**
  * 根据 framework + options 构建 spawn 命令
  * @returns {{cmd: string, args: string[], env: object, cwd: string}|null}
  */
 function buildCommand(framework, testPath, options) {
   const opts = options || {};
-  const env = { ...process.env, ...(opts.env || {}) };
+  const env = sanitizeEnv(opts.env);
   let cwd = testPath;
   try {
     if (statSync(testPath).isFile()) cwd = path.dirname(testPath);

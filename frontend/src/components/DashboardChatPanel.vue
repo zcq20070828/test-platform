@@ -4,9 +4,10 @@ import { useMainStore } from '@/stores/main'
 import { ElMessage } from 'element-plus'
 import type { Agent, ChatMessage, AttachmentFile } from '@/types'
 import VoiceInput from '@/components/VoiceInput.vue'
-import { marked } from 'marked'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
+import { Marked } from 'marked'
+import { sanitizeHtml, renderMarkdownSafe, escapeHtml } from '@/utils/safe-html'
 import {
   CircleClose, User, ChatDotRound,
   InfoFilled, Loading, SuccessFilled,
@@ -97,10 +98,11 @@ async function openPreview(artifact: any) {
       const previewUrl = artifact.downloadUrl.replace(/\/download$/, '/preview')
       const response = await fetch(previewUrl, { headers: _token_ ? { 'Authorization': `Bearer ${_token_}` } : {} })
       if (!response.ok) throw new Error(`预览生成失败(${response.status})`)
-      previewRenderedContent.value = await response.text()
+      // 后端 pandoc/mammoth 转换出的 HTML 同样可能带脚本,统一清洗
+      previewRenderedContent.value = sanitizeHtml(await response.text())
     } catch (err: any) {
       const msg = (err && err.message) ? err.message : String(err)
-      previewRenderedContent.value = `<p style="color:#f56c6c;text-align:center;">预览失败：${msg}</p>`
+      previewRenderedContent.value = `<p style="color:#f56c6c;text-align:center;">预览失败：${escapeHtml(msg)}</p>`
     }
     previewVisible.value = true
     return
@@ -111,7 +113,7 @@ async function openPreview(artifact: any) {
     previewRenderedContent.value = `<div style="text-align:center;padding:40px 20px;color:#909399;">
       <el-icon size="48" style="margin-bottom:16px;"><Document /></el-icon>
       <p style="font-size:16px;margin-bottom:8px;">该文件格式不支持在线预览</p>
-      <p style="font-size:13px;color:#C0C4CC;margin-bottom:20px;">${artifact.name || ''}</p>
+      <p style="font-size:13px;color:#C0C4CC;margin-bottom:20px;">${escapeHtml(artifact.name || '')}</p>
       <p style="font-size:13px;">请点击「下载」按钮，用对应软件打开查看</p>
     </div>`
     previewVisible.value = true
@@ -126,31 +128,32 @@ async function openPreview(artifact: any) {
       if (!response.ok) throw new Error('加载失败')
       content = await response.text()
     } catch (err: any) {
-      previewRenderedContent.value = `<p style="color:#f56c6c;text-align:center;">加载失败：${err.message}</p>`
+      previewRenderedContent.value = `<p style="color:#f56c6c;text-align:center;">加载失败：${escapeHtml(err.message)}</p>`
       previewVisible.value = true
       return
     }
   }
   
-  // 使用 marked 渲染 markdown + highlight.js 代码高亮
+  // 使用局部 marked 渲染 markdown + highlight.js 代码高亮,输出统一清洗
   if (content) {
-    const renderer = new marked.Renderer()
-    renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
-      const language = lang || ''
-      let highlighted: string
-      try {
-        if (language && hljs.getLanguage(language)) {
-          highlighted = hljs.highlight(text, { language }).value
-        } else {
-          highlighted = hljs.highlightAuto(text).value
-        }
-      } catch {
-        highlighted = text
-      }
-      return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${language || 'code'}</span></div><pre class="code-block-pre"><code class="hljs language-${language}">${highlighted}</code></pre></div>`
-    }
-    marked.use({ renderer, breaks: true, gfm: true })
-    previewRenderedContent.value = marked.parse(content) as string
+    const previewMarked = new Marked({ breaks: true, gfm: true })
+    previewMarked.use({
+      renderer: {
+        code({ text, lang }: { text: string; lang?: string }) {
+          const language = lang || ''
+          let highlighted: string
+          try {
+            highlighted = (language && hljs.getLanguage(language))
+              ? hljs.highlight(text, { language }).value
+              : hljs.highlightAuto(text).value
+          } catch {
+            highlighted = escapeHtml(text)
+          }
+          return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${escapeHtml(language || 'code')}</span></div><pre class="code-block-pre"><code class="hljs language-${escapeHtml(language)}">${highlighted}</code></pre></div>`
+        },
+      },
+    })
+    previewRenderedContent.value = renderMarkdownSafe(content, previewMarked)
   } else {
     previewRenderedContent.value = '<p style="color:#999;text-align:center;">无预览内容</p>'
   }
@@ -303,8 +306,7 @@ function renderContent(text: string): string {
   let html = escapeHtml(text)
   // 代码块：```lang\ncode```
   html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m: string, lang: string, code: string) => {
-    const id = 'cb-' + Math.random().toString(36).substr(2, 8)
-    return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${lang || 'code'}</span><button class="code-block-copy" onclick="navigator.clipboard.writeText(document.getElementById('${id}')?.textContent||'').then(()=>{const b=this;b.textContent='已复制!';setTimeout(()=>b.textContent='复制',1500)})">复制</button></div><pre class="code-block-pre"><code id="${id}">${code}</code></pre></div>`
+    return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${escapeHtml(lang || 'code')}</span><button class="code-block-copy" type="button" data-copy>复制</button></div><pre class="code-block-pre"><code>${code}</code></pre></div>`
   })
   // 行内代码
   html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
@@ -323,7 +325,8 @@ function renderContent(text: string): string {
   html = html.replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>')
   // 连续 li 包装
   html = html.replace(/((?:<li>[\s\S]*?<\/li>\n?)+)/g, '<ul class="md-list">$1</ul>')
-  return html
+  // 输入已整体转义,这里再走一次白名单清洗,双保险
+  return sanitizeHtml(html)
 }
 
 /**
@@ -359,11 +362,22 @@ function formatFileSize(bytes: number): string {
 }
 
 // 预览输出物
-// HTML 转义
-function escapeHtml(text: string): string {
-  const div = document.createElement('div')
-  div.textContent = text
-  return div.innerHTML
+// （escapeHtml 已由 @/utils/safe-html 提供，删掉本地重复实现）
+
+// 代码块「复制」按钮:事件委托,替代原先的内联 onclick
+function onMessageAreaClick(e: MouseEvent) {
+  const target = e.target as HTMLElement | null
+  const btn = target?.closest?.('[data-copy]') as HTMLElement | null
+  if (!btn) return
+  const wrapper = btn.closest('.code-block-wrapper')
+  const codeEl = wrapper?.querySelector('code')
+  if (!codeEl) return
+  navigator.clipboard.writeText(codeEl.textContent || '')
+    .then(() => {
+      btn.textContent = '已复制!'
+      setTimeout(() => { btn.textContent = '复制' }, 1500)
+    })
+    .catch(() => { btn.textContent = '失败' })
 }
 
 // 获取阶段名称
@@ -560,7 +574,7 @@ onMounted(() => { scrollToBottom() })
     </div>
 
     <!-- 消息区域 -->
-    <div class="messages-container" ref="messagesContainer">
+    <div class="messages-container" ref="messagesContainer" @click="onMessageAreaClick">
       <div v-if="messages.length === 0" class="empty-state">
         <template v-if="!readonly">
         <div class="empty-icon-wrap">

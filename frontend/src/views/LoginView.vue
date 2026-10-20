@@ -63,10 +63,6 @@ async function handleSsoLogin() {
 
 // 执行登录
 async function handleLogin() {
-  console.log('[LoginView] handleLogin 被调用')
-  console.log('[LoginView] 用户名:', loginForm.value.username)
-  console.log('[LoginView] 密码:', loginForm.value.password)
-
   if (!loginForm.value.username || !loginForm.value.password) {
     ElMessage.warning('请输入用户名和密码')
     return
@@ -76,9 +72,7 @@ async function handleLogin() {
 
   try {
     // 调用真实登录API
-    console.log('[LoginView] 准备调用 authApi.login')
     const result = await authApi.login(loginForm.value.username, loginForm.value.password)
-    console.log('[LoginView] 登录结果:', result)
     
     // 兼容两种返回格式：
     // - 正确格式: {token, user}
