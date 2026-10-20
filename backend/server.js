@@ -25,6 +25,24 @@ import {
   finalizeFindings as finalizeSecFindings,
   summarizeFindings as summarizeSecFindings,
 } from './security/scanner-runner.js';
+import {
+  CASE_CATALOG as SEC_CASE_CATALOG,
+  normalizeTarget as normalizeSecTarget,
+  runLiveProbes as runSecLiveProbes,
+  runActiveVerification as runSecActiveVerification,
+  evaluateCases as evaluateSecCases,
+  attributeToolFindings as attributeSecToolFindings,
+  summarizeFindings as summarizeRealSecFindings,
+  dedupeFindings as dedupeRealSecFindings,
+  buildSchemeMarkdown as buildRealSecScheme,
+  buildCasesMarkdown as buildRealSecCases,
+  buildScanMarkdown as buildRealSecScan,
+  buildVerificationMarkdown as buildRealSecVerification,
+  buildReportMarkdown as buildRealSecReport,
+} from './security/real-security-workflow.js';
+
+const SEC_REAL_STAGE_NAMES = ['安全测试方案生成', '安全测试用例生成', '执行安全扫描', '执行手工验证', '安全报告生成'];
+
 // 获取 CST 本地时间字符串 (与 MySQL TIMESTAMP 存储行为一致)
 function localNowStr() {
   return new Date().toLocaleString('sv', { timeZone: 'Asia/Shanghai' }).replace(' ', 'T').slice(0, 19).replace('T', ' ');
@@ -3105,23 +3123,86 @@ async function resolveTaskForArtifact(taskId, req) {
   const memTask = tasks.get(taskId);
   // 优先用 DB 中“真实落盘”的 artifacts（含正确 path）；
   // 内存中的 artifacts 可能是启动重载时 extractArtifacts(result) 派生的占位（无 path/预览会 404）。
+  let dbRow = null;
   try {
     const rows = await query(
       'SELECT id, user_id, status, artifacts FROM tasks WHERE id = ?',
       [taskId]
     );
     if (rows.length) {
-      const r = rows[0];
-      const arts = normalizeArtifactsField(r.artifacts);
+      dbRow = rows[0];
+      const arts = normalizeArtifactsField(dbRow.artifacts);
       if (arts.length) {
-        return { id: r.id, userId: r.user_id, user_id: r.user_id, status: r.status, artifacts: arts };
+        return { id: dbRow.id, userId: dbRow.user_id, user_id: dbRow.user_id, status: dbRow.status, artifacts: arts };
       }
     }
   } catch (e) {
     console.error(`[ResolveArtifact] DB 回退失败: ${e.message}`);
   }
-  if (memTask && Array.isArray(memTask.artifacts)) return memTask;
-  return memTask || null;
+
+  // 所有权信息不能丢：DB 行存在时以它为准，否则 canAccessTask 会把非管理员误判为无权
+  const base = memTask
+    ? { ...memTask }
+    : (dbRow
+        ? { id: dbRow.id, userId: dbRow.user_id, user_id: dbRow.user_id, status: dbRow.status }
+        : null);
+  if (base && dbRow && !base.userId && !base.user_id) {
+    base.userId = dbRow.user_id;
+    base.user_id = dbRow.user_id;
+  }
+
+  if (memTask && Array.isArray(memTask.artifacts) && memTask.artifacts.length) return memTask;
+
+  // 历史兼容：从 task_output_files 注册表重建（早期单阶段任务未把 artifacts 写库）
+  const rebuilt = await artifactsFromRegistry(taskId);
+  if (rebuilt.length) {
+    return { ...(base || { id: taskId }), artifacts: rebuilt };
+  }
+  return base || null;
+}
+
+/**
+ * 历史任务兜底：早期单阶段执行只把 artifacts 放在内存，重启后丢失。
+ * 这里从 task_output_files 注册表重建，按 artifactId 的数字后缀索引匹配。
+ * 仅当 DB artifacts 为空、且该任务只有单个阶段（文件数 <= 9）时启用，避免多阶段串位。
+ */
+async function artifactsFromRegistry(taskId) {
+  try {
+    const rows = await taskDAO.getTaskOutputFiles(taskId);
+    if (!rows.length) return [];
+    const ordered = rows.slice().sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    return ordered.map((f, i) => ({
+      id: `artifact-${i}`,
+      name: path.basename(f.filePath),
+      type: 'file',
+      path: f.filePath,
+      downloadUrl: `/api/tasks/${taskId}/artifacts/artifact-${i}/download`,
+      createdAt: f.createdAt,
+    }));
+  } catch (e) {
+    console.error(`[ResolveArtifact] 注册表重建失败: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * 查找 artifact：先精确匹配 id；若当前 artifacts 来自注册表重建（id 形如 artifact-N），
+ * 允许用请求 id 的数字后缀（如 ss2-0 → 0）定位，兼容重启后旧消息里的 id。
+ * 只在重建集合上启用，避免多阶段任务的 sec2-1/sec3-1 串位。
+ */
+function findArtifactCompat(task, artifactId) {
+  const list = Array.isArray(task?.artifacts) ? task.artifacts : [];
+  const exact = list.find(a => a && a.id === artifactId);
+  if (exact) return exact;
+  // 只在「单阶段任务 + 注册表重建」时用数字后缀兜底：
+  // 多阶段任务里 sec1-0 / sec2-0 后缀相同，按后缀匹配会拿到别的阶段的文件。
+  const taskId = String(task?.id || '');
+  const isSingleStage = /-(single)-/.test(taskId);
+  const rebuiltOnly = list.length > 0 && list.every(a => /^artifact-\d+$/.test(String(a?.id || '')));
+  if (!isSingleStage || !rebuiltOnly) return null;
+  const m = /-(\d+)$/.exec(String(artifactId || ''));
+  if (!m) return null;
+  return list.find(a => a.id === `artifact-${m[1]}`) || null;
 }
 
 /**
@@ -3261,7 +3342,7 @@ app.get('/api/tasks/:taskId/artifacts/:artifactId/download', authenticate, async
     return res.status(400).json({ error: '任务已失败' });
   }
 
-  const artifact = (task.artifacts || []).find(a => a.id === artifactId);
+  const artifact = findArtifactCompat(task, artifactId);
   if (!artifact) {
     return res.status(404).json({ error: '输出物不存在' });
   }
@@ -3296,7 +3377,7 @@ app.get('/api/tasks/:taskId/artifacts/:artifactId/preview', authenticate, async 
   if (!canAccessTask(task, req)) return res.status(403).json({ error: '无权访问此任务' });
   if (task.status === 'failed') return res.status(400).json({ error: '任务已失败' });
 
-  const artifact = (task.artifacts || []).find(a => a.id === artifactId);
+  const artifact = findArtifactCompat(task, artifactId);
   if (!artifact || !artifact.path) return res.status(404).json({ error: '输出物不存在' });
 
   const ext = (artifact.path.split('.').pop() || '').toLowerCase();
@@ -11525,6 +11606,21 @@ async function saveWorkflowStageDeliverables(workflowId, agentId, stageLabel, st
   }
 }
 
+/**
+ * 阶段结束就把已产出的 artifacts 写进 tasks 表。
+ * 完整工作流原本只在最后一次性写库，运行中用户点「预览」会 404（DB 空、内存无条目）。
+ */
+async function persistWorkflowArtifacts(taskId, artifacts) {
+  if (!taskId || !Array.isArray(artifacts) || artifacts.length === 0) return;
+  try {
+    await taskDAO.updateTask(taskId, { artifacts });
+    const mem = tasks.get(taskId);
+    if (mem) mem.artifacts = artifacts;
+  } catch (e) {
+    console.error(`[WorkflowArtifacts] 落库失败 ${taskId}: ${e.message}`);
+  }
+}
+
 // 把落盘的文件路径数组转成前端 artifacts(带 downloadUrl),artifactId 以 stageKey 前缀保证全局唯一
 function buildWorkflowArtifacts(workflowId, outputFiles, stageKey) {
   if (!outputFiles || !outputFiles.length) return [];
@@ -15274,141 +15370,16 @@ async function warmupAgents() {
 }
 
 // ================================== 安全测试工作流 ==================================
-// 5阶段串行工作流：方案生成 -> 用例生成 -> 执行扫描 -> 手工渗透 -> 报告生成
+// 5阶段串行工作流：方案生成 -> 用例生成 -> 真实扫描 -> 手工验证 -> 报告生成
 
 // 【修复】将安全测试结构化结果组装为 Markdown 报告(替代 agent 直接输出的 JSON)
 // 供前端 dashboard-chat-panel 直接渲染为可读的安全测试报告
-function buildSecurityReportMarkdown({ workflowId, target, scanType, status, report, findings, stages, durationMs, realScanSummary, realScanTools }) {
-  const now = new Date().toISOString();
-  const lines = [];
-  lines.push(`# 🛡️ 安全测试报告`);
-  lines.push('');
-  lines.push(`> 工作流ID: \`${workflowId || '-'}\``);
-  lines.push(`> 生成时间: ${now}`);
-  lines.push('');
-  lines.push('## 📋 基本信息');
-  lines.push('');
-  lines.push('| 项目 | 内容 |');
-  lines.push('| --- | --- |');
-  lines.push(`| 测试目标 | ${target || '-'} |`);
-  lines.push(`| 扫描类型 | ${scanType || 'full'} |`);
-  lines.push(`| 执行状态 | ${status === 'completed' ? '✅ 完成' : '❌ 失败'} |`);
-  lines.push(`| 总耗时 | ${durationMs ? (durationMs / 1000).toFixed(1) + ' 秒' : '-'} |`);
-  if (Array.isArray(realScanTools) && realScanTools.length > 0) {
-    lines.push(`| 真实扫描工具 | ${realScanTools.map(t => `${t.tool}(${t.findings})`).join(', ')} |`);
-  }
-  lines.push('');
-
-  // 真实扫描证据摘要（区分工具实测与 LLM 推断）
-  if (realScanSummary && realScanSummary.total != null) {
-    lines.push('## 🧪 真实扫描证据');
-    lines.push('');
-    lines.push(`- 工具实测发现: **${realScanSummary.total}** 条（critical ${realScanSummary.severityDist?.critical || 0} / high ${realScanSummary.severityDist?.high || 0} / medium ${realScanSummary.severityDist?.medium || 0} / low ${realScanSummary.severityDist?.low || 0}）`);
-    if (realScanSummary.byTool) {
-      lines.push(`- 按工具: ${Object.entries(realScanSummary.byTool).map(([k, v]) => `${k}=${v}`).join(', ')}`);
-    }
-    if (realScanSummary.byCategory) {
-      lines.push(`- 按类型: ${Object.entries(realScanSummary.byCategory).map(([k, v]) => `${k}=${v}`).join(', ')}`);
-    }
-    lines.push('');
-  }
-
-  // 安全评分
-  const score = typeof report?.securityScore === 'number' ? report.securityScore : (typeof report?.overallScore === 'number' ? report.overallScore : null);
-  const riskLevel = report?.riskLevel || report?.risk || 'unknown';
-  lines.push('## 🎯 安全评分');
-  lines.push('');
-  if (score !== null) {
-    const scoreLabel = score >= 90 ? '优秀' : score >= 75 ? '良好' : score >= 55 ? '一般' : score >= 35 ? '较差' : '危险';
-    lines.push(`- **综合评分: ${score} 分（${scoreLabel}）**`);
-    lines.push(`- 风险等级: ${riskLevel}`);
-  } else {
-    lines.push(`- 风险等级: ${riskLevel}`);
-  }
-  lines.push('');
-
-  // 漏洞分布
-  const dist = report?.severityDist || report?.vulnerabilityOverview || {};
-  const sevNames = ['critical', 'high', 'medium', 'low', 'info'];
-  const sevLabels = { critical: '严重', high: '高危', medium: '中危', low: '低危', info: '信息' };
-  const totalCount = findings?.length || 0;
-  lines.push('## 🔍 漏洞分布');
-  lines.push('');
-  lines.push('| 严重程度 | 数量 |');
-  lines.push('| --- | --- |');
-  let distSum = 0;
-  for (const s of sevNames) {
-    const n = dist[s] || 0;
-    distSum += n;
-    lines.push(`| ${sevLabels[s] || s} | ${n} |`);
-  }
-  lines.push(`| **合计** | **${totalCount || distSum}** |`);
-  lines.push('');
-
-  // 漏洞明细
-  const findingsList = (Array.isArray(report?.findings) && report.findings.length > 0) ? report.findings : (findings || []);
-  lines.push('## 📄 漏洞明细');
-  lines.push('');
-  if (findingsList.length === 0) {
-    lines.push('> 未发现漏洞 🎉');
-    lines.push('');
-  } else {
-    lines.push('| # | 漏洞标题 | 严重程度 | 类型 | CWE |');
-    lines.push('| --- | --- | --- | --- | --- |');
-    findingsList.forEach((f, i) => {
-      const sev = f.severity || 'info';
-      lines.push(`| ${i + 1} | ${(f.title || f.name || 'N/A').replace(/\|/g, '\\|')} | ${sevLabels[sev] || sev} | ${(f.type || f.vulnType || '-').replace(/\|/g, '\\|')} | ${f.cwe || f.cweId || '-'} |`);
-    });
-    lines.push('');
-    lines.push('### 漏洞详情');
-    lines.push('');
-    findingsList.forEach((f, i) => {
-      lines.push(`#### ${i + 1}. ${f.title || f.name || 'N/A'}`);
-      lines.push('');
-      lines.push(`- **严重程度**: ${sevLabels[f.severity] || f.severity || 'info'}`);
-      lines.push(`- **漏洞类型**: ${f.type || f.vulnType || '-'}`);
-      if (f.cwe || f.cweId) lines.push(`- **CWE**: ${f.cwe || f.cweId}`);
-      if (f.cve || f.cveId) lines.push(`- **CVE**: ${f.cve || f.cveId}`);
-      if (f.owaspCategory) lines.push(`- **OWASP**: ${f.owaspCategory}`);
-      if (f.description) lines.push(`- **描述**: ${f.description}`);
-      if (f.evidence) lines.push(`- **证据**: \`${String(f.evidence).slice(0, 200)}\``);
-      if (f.recommendation || f.remediation) lines.push(`- **修复建议**: ${f.recommendation || f.remediation}`);
-      lines.push('');
-    });
-  }
-
-  // 阶段执行情况
-  if (stages && stages.length > 0) {
-    lines.push('## 🧩 执行阶段');
-    lines.push('');
-    lines.push('| 阶段 | 状态 | 产出 |');
-    lines.push('| --- | --- | --- |');
-    for (const s of stages) {
-      lines.push(`| ${s.stage || '-'} | ${s.success ? '✅' : '❌'} | ${s.output !== undefined ? s.output : '-'} |`);
-    }
-    lines.push('');
-  }
-
-  // 总结
-  const summary = report?.summary || report?.conclusion || '';
-  if (summary) {
-    lines.push('## 💡 总结与建议');
-    lines.push('');
-    lines.push(summary);
-    lines.push('');
-  }
-
-  lines.push('---');
-  lines.push(`*报告由测试中台 security-sentinel 智能体自动生成*`);
-  return lines.join('\n');
-}
-
 /**
  * 安全测试工作流用的真实扫描入口。
  * 目标类型自动判定：
  *   - target 是 http(s) URL  → DAST（nikto/nmap，nuclei 若已安装）
  *   - 提供 sourcePath 或 target 是本地路径 → SAST/SCA（semgrep/trivy/bandit）
- *   - 两者都做不了（比如只给了域名没给源码）→ 返回空结果，由 LLM 阶段降级处理
+ *   - 两者都做不了（比如只给了域名没给源码）→ 返回空结果，报告标记为无法评估
  */
 async function runRealSecurityScanForWorkflow({ target, description = '', testDomain = 'web', sourcePath = '' }) {
   const status = await getSecScannerStatus();
@@ -15455,358 +15426,419 @@ async function runRealSecurityScanForWorkflow({ target, description = '', testDo
   };
 }
 
-async function executeSecurityWorkflow(workflowId, taskInput, userId = 1) {
-  console.error('[SecurityWorkflow] START workflowId=' + workflowId + ' target=' + (taskInput?.target || '?'));
-  // 写入 workflows Map,供 sseBroadcast 的 workflow userId 查找兜底(security workflow 不走 syncWorkflow)
-  // [FIX-USERNAME] 内存 workflow 对象必须带 username,否则任务列表"用户"列显示为空
-  // (workflowToTaskRow 直接读 wf.username, 内存对象不走 DB JOIN)
+// ============================================================================
+// 真实安全测试执行引擎（不调用 LLM）
+// 方案/用例/扫描/验证/报告全部来自确定性代码与真实工具输出。
+// ============================================================================
+
+function resolveSecRealMode(target, sourcePath) {
+  const t = String(target || '').trim();
+  if (normalizeSecTarget(t)) return 'url';
+  const p = String(sourcePath || (t && path.isAbsolute(t) ? t : '') || '').trim();
+  if (!p || !path.isAbsolute(p)) return null;
+  // 源码扫描必须落在允许的根目录内，避免把 /etc、/ 等路径当成“扫描完成、0 漏洞”
+  const resolved = path.resolve(p);
+  const allowedRoots = [PLATFORM_ROOT, path.join(RUNTIME_ROOT, 'git-clones')];
+  if (!allowedRoots.some(r => resolved === r || resolved.startsWith(r + path.sep))) return null;
+  return 'source';
+}
+
+async function ensureSecRealScan(shared, ctx) {
+  if (shared.scan) return;
+  const { target, description, testDomain, sourcePath } = ctx;
+  shared.toolStatus = shared.toolStatus || await getSecScannerStatus();
+  const scan = await runRealSecurityScanForWorkflow({ target, description, testDomain, sourcePath });
+  shared.scan = scan;
+  shared.toolRuns = Object.fromEntries(scan.tools.map(t => [t.tool, t]));
+
+  const toolFindings = attributeSecToolFindings(scan.findings).map(f => ({
+    ...f,
+    source: `真实扫描(${f.tool})`,
+    verified: true,
+  }));
+
+  let probeFindings = [];
+  if (shared.mode === 'url') {
+    try {
+      shared.probes = await runSecLiveProbes(target, { timeoutMs: 8000 });
+      probeFindings = shared.probes.findings;
+    } catch (e) {
+      shared.probeError = e.message;
+      console.warn(`[SecurityReal] 主动探测失败(仍保留工具结果): ${e.message}`);
+    }
+  }
+
+  shared.findings = dedupeRealSecFindings([...toolFindings, ...probeFindings]);
+  const toolRunsList = scan.tools || [];
+  const anyToolOk = toolRunsList.some(t => t.ok);
+  // 目标不可达 / 无可用工具 / 工具全部失败 → 报告标记“无法评估”，不能给出 100 分安全
+  shared.scanUnavailable = shared.mode === 'url'
+    ? (!shared.probes && !anyToolOk)
+    : (toolRunsList.length === 0 || !anyToolOk);
+  shared.evaluatedCases = evaluateSecCases({
+    mode: shared.mode,
+    probeResults: shared.probes?.results || {},
+    toolRuns: shared.toolRuns || {},
+    findings: shared.findings,
+  });
+}
+
+async function ensureSecRealVerification(shared, ctx) {
+  if (shared.verification) return;
+  await ensureSecRealScan(shared, ctx);
+  if (shared.mode === 'url') {
+    try {
+      shared.verification = await runSecActiveVerification(ctx.target, shared.findings, {
+        probeResults: shared.probes?.results || {},
+        timeoutMs: 8000,
+      });
+    } catch (e) {
+      console.warn(`[SecurityReal] 主动验证失败: ${e.message}`);
+      shared.verification = {
+        checks: shared.findings.map(f => ({
+          id: f.caseId || '-', title: f.title, method: `工具证据复核（${f.tool}）`,
+          result: 'confirmed', evidence: String(f.evidence || f.description || '').slice(0, 200),
+        })),
+        newFindings: [],
+        error: e.message,
+      };
+    }
+  } else {
+    // 源码模式：静态工具输出本身即证据，逐条登记为已确认
+    shared.verification = {
+      checks: shared.findings.map(f => ({
+        id: f.caseId || '-', title: f.title, method: `静态工具证据（${f.tool}）`,
+        result: 'confirmed', evidence: String(f.evidence || f.location || '').slice(0, 200),
+      })),
+      newFindings: [],
+    };
+  }
+  shared.findings = dedupeRealSecFindings([...shared.findings, ...(shared.verification.newFindings || [])]);
+  // 验证阶段新增发现时，同步把对应用例标记为失败（例如 OPTIONS 通过但 TRACE 实际启用）
+  for (const f of (shared.verification.newFindings || [])) {
+    if (!f.caseId) continue;
+    const c = shared.evaluatedCases.find(x => x.id === f.caseId);
+    if (c && c.status !== 'failed') {
+      c.status = 'failed';
+      c.evidence = String(f.evidence || c.evidence || '').slice(0, 300);
+    }
+  }
+}
+
+async function runSecurityRealStage(stageIdx, ctx) {
+  const { workflowId, target, scanType, testDomain, description, shared, startTime } = ctx;
+  const stageName = SEC_REAL_STAGE_NAMES[stageIdx];
+  const startedAt = Date.now();
+
+  if (stageIdx === 0) {
+    const tools = shared.toolStatus || await getSecScannerStatus();
+    shared.toolStatus = tools;
+    const markdown = buildRealSecScheme({
+      target, scanType, testDomain, description, tools,
+      engine: '真实工具执行引擎（确定性，无 LLM）',
+    });
+    return {
+      stageName, markdown, success: true,
+      summary: { availableTools: tools.filter(t => t.available).map(t => t.id), totalTools: tools.length },
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
+  if (stageIdx === 1) {
+    const pending = SEC_CASE_CATALOG.map(c => ({ ...c, status: 'pending', evidence: '待执行' }));
+    const markdown = buildRealSecCases({
+      target, testDomain, mode: shared.mode, scanType,
+      cases: pending,
+    });
+    return {
+      stageName, markdown, success: true,
+      summary: { total: pending.length, manual: pending.filter(c => c.source === 'manual').length },
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
+  await ensureSecRealScan(shared, ctx);
+
+  if (stageIdx === 2) {
+    const markdown = buildRealSecScan({
+      target, tools: shared.scan.tools, findings: shared.findings,
+      cases: shared.evaluatedCases, meta: shared.probes?.meta || {},
+      unavailable: !!shared.scanUnavailable,
+    });
+    const summary = summarizeRealSecFindings(shared.findings);
+    if (shared.scanUnavailable) { summary.score = null; summary.riskLevel = '无法评估'; summary.unavailable = true; }
+    return {
+      stageName, markdown, success: true,
+      findings: shared.findings,
+      summary,
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
+  await ensureSecRealVerification(shared, ctx);
+
+  if (stageIdx === 3) {
+    const markdown = buildRealSecVerification({
+      target, findings: shared.findings, verification: shared.verification,
+      cases: shared.evaluatedCases,
+    });
+    return {
+      stageName, markdown, success: true,
+      findings: shared.findings,
+      summary: {
+        confirmed: shared.verification.checks.filter(c => c.result === 'confirmed').length,
+        newFindings: shared.verification.newFindings.length,
+      },
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
+  const summary = summarizeRealSecFindings(shared.findings);
+  if (shared.scanUnavailable) { summary.score = null; summary.riskLevel = '无法评估'; summary.unavailable = true; }
+  const markdown = buildRealSecReport({
+    workflowId, target, scanType, testDomain, mode: shared.mode,
+    scanSummary: summary, findings: shared.findings, cases: shared.evaluatedCases,
+    verification: shared.verification, tools: shared.scan.tools,
+    durationMs: Date.now() - (startTime || startedAt), description,
+  });
+  shared.reportMarkdown = markdown;
+  shared.reportSummary = summary;
+  return {
+    stageName, markdown, success: true,
+    findings: shared.findings, summary,
+    durationMs: Date.now() - startedAt,
+  };
+}
+
+async function persistRealSecReport({ workflowId, target, scanType, testDomain, userId, findings, summary, durationMs }) {
+  try {
+    const reportId = await securityDAO.createSecurityReport({
+      scanId: workflowId,
+      target,
+      scanType,
+      testDomain,
+      status: 'completed',
+      createdBy: userId,
+    });
+
+    await securityDAO.updateSecurityReport(reportId, {
+      overall_score: summary.score,
+      severity_dist: JSON.stringify(summary.severityDist),
+      findings_count: findings.length,
+      recommendations: summary.unavailable
+        ? '本次扫描未取得有效结果（目标不可达或扫描器全部失败），请修复后重新执行；不能据此判定目标安全。'
+        : `真实工具执行：Critical ${summary.severityDist.critical} / High ${summary.severityDist.high} / Medium ${summary.severityDist.medium}；修复后请重新执行本工作流回归。`,
+      duration_ms: durationMs,
+      test_domain: testDomain,
+      report_json: {
+        engine: 'real',
+        domain: testDomain,
+        riskLevel: summary.riskLevel,
+        cvssScore: findings.reduce((max, f) => Math.max(max, Number(f.cvss) || 0), 0),
+        bizRiskScore: 0,
+        attackChains: [],
+        threatModel: 'OWASP Top 10 确定性用例 + 开源扫描器',
+        summary: `真实工具执行完成，共 ${findings.length} 条发现，评分 ${summary.score}/100`,
+      },
+    });
+
+    if (findings.length > 0) {
+      const vulns = findings.map(f => ({
+        reportId,
+        title: f.title || 'N/A',
+        severity: f.severity || 'info',
+        vuln_type: f.type || f.vulnType || f.caseId || 'unknown',
+        description: f.description || '',
+        evidence: f.evidence || null,
+        recommendation: f.remediation || null,
+        cve_id: f.cve || null,
+        cwe_id: f.cwe || null,
+        cvss: f.cvss || null,
+        extJson: {
+          domain: f.category || testDomain || 'web',
+          poc: '',
+          verified: !!f.verified,
+          codeFix: '',
+          owaspCategory: f.caseId || '',
+          cvssScore: f.cvss != null ? Number(f.cvss) : null,
+          bizRisk: '',
+          compliance: [],
+          engine: 'real',
+          tool: f.tool,
+        },
+      }));
+      await securityDAO.bulkCreateVulnerabilities(vulns);
+    }
+    return reportId;
+  } catch (e) {
+    console.error(`[SecurityReal] 报告入库失败: ${e.message}`);
+    return null;
+  }
+}
+
+async function executeSecurityRealWorkflow(workflowId, taskInput, userId = 1) {
+  const { target, scanType = 'full', description = '', testDomain = 'web', sourcePath = '' } = taskInput;
+  const mode = resolveSecRealMode(target, sourcePath);
+  if (!mode) throw new Error('真实执行引擎需要 http(s) URL，或项目目录内（含 runtime/git-clones）的源码绝对路径');
+
   const secUser = await resolveUserForScope(userId).catch(() => null);
   workflows.set(workflowId, {
     id: workflowId, userId, username: secUser?.name || null,
-    status: 'running', scenario: '安全测试', mode: 'security', startedAt: new Date().toISOString()
+    status: 'running', scenario: '安全测试', mode: 'security', engine: 'real',
+    startedAt: new Date().toISOString(),
   });
-  const { target, scanType = 'full', description = '', testDomain = 'web', sourcePath = '' } = taskInput;
+
   const startTime = Date.now();
-  const results = { stages: [], status: 'running', findings: [], allArtifacts: [] };
-
+  const shared = {
+    mode, scanType, testDomain, description, sourcePath,
+    toolStatus: null, scan: null, toolRuns: {}, probes: null,
+    findings: [], evaluatedCases: [], verification: null, reportMarkdown: '', reportSummary: null,
+  };
+  const results = {
+    stages: [], findings: [], allArtifacts: [], status: 'running',
+    engine: 'real', target, scanType, testDomain,
+  };
   const broadcast = (data) => sseBroadcast({ ...data, workflowId, userId });
-
-  const heartbeatInterval = setInterval(() => {
+  const heartbeat = setInterval(() => {
     broadcast({ type: 'workflow_heartbeat', workflowId, elapsed: Date.now() - startTime });
   }, 30000);
 
-  // JSON解析辅助函数
-  const extractJson = (text) => {
-    if (!text) return null;
-    try {
-      const m = text.match(/```json\s*([\s\S]*?)\s*```/);
-      if (m) return JSON.parse(m[1].trim());
-      return JSON.parse(text.trim());
-    } catch (e) {
-      try {
-        const start = text.indexOf('{');
-        const end = text.lastIndexOf('}');
-        if (start >= 0 && end > start) {
-          return JSON.parse(text.slice(start, end + 1));
-        }
-      } catch (e2) {}
-      return null;
-    }
-  };
-
-  // 读取安全测试模板
-  const readSecurityTemplate = async (templateName) => {
-    try {
-      return await readDeliverableTemplate(templateName);
-    } catch (e) {
-      console.error(`[SecurityWorkflow] 模板读取失败 ${templateName}: ${e.message}`);
-      return `[模板 ${templateName} 未找到]`;
-    }
-  };
-
   try {
-    // ========== 阶段1: 安全测试方案生成 ==========
-    broadcast({ type: 'workflow_stage_started', workflowId, stage: '安全测试方案生成', agentId: 'security-sentinel' });
-    const schemeTemplate = await readSecurityTemplate('安全测试方案模板');
-    const schemeInput = {
-      target,
-      scanType,
-      domain: testDomain,
-      description,
-      techStack: description || '未知',
-      businessScenario: ({ all:'全测试域(Web/API/云原生/移动端/数据/供应链/AI)', web:'Web应用', api:'API/接口', cloud:'云原生/基础设施', mobile:'移动端', data:'数据安全与隐私合规', supply:'软件供应链', ai:'AI/大模型' })[testDomain] || '全测试域',
-      complianceRequirements: ({ all:['OWASP Top 10','OWASP API Security Top 10','CIS Benchmark','等保2.0','个人信息保护法','数据安全法','OWASP MASVS','SBOM/CVE','OWASP LLM Top 10'], web:['OWASP Top 10'], api:['OWASP API Security Top 10'], cloud:['CIS Benchmark','等保2.0'], mobile:['OWASP MASVS'], data:['等保2.0','个人信息保护法','数据安全法'], supply:['SBOM/CVE'], ai:['OWASP LLM Top 10'] })[testDomain] || ['OWASP Top 10'],
-      template: schemeTemplate
-    };
+    for (let i = 0; i < 5; i += 1) {
+      broadcast({ type: 'workflow_stage_started', workflowId, stage: SEC_REAL_STAGE_NAMES[i], agentId: 'security-sentinel', step: i, engine: 'real' });
 
-    const schemeResult = await spawnAgentSession(
-      'security-sentinel',
-      JSON.stringify({ ...schemeInput, phase: 'scheme' }),
-      `security-scheme-${workflowId}`,
-      null, true, [], userId
-    );
-    const scheme = extractJson(schemeResult.text || schemeResult.content || '');
-    results.stages.push({ stage: '安全测试方案生成', agentId: 'security-sentinel', success: !!scheme, output: scheme?.schemeId || '失败' });
-    // 落盘本阶段三格式交付物(md + docx + xlsx)
-    const sec0Files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', '安全测试方案生成', 0, schemeResult.text || schemeResult.content || '');
-    const sec0Art = buildWorkflowArtifacts(workflowId, sec0Files, 'sec0');
-    results.allArtifacts.push(...sec0Art);
-    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '安全测试方案生成', success: !!scheme, outputFiles: sec0Files, artifacts: sec0Art });
+      if (i === 2) {
+        broadcast({ type: 'security_real_scan_started', workflowId, target, mode: shared.mode, engine: 'real' });
+      }
 
-    // ========== 阶段2: 安全测试用例生成 ==========
-    broadcast({ type: 'workflow_stage_started', workflowId, stage: '安全测试用例生成', agentId: 'security-sentinel' });
-    const caseInput = {
-      schemeId: scheme?.schemeId || 'SEC-SCH-001',
-      target,
-      domain: testDomain,
-      attackSurface: scheme?.attackSurface || {},
-      owaspCoverage: scheme?.owaspCoverage || {},
-      threatModel: scheme?.threatModel || {},
-      techStack: scheme?.techStack || 'Web应用'
-    };
+      const out = await runSecurityRealStage(i, {
+        workflowId, target, scanType, testDomain, description, sourcePath, shared, startTime,
+      });
 
-    const caseResult = await spawnAgentSession(
-      'security-sentinel',
-      JSON.stringify({ ...caseInput, phase: 'cases' }),
-      `security-cases-${workflowId}`,
-      null, true, [], userId
-    );
-    const testCases = extractJson(caseResult.text || caseResult.content || '');
-    results.stages.push({ stage: '安全测试用例生成', agentId: 'security-sentinel', success: !!testCases, output: testCases?.caseCount || 0 });
-    // 落盘本阶段三格式交付物(md + docx + xlsx)
-    const sec1Files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', '安全测试用例生成', 1, caseResult.text || caseResult.content || '');
-    const sec1Art = buildWorkflowArtifacts(workflowId, sec1Files, 'sec1');
-    results.allArtifacts.push(...sec1Art);
-    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '安全测试用例生成', success: !!testCases, outputFiles: sec1Files, artifacts: sec1Art });
+      if (i === 2) {
+        broadcast({
+          type: 'security_real_scan_completed', workflowId,
+          tools: shared.scan.tools, summary: out.summary,
+          findings: shared.findings.length, engine: 'real',
+        });
+      }
 
-    // ========== 阶段3: 执行安全扫描 ==========
-    // 2026-10-20 深度改造：先跑真实开源扫描器（semgrep/trivy/bandit/nikto/nmap），
-    // 把工具产出的证据交给 LLM 汇总成报告，而不是让 LLM 凭空想象漏洞。
-    broadcast({ type: 'workflow_stage_started', workflowId, stage: '执行安全扫描', agentId: 'security-sentinel' });
-    const scanTemplate = await readSecurityTemplate('安全测试报告模板');
+      const files = await saveWorkflowStageDeliverables(
+        workflowId, 'security-sentinel', SEC_REAL_STAGE_NAMES[i], i, out.markdown
+      );
+      const artifacts = buildWorkflowArtifacts(workflowId, files, `sec${i}`);
+      results.allArtifacts.push(...artifacts);
+      await persistWorkflowArtifacts(workflowId, results.allArtifacts);
 
-    let realScan = { findings: [], tools: [], summary: null };
-    try {
-      broadcast({ type: 'security_real_scan_started', workflowId, target, mode: 'auto' });
-      realScan = await runRealSecurityScanForWorkflow({ target, description, testDomain, sourcePath: taskInput.sourcePath });
       broadcast({
-        type: 'security_real_scan_completed', workflowId,
-        tools: realScan.tools, summary: realScan.summary, findings: realScan.findings.length,
+        type: 'workflow_stage_completed', workflowId, stage: SEC_REAL_STAGE_NAMES[i],
+        step: i, success: true, engine: 'real',
+        result: out.markdown, summary: out.summary || null,
+        outputFiles: files, artifacts,
       });
-      if (realScan.findings.length > 0) {
-        results.findings.push(...realScan.findings.map(f => ({
-          ...f,
-          source: `真实扫描(${f.tool})`,
-          verified: true,
-        })));
-      }
-    } catch (e) {
-      console.error(`[SecurityWorkflow] 真实扫描失败(降级为 LLM 扫描): ${e.message}`);
-      realScan.error = e.message;
-      broadcast({ type: 'security_real_scan_failed', workflowId, error: e.message });
+
+      results.stages.push({
+        stage: SEC_REAL_STAGE_NAMES[i], agentId: 'security-sentinel', engine: 'real',
+        success: true, durationMs: out.durationMs, output: out.summary || {},
+      });
     }
 
-    const realEvidenceBrief = realScan.findings.length
-      ? realScan.findings.slice(0, 60).map((f, i) =>
-          `${i + 1}. [${f.severity.toUpperCase()}][${f.tool}/${f.category}] ${f.title}\n   位置: ${f.location || '-'}\n   说明: ${(f.description || '').slice(0, 300)}\n   建议: ${(f.remediation || '').slice(0, 200)}`
-        ).join('\n')
-      : '（真实扫描器未产出结果，请基于方案与用例做保守分析，不得虚构已验证漏洞）';
+    results.findings = shared.findings;
+    results.cases = shared.evaluatedCases;
+    results.caseStats = shared.evaluatedCases.reduce((acc, c) => {
+      acc[c.status] = (acc[c.status] || 0) + 1;
+      return acc;
+    }, {});
+    results.realScanSummary = shared.reportSummary;
+    results.realScanTools = shared.scan?.tools || [];
+    results.fullReportText = shared.reportMarkdown;
 
-    const scanInput = {
-      target,
-      scanType,
-      domain: testDomain,
-      description,
-      scheme: scheme || {},
-      testCases: testCases?.testCases || [],
-      template: scanTemplate,
-      // 真实证据（强约束：报告必须以这些为准）
-      realScanEvidence: {
-        engine: realScan.tools.map(t => ({ tool: t.tool, ok: t.ok, findings: t.findings, durationMs: t.durationMs })),
-        summary: realScan.summary,
-        findings: realScan.findings.slice(0, 80).map(f => ({
-          title: f.title, severity: f.severity, category: f.category, tool: f.tool,
-          location: f.location, description: f.description,
-          cve: f.cve, cwe: f.cwe, cvss: f.cvss, remediation: f.remediation,
-        })),
-        instruction: '以下 findings 来自真实扫描工具，必须原样纳入报告；不要编造未列出的已验证漏洞，可以补充需要人工验证的风险假设并明确标注未验证。',
-      },
-      evidenceBrief: realEvidenceBrief,
-    };
-
-    const scanResult = await spawnAgentSession(
-      'security-sentinel',
-      JSON.stringify({ ...scanInput, phase: 'scan' }),
-      `security-scan-${workflowId}`,
-      null, true, [], userId
-    );
-    const scanOutput = extractJson(scanResult.text || scanResult.content || '');
-    results.stages.push({
-      stage: '执行安全扫描', agentId: 'security-sentinel', success: !!scanOutput,
-      output: scanOutput?.findings?.length || 0,
-      realFindings: realScan.findings.length,
-      tools: realScan.tools.map(t => `${t.tool}:${t.findings}`).join(' '),
-    });
-    // 落盘本阶段三格式交付物(md + docx + xlsx)
-    const sec2Files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', '执行安全扫描', 2, scanResult.text || scanResult.content || '');
-    const sec2Art = buildWorkflowArtifacts(workflowId, sec2Files, 'sec2');
-    results.allArtifacts.push(...sec2Art);
-    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '执行安全扫描', success: !!scanOutput, outputFiles: sec2Files, artifacts: sec2Art });
-
-    // 补充 LLM 在真实证据之外提出的发现（标记为待验证）
-    if (scanOutput?.findings?.length > 0) {
-      const realKeys = new Set(realScan.findings.map(f => `${(f.title || '').toLowerCase()}|${f.location || ''}`));
-      const extra = scanOutput.findings
-        .filter(f => !realKeys.has(`${(f.title || f.name || '').toLowerCase()}|${f.location || ''}`))
-        .map(f => ({ ...f, source: '自动扫描(LLM补充,待验证)', verified: false }));
-      if (extra.length) results.findings.push(...extra);
-    }
-
-    // 记录真实扫描摘要，供报告阶段使用
-    results.realScanSummary = realScan.summary;
-    results.realScanTools = realScan.tools;
-
-    // ========== 阶段4: 执行手工渗透 ==========
-    broadcast({ type: 'workflow_stage_started', workflowId, stage: '执行手工渗透', agentId: 'security-sentinel' });
-    const pentestInput = {
-      target,
-      scanType,
-      domain: testDomain,
-      description: '手工渗透测试 - 侦查和漏洞验证',
-      phase: 'pentest',
-      reconnaissance: true,
-      vulnerabilityTesting: true,
-      previousFindings: scanOutput?.findings || [],
-      template: scanTemplate
-    };
-
-    const pentestResult = await spawnAgentSession(
-      'security-sentinel',
-      JSON.stringify(pentestInput),
-      `security-pentest-${workflowId}`,
-      null, true, [], userId
-    );
-    const pentestOutput = extractJson(pentestResult.text || pentestResult.content || '');
-    results.stages.push({ stage: '执行手工渗透', agentId: 'security-sentinel', success: !!pentestOutput, output: pentestOutput?.findings?.length || 0 });
-    // 落盘本阶段三格式交付物(md + docx + xlsx)
-    const sec3Files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', '执行手工渗透', 3, pentestResult.text || pentestResult.content || '');
-    const sec3Art = buildWorkflowArtifacts(workflowId, sec3Files, 'sec3');
-    results.allArtifacts.push(...sec3Art);
-    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '执行手工渗透', success: !!pentestOutput, outputFiles: sec3Files, artifacts: sec3Art });
-
-    // 保存手工渗透发现的漏洞（标记【手工渗透】）
-    if (pentestOutput?.findings?.length > 0) {
-      const pentestFindings = pentestOutput.findings.map(f => ({
-        ...f,
-        title: `【手工渗透】${f.title || f.name || '未命名漏洞'}`,
-        source: '手工渗透'
-      }));
-      results.findings.push(...pentestFindings);
-    }
-
-    // ========== 阶段5: 安全报告生成 ==========
-    broadcast({ type: 'workflow_stage_started', workflowId, stage: '安全报告生成', agentId: 'security-sentinel' });
-    const reportInput = {
-      target,
-      scanType,
-      domain: testDomain,
-      scanTimestamp: new Date().toISOString(),
+    const reportId = await persistRealSecReport({
+      workflowId, target, scanType, testDomain, userId,
+      findings: shared.findings, summary: shared.reportSummary || summarizeRealSecFindings(shared.findings),
       durationMs: Date.now() - startTime,
-      securityScore: scanOutput?.overallScore || pentestOutput?.overallScore || 0,
-      severityDist: scanOutput?.severityDist || pentestOutput?.severityDist || { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
-      findings: results.findings,
-      testCases: testCases?.testCases || [],
-      scheme: scheme || {},
-      executiveSummary: description || '安全测试执行完成'
-    };
-
-    const reportResult = await spawnAgentSession(
-      'security-sentinel',
-      JSON.stringify({ ...reportInput, phase: 'report' }),
-      `security-report-${workflowId}`,
-      null, true, [], userId
-    );
-    const report = extractJson(reportResult.text || reportResult.content || '');
-    // 【修复】保存完整报告正文,供 task_completed 广播时随事件下发到前端聊天面板
-    results.report = report || null;
-    results.rawReportText = reportResult.text || reportResult.content || '';
-    // 【修复】组装 Markdown 报告(替代 agent 原始 JSON 输出),前端 dashboard-chat-panel 直接渲染为可读报告
-    results.fullReportText = buildSecurityReportMarkdown({
-      workflowId,
-      target,
-      scanType,
-      status: report ? 'completed' : 'failed',
-      report: report || null,
-      findings: results.findings,
-      stages: results.stages,
-      durationMs: Date.now() - startTime,
-      realScanSummary: results.realScanSummary || null,
-      realScanTools: results.realScanTools || null,
     });
-    // 落盘报告阶段三格式交付物(md + docx + xlsx),以可读 Markdown 报告为正文
-    const sec4Files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', '安全报告生成', 4, results.fullReportText || reportResult.text || '');
-    const sec4Art = buildWorkflowArtifacts(workflowId, sec4Files, 'sec4');
-    results.allArtifacts.push(...sec4Art);
-    results.stages.push({ stage: '安全报告生成', agentId: 'security-sentinel', success: !!report, output: report?.reportId || '失败' });
-    broadcast({ type: 'workflow_stage_completed', workflowId, stage: '安全报告生成', success: !!report, outputFiles: sec4Files, artifacts: sec4Art });
+    results.reportId = reportId;
 
-    // ========== 保存到数据库 ==========
-    let reportId;
-    try {
-      reportId = await securityDAO.createSecurityReport({
-        scanId: workflowId,
-        target,
-        scanType,
-        testDomain,
-        status: 'completed',
-        createdBy: userId
-      });
-
-      await securityDAO.updateSecurityReport(reportId, {
-        overall_score: typeof report?.overallScore === 'number' ? report.overallScore : null,
-        severity_dist: typeof report?.vulnerabilityOverview === 'object' ? JSON.stringify(report.vulnerabilityOverview) : null,
-        findings_count: results.findings.length,
-        recommendations: typeof report?.conclusion === 'string' ? report.conclusion : null,
-        duration_ms: Date.now() - startTime,
-        test_domain: testDomain,
-        report_json: {
-          domain: testDomain,
-          cvssScore: report?.cvssScore != null ? Number(report.cvssScore) : 0,
-          bizRiskScore: report?.bizRiskScore != null ? Number(report.bizRiskScore) : 0,
-          attackChains: Array.isArray(report?.attackChains) ? report.attackChains : [],
-          threatModel: report?.threatModel || '',
-          riskLevel: report?.riskLevel || 'none',
-          summary: report?.summary || ''
-        }
-      });
-
-      // 漏洞入库
-      if (results.findings.length > 0) {
-        const vulns = results.findings.map(f => ({
-          reportId,
-          title: f.title || f.name || 'N/A',
-          severity: f.severity || 'info',
-          vuln_type: f.type || f.vulnType || 'unknown',
-          description: f.description || '',
-          evidence: f.evidence || null,
-          recommendation: f.remediation || f.recommendation || null,
-          cve_id: f.cve || f.cveId || null,
-          cwe_id: f.cwe || f.cweId || null,
-          cvss: f.cvss || null,
-          extJson: {
-            domain: f.domain || testDomain || 'web',
-            poc: f.poc || '',
-            verified: !!f.verified,
-            codeFix: f.codeFix || '',
-            owaspCategory: f.owaspCategory || '',
-            cvssScore: f.cvssScore != null ? Number(f.cvssScore) : null,
-            bizRisk: f.bizRisk || '',
-            compliance: Array.isArray(f.compliance) ? f.compliance : []
-          }
-        }));
-        await securityDAO.bulkCreateVulnerabilities(vulns);
-        console.error('[SecurityWorkflow] bulkCreateVulnerabilities OK, count=' + vulns.length);
-      }
-
-      broadcast({ type: 'security_scan_completed', reportId, score: report?.overallScore, target });
-    } catch (dbErr) {
-      console.error('[SecurityWorkflow] DB error: ' + dbErr.message);
-    }
-
-    // 完成
     results.status = 'completed';
-    clearInterval(heartbeatInterval);
-    broadcast({ type: 'workflow_completed', workflowId, status: 'completed', results, reportId });
-    console.error('[SecurityWorkflow] COMPLETED workflowId=' + workflowId);
+    clearInterval(heartbeat);
+    broadcast({
+      type: 'workflow_completed', workflowId, status: 'completed', engine: 'real',
+      results, reportId, artifacts: results.allArtifacts,
+      output: shared.reportMarkdown || null,
+    });
+    console.error(`[SecurityReal] COMPLETED workflowId=${workflowId} findings=${shared.findings.length} reportId=${reportId || '-'}`);
     return results;
-
   } catch (err) {
-    console.error('[SecurityWorkflow] ERROR: ' + err.message);
+    clearInterval(heartbeat);
     results.status = 'failed';
-    clearInterval(heartbeatInterval);
-    broadcast({ type: 'workflow_error', workflowId, error: err.message });
+    console.error(`[SecurityReal] ERROR: ${err.message}`);
+    broadcast({ type: 'workflow_error', workflowId, error: err.message, engine: 'real' });
     throw err;
   }
+}
+
+async function executeSecurityRealSingleStage({ workflowId, taskInput, userId = 1, stageIdx }) {
+  const { target, scanType = 'full', description = '', testDomain = 'web', sourcePath = '' } = taskInput;
+  const mode = resolveSecRealMode(target, sourcePath);
+  if (!mode) throw new Error('真实执行引擎需要 http(s) URL，或项目目录内（含 runtime/git-clones）的源码绝对路径');
+
+  const stageName = SEC_REAL_STAGE_NAMES[stageIdx];
+  const startTime = Date.now();
+  const shared = {
+    mode, scanType, testDomain, description, sourcePath,
+    toolStatus: null, scan: null, toolRuns: {}, probes: null,
+    findings: [], evaluatedCases: [], verification: null, reportMarkdown: '', reportSummary: null,
+  };
+
+  sseBroadcast({ type: 'workflow_stage_started', workflowId, stage: stageName, step: stageIdx, engine: 'real', userId });
+  if (stageIdx === 2) {
+    sseBroadcast({ type: 'security_real_scan_started', workflowId, target, mode, engine: 'real', userId });
+  }
+
+  const out = await runSecurityRealStage(stageIdx, {
+    workflowId, target, scanType, testDomain, description, sourcePath, shared, startTime,
+  });
+
+  if (stageIdx === 2) {
+    sseBroadcast({
+      type: 'security_real_scan_completed', workflowId,
+      tools: shared.scan.tools, summary: out.summary,
+      findings: shared.findings.length, engine: 'real', userId,
+    });
+  }
+
+  const files = await saveWorkflowStageDeliverables(workflowId, 'security-sentinel', stageName, stageIdx, out.markdown);
+  const artifacts = buildWorkflowArtifacts(workflowId, files, `ss${stageIdx}`);
+
+  tasks.set(workflowId, {
+    id: workflowId, userId, status: 'completed', type: 'security-test',
+    agentId: 'security-sentinel', artifacts,
+  });
+  await taskDAO.updateTask(workflowId, {
+    status: 'completed', completedAt: new Date(), artifacts,
+  });
+
+  let reportId = null;
+  if (stageIdx === 4) {
+    reportId = await persistRealSecReport({
+      workflowId, target, scanType, testDomain, userId,
+      findings: shared.findings, summary: shared.reportSummary || summarizeRealSecFindings(shared.findings),
+      durationMs: Date.now() - startTime,
+    });
+  }
+
+  sseBroadcast({
+    type: 'workflow_stage_completed', workflowId, stage: stageName, step: stageIdx,
+    success: true, engine: 'real', result: out.markdown, summary: out.summary || null,
+    outputFiles: files, artifacts, userId, reportId,
+  });
+
+  return {
+    success: true, stage: stageName, engine: 'real', step: stageIdx,
+    output: out.markdown, outputFiles: files, artifacts, taskId: workflowId, reportId,
+    summary: out.summary || null,
+  };
 }
 
 // POST /api/security/workflow
@@ -15817,46 +15849,15 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
     if (!target) return res.status(400).json({ error: '缺少 target 参数' });
 
     const userId = req.user.id;
-    const SECURITY_STAGES = ['安全测试方案生成','安全测试用例生成','执行安全扫描','执行手工渗透','安全报告生成'];
+    const SECURITY_STAGES = ['安全测试方案生成','安全测试用例生成','执行安全扫描','执行手工验证','安全报告生成'];
 
-    // ── 单阶段执行（stage=0~4）──────────────────────────────────
+    // ── 真实引擎：单阶段 ─────────────────────────────────────────
     if (!isNaN(stageIdx) && stageIdx >= 0 && stageIdx <= 4) {
-      const phaseMap = ['scheme','cases','scan','pentest','report'];
-      const phase = phaseMap[stageIdx];
       const stageName = SECURITY_STAGES[stageIdx];
-      const phaseInput = { target, scanType, description, domain: testDomain, phase, agentId: 'security-sentinel' };
+      const singleWfId = `sec-single-real-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const mode = resolveSecRealMode(target, sourcePath);
+      if (!mode) return res.status(400).json({ error: '真实执行引擎需要 http(s) URL，或项目目录内（含 runtime/git-clones）的源码绝对路径' });
 
-      // 临时 workflowId 用于 SSE 广播
-      const singleWfId = `sec-single-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-
-      // 扫描/渗透阶段：先跑真实工具，把证据注入提示词（深度来自工具而非模型想象）
-      let stageRealScan = null;
-      if (phase === 'scan' || phase === 'pentest') {
-        try {
-          sseBroadcast({ type: 'security_real_scan_started', workflowId: singleWfId, target, mode: 'auto', userId });
-          stageRealScan = await runRealSecurityScanForWorkflow({ target, description, testDomain, sourcePath });
-          phaseInput.realScanEvidence = {
-            engine: stageRealScan.tools,
-            summary: stageRealScan.summary,
-            findings: stageRealScan.findings.slice(0, 80).map(f => ({
-              title: f.title, severity: f.severity, category: f.category, tool: f.tool,
-              location: f.location, description: f.description,
-              cve: f.cve, cwe: f.cwe, cvss: f.cvss, remediation: f.remediation,
-            })),
-            instruction: '以下 findings 来自真实扫描工具，必须原样纳入报告；不要编造未列出的已验证漏洞。',
-          };
-          sseBroadcast({
-            type: 'security_real_scan_completed', workflowId: singleWfId,
-            tools: stageRealScan.tools, summary: stageRealScan.summary,
-            findings: stageRealScan.findings.length, userId,
-          });
-        } catch (e) {
-          console.error(`[SecurityWorkflow] 单阶段真实扫描失败: ${e.message}`);
-          sseBroadcast({ type: 'security_real_scan_failed', workflowId: singleWfId, error: e.message, userId });
-        }
-      }
-
-      // 写入 tasks 表，使单阶段任务在任务列表可见
       await taskDAO.createTask({
         id: singleWfId,
         name: `安全测试·${stageName}: ${target}`,
@@ -15864,126 +15865,83 @@ app.post('/api/security/workflow', authenticate, async (req, res) => {
         status: 'running',
         userId,
         agentId: 'security-sentinel',
-        input: JSON.stringify({ target, scanType, description, stage: stageName }),
+        input: JSON.stringify({ target, scanType, description, stage: stageName, engine: 'real' }),
         priority: 'high',
       });
 
-      // SSE 广播阶段开始
-      sseBroadcast({ type: 'workflow_stage_started', workflowId: singleWfId, stage: stageName, step: stageIdx, userId });
-
-      // streamCallback: 广播流式 chunk
-      const streamCb = (event) => {
-        // 修复：workflowId / userId 必须放在 ...event 之后，避免被事件体里未定义的 workflowId 覆盖
-        sseBroadcast({ ...event, workflowId: singleWfId, userId });
-      };
-
-      const r = await spawnAgentSession(
-        'security-sentinel',
-        JSON.stringify(phaseInput),
-        `${singleWfId}-${phase}`,
-        streamCb,    // streamCallback
-        false,       // skipReview
-        [],          // previousArtifacts
-        userId       // userId
-      );
-
-      const output = r?.data || r?.text || null;
-      const success = r?.success !== false;
-
-      // 落盘三格式交付物(md + docx + xlsx),与通用路由一致
-      const stageOutFiles = await saveWorkflowStageDeliverables(singleWfId, 'security-sentinel', stageName, stageIdx, output);
-      const stageArtifacts = buildWorkflowArtifacts(singleWfId, stageOutFiles, `ss${stageIdx}`);
-      tasks.set(singleWfId, {
-        id: singleWfId, userId, status: success ? 'completed' : 'failed',
-        type: 'security-test', agentId: 'security-sentinel', artifacts: stageArtifacts,
+      const out = await executeSecurityRealSingleStage({
+        workflowId: singleWfId,
+        taskInput: { target, scanType, description, testDomain, sourcePath },
+        userId,
+        stageIdx,
       });
-
-      // 更新任务状态
-      await taskDAO.updateTask(singleWfId, { status: success ? 'completed' : 'failed', completedAt: new Date() });
-
-      // SSE 广播阶段完成（携带 outputFiles / artifacts,前端即可下载三格式）
-      sseBroadcast({
-        type: 'workflow_stage_completed', workflowId: singleWfId, stage: stageName, step: stageIdx,
-        success, result: output, outputFiles: stageOutFiles, artifacts: stageArtifacts, userId,
-      });
-
-      return res.json({ success: true, stage: stageName, phase, output, outputFiles: stageOutFiles, artifacts: stageArtifacts, taskId: singleWfId });
+      return res.json(out);
     }
 
-    // ── 完整工作流
+    // ── 真实引擎：完整工作流 ─────────────────────────────────────
+    const mode = resolveSecRealMode(target, sourcePath);
+    if (!mode) return res.status(400).json({ error: '真实执行引擎需要 http(s) URL，或项目目录内（含 runtime/git-clones）的源码绝对路径' });
+
     const workflowId = `security-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const taskId = workflowId;
-
-    // 脱敏:支持中英文冒号、中文引号、ASCII引号、空格分隔
     const maskedDesc = (description || '')
       .replace(/(?:密码|password|pwd)\s*[:：\u201c\u201d'"\s]\s*([^\s,，;。;}\u201c\u201d'"]+)/gi, () => `密码"***"`)
-      .replace(/(?:账号|account|用户名|username)\s*[:：\u201c\u201d'"\s]\s*([^\s,，;。;}\u201c\u201d'"]+)/gi, () => `账号"***"`)
-      .replace(/[\u201c\u201d'"](?:password|pwd|secret)[\u201c\u201d'"]\s*:\s*[^,}\s]+/gi, '"password":"***"');
+      .replace(/(?:账号|account|用户名|username)\s*[:：\u201c\u201d'"\s]\s*([^\s,，;。;}\u201c\u201d'"]+)/gi, () => `账号"***"`);
+
     await taskDAO.createTask({
       id: taskId,
-      name: `安全测试(${({ all:'全域', web:'Web', api:'API', cloud:'云原生', mobile:'移动端', data:'数据安全', supply:'供应链', ai:'AI' })[testDomain] || '全域'}): ${target}`,
+      name: `安全测试(真实引擎): ${target}`,
       type: 'security-test',
       status: 'running',
       userId,
       agentId: 'security-sentinel',
-      input: JSON.stringify({ target, scanType, domain: testDomain, description: maskedDesc }),
-      priority: 'high'
+      input: JSON.stringify({ target, scanType, domain: testDomain, description: maskedDesc, engine: 'real' }),
+      priority: 'high',
     });
-
-    // 用于累积各阶段三格式交付物(供前端下载),与性能工作流一致
     tasks.set(taskId, { id: taskId, userId, status: 'running', type: 'security-test', agentId: 'security-sentinel', artifacts: [] });
 
-    sseBroadcast({ type: 'task_created', taskId, taskName: `安全测试: ${target}`, target, scanType, userId });
-    sseBroadcast({ type: 'workflow_stage_started', workflowId, stage: '安全测试', agentId: 'security-sentinel', userId });
-    res.json({ success: true, workflowId, taskId, target, scanType, message: '安全智能体正在执行完整测试，请等待...' });
+    sseBroadcast({ type: 'task_created', taskId, taskName: `安全测试: ${target}`, target, scanType, engine: 'real', userId });
+    sseBroadcast({ type: 'workflow_stage_started', workflowId, stage: '安全测试', agentId: 'security-sentinel', engine: 'real', userId });
+    res.json({ success: true, workflowId, taskId, target, scanType, engine: 'real', mode, message: '真实工具执行引擎启动，正在执行扫描与验证...' });
 
-    executeSecurityWorkflow(workflowId, { target, scanType, domain: testDomain, description: maskedDesc, sourcePath }, userId)
+    executeSecurityRealWorkflow(workflowId, {
+      target, scanType, description: maskedDesc, testDomain, sourcePath,
+    }, userId)
       .then(async (wr) => {
         const status = wr && wr.status === 'completed' ? 'completed' : 'failed';
-        // 全工作流预估工时:基于域规模估算(全域/全量约为单域 2 倍)
-        let wfManualHours = 0;
+        const artifacts = wr?.allArtifacts || [];
+        let manualHours = 0;
         try {
           const base = await estimateManualEffort({ agent: 'security-sentinel', input: { scanType: 'full', testDomain } });
-          wfManualHours = (testDomain === 'all') ? Math.max(base * 2, 8) : (base || 4);
-        } catch (_) {}
-        // 累积各阶段三格式交付物到 tasks Map,随 task_completed 下发(前端即可下载 md/docx/xlsx)
-        const secArtifacts = wr?.allArtifacts || [];
-        tasks.set(taskId, { id: taskId, userId, status, type: 'security-test', agentId: 'security-sentinel', artifacts: secArtifacts, manualHours: wfManualHours });
-        // 落库:artifacts + manualHours，保证进程重启后仍能预览/下载(内存 Map 不持久)
-        await taskDAO.updateTask(taskId, { status, completedAt: new Date(), artifacts: secArtifacts, manualHours: wfManualHours });
-        // 【修复】task_completed 同时下发平铺结构 + task 对象（前端 handleRealtimeEvent 依赖 data.task）
-        // result 优先带完整报告正文（fullReportText），前端可直接渲染到聊天面板
-        const reportText = (wr && (wr.fullReportText || wr.report?.content)) || '';
-        const reportPayload = reportText || (wr ? JSON.stringify(wr) : '');
+          manualHours = (testDomain === 'all') ? Math.max(base * 2, 8) : (base || 4);
+        } catch (_) { /* ignore */ }
+
+        tasks.set(taskId, {
+          id: taskId, userId, status, type: 'security-test', agentId: 'security-sentinel',
+          artifacts, manualHours, engine: 'real',
+        });
+        await taskDAO.updateTask(taskId, { status, completedAt: new Date(), artifacts, manualHours });
+
+        const reportText = wr?.fullReportText || '';
         sseBroadcast({
-          type: 'task_completed',
-          taskId,
-          status,
-          result: wr,
-          output: reportText || null,
-          artifacts: secArtifacts,
-          outputFiles: secArtifacts.map(a => a.path),
-          userId,
+          type: 'task_completed', taskId, status, result: wr,
+          output: reportText || null, artifacts,
+          outputFiles: artifacts.map(a => a.path), engine: 'real', userId,
           task: {
-            id: taskId,
-            status,
-            result: reportPayload,
-            output: reportText || null,
-            userId,
-            agent: 'security-sentinel',
-            agentId: 'security-sentinel',
-            agentName: '🛡️ 安全测试',
-            type: 'security-test',
-            artifacts: secArtifacts,
-            createdAt: new Date().toISOString()
-          }
+            id: taskId, status, result: reportText || '', output: reportText || null,
+            userId, agent: 'security-sentinel', agentId: 'security-sentinel',
+            agentName: '🛡️ 安全测试（真实引擎）', type: 'security-test',
+            artifacts, engine: 'real', createdAt: new Date().toISOString(),
+          },
         });
       })
       .catch(async (err) => {
-        console.error('[SecurityWorkflow] Unhandled:', err.message);
+        console.error('[SecurityReal] Unhandled:', err.message);
         await taskDAO.updateTask(taskId, { status: 'failed', completedAt: new Date() });
-        sseBroadcast({ type: 'task_completed', taskId, status: 'failed', error: err.message, userId });
+        sseBroadcast({ type: 'task_completed', taskId, status: 'failed', error: err.message, engine: 'real', userId });
       });
+    return;
+
   } catch (err) {
     console.error('[SecurityWorkflow] Endpoint error:', err);
     res.status(500).json({ error: err.message });
@@ -16644,8 +16602,12 @@ app.post('/api/performance-test/workflow', authenticate, async (req, res) => {
         type: 'performance-test', agentId: 'performance-tester', artifacts: stageArtifacts,
       });
 
-      // 更新任务状态
-      await taskDAO.updateTask(singleWfId, { status: success ? 'completed' : 'failed', completedAt: new Date() });
+      // 更新任务状态（artifacts 必须落库，避免重启后预览/下载 404）
+      await taskDAO.updateTask(singleWfId, {
+        status: success ? 'completed' : 'failed',
+        completedAt: new Date(),
+        artifacts: stageArtifacts,
+      });
 
       // SSE 广播阶段完成(携带 outputFiles / artifacts,前端即可下载三格式)
       sseBroadcast({
@@ -16802,6 +16764,7 @@ async function executePerformanceWorkflow(workflowId, taskInput, userId = 1) {
       const stageOutFiles = await saveWorkflowStageDeliverables(workflowId, 'performance-tester', name, i, stageText);
       const stageArtifacts = buildWorkflowArtifacts(workflowId, stageOutFiles, `pf${i}`);
       allArtifacts.push(...stageArtifacts);
+      await persistWorkflowArtifacts(workflowId, allArtifacts);
       // SSE 广播阶段完成（携带 success 字段，标定本次阶段是否成功 + 三格式交付物）
       console.log(`[PerfWorkflow] stage ${name} completed, result keys:`, Object.keys(result || {}));
       sseBroadcast({ type: 'workflow_stage_completed', workflowId, stage: name, step, success: true, result, outputFiles: stageOutFiles, artifacts: stageArtifacts, userId });

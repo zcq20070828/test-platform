@@ -45,9 +45,23 @@
 
 ## 与工作流的集成
 
-安全测试工作流的「执行安全扫描」「执行手工渗透」两个阶段会先运行真实扫描器，
-把工具产出作为 `realScanEvidence` 注入 LLM 提示词，并在报告里单列「🧪 真实扫描证据」。
-LLM 补充的、工具未验证的发现会标记 `verified: false` 并在来源上注明「待验证」。
+### 真实执行引擎（唯一执行方式）
+
+`POST /api/security/workflow` 使用 `backend/security/real-security-workflow.js`，
+**整个 5 阶段流程不调用 LLM**，原「AI 分析」模式已下线：
+
+| 阶段 | 产出方式 |
+| --- | --- |
+| 安全测试方案生成 | 根据目标类型 + 已安装工具生成确定性方案 |
+| 安全测试用例生成 | 内置 60 条 OWASP Top 10 用例目录，每条绑定验证方法 |
+| 执行安全扫描 | 真实调用 Nuclei / Nikto / Nmap（URL）或 Semgrep / Trivy / Bandit / Gitleaks / OSV（源码） |
+| 执行手工验证 | 逐条复现 + TRACE / Host 头 / crossdomain / Cache-Control / HTTPS 跳转等只读检查 |
+| 安全报告生成 | 基于真实证据汇总，未验证项显式标注 manual，不猜测 |
+
+每个阶段都会落盘 md/docx/xlsx 三种格式的交付件，并写入 `security_reports` / `security_vulnerabilities`。
+
+单阶段接口同样走真实引擎：`POST /api/security/workflow?stage=0..4`，
+body 支持 `testDomain`、`sourcePath`。
 
 ## 安全约束
 

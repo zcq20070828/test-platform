@@ -855,12 +855,25 @@ export const securityApi = {
     const res = await request<any>('/api/security/scan/real', { method: 'POST', body: JSON.stringify(payload) })
     return res.success ? (res.data as any) : null
   },
-  // 发起安全测试工作流（5阶段自动串联）
-  async startWorkflow(target: string, scanType?: string, description?: string, stage?: number) {
+  // 发起安全测试工作流（5阶段自动串联，真实工具执行）
+  async startWorkflow(
+    target: string,
+    scanType?: string,
+    description?: string,
+    stage?: number,
+    testDomain?: string,
+    sourcePath?: string,
+  ) {
     const url = stage !== undefined ? `/api/security/workflow?stage=${stage}` : '/api/security/workflow'
     const res = await request<{ workflowId: string; taskId: string } | { success: boolean; stage: string; output: unknown }>(url, {
       method: 'POST',
-      body: JSON.stringify({ target, scanType: scanType || 'full', description }),
+      body: JSON.stringify({
+        target,
+        scanType: scanType || 'full',
+        description,
+        testDomain: testDomain || 'all',
+        sourcePath: sourcePath || '',
+      }),
     })
     return res.success ? (res.data as any) : null
   },
