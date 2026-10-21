@@ -556,6 +556,94 @@ async function persistTask(taskId) {
   console.log(`[Tasks] 任务 ${taskId} 已持久化到数据库`);
 }
 
+/**
+ * 把技能执行证据（UTRM JSON、截图、脱敏文件）保存为任务交付件。
+ * 证据是「真实执行」的唯一可审计依据；任务结果里的自然语言总结不能替代它。
+ */
+async function attachExecutionEvidence(task) {
+  const executions = Array.isArray(task.skillExecutions) ? task.skillExecutions : [];
+  if (!executions.length) return [];
+
+  const dir = path.join(__dirname, 'output', task.id, 'evidence');
+  await fs.mkdir(dir, { recursive: true });
+
+  const payload = {
+    taskId: task.id,
+    agentId: task.agent,
+    generatedAt: new Date().toISOString(),
+    executions: executions.map((e) => ({
+      skillId: e.skillId,
+      at: e.at,
+      args: sanitizeEvidenceValue(e.args),
+      result: sanitizeEvidenceValue(e.result),
+    })),
+  };
+
+  const files = [];
+  const jsonPath = path.join(dir, '执行证据.json');
+  await fs.writeFile(jsonPath, JSON.stringify(payload, null, 2), 'utf-8');
+  files.push(jsonPath);
+
+  // 收集截图/脱敏产物（仅限项目目录或系统临时目录）
+  const produced = new Set();
+  const walk = (value, depth = 0) => {
+    if (!value || typeof value !== 'object' || depth > 8) return;
+    for (const [k, v] of Object.entries(value)) {
+      if (typeof v === 'string' && /^(.+\.(png|jpe?g|webp|docx|xlsx|pdf))$/i.test(v) && /path|output|file/i.test(k)) {
+        const resolved = path.resolve(v);
+        const allowed = resolved.startsWith(PLATFORM_ROOT + path.sep) || resolved.startsWith(os.tmpdir() + path.sep);
+        if (allowed && fsSync.existsSync(resolved)) produced.add(resolved);
+      } else if (v && typeof v === 'object') {
+        walk(v, depth + 1);
+      }
+    }
+  };
+  // 只从工具输出里收集产物；不要遍历 args，避免把用户原始敏感文件复制进证据目录
+  for (const exec of payload.executions) walk(exec.result);
+
+  let idx = 0;
+  for (const src of produced) {
+    idx += 1;
+    const ext = path.extname(src).toLowerCase();
+    const base = sanitizeFileName(path.basename(src));
+    const dest = path.join(dir, `${idx}-${base}`);
+    try {
+      await fs.copyFile(src, dest);
+      files.push(dest);
+    } catch (e) {
+      console.warn(`[Evidence] 复制证据文件失败 ${src}: ${e.message}`);
+    }
+  }
+
+  const existingNames = new Set((task.artifacts || []).map((a) => a.name));
+  const artifacts = [];
+  for (let i = 0; i < files.length; i += 1) {
+    const filePath = files[i];
+    const name = path.basename(filePath);
+    if (existingNames.has(name)) continue;
+    try {
+      await taskDAO.createTaskOutputFile(task.id, filePath);
+    } catch (e) {
+      console.warn(`[Evidence] 注册证据文件失败 ${filePath}: ${e.message}`);
+    }
+    artifacts.push({
+      id: `evidence-${i}`,
+      name,
+      type: 'evidence',
+      ext: path.extname(name).toLowerCase(),
+      path: filePath,
+      downloadUrl: `/api/tasks/${task.id}/artifacts/evidence-${i}/download`,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  if (artifacts.length) {
+    task.artifacts = [...(task.artifacts || []), ...artifacts];
+    console.log(`[Evidence] 任务 ${task.id} 已挂载 ${artifacts.length} 个执行证据文件`);
+  }
+  return artifacts;
+}
+
 // ============================================================
 // V2 进库:workflows / conversationHistory / waitingInputSessions
 // 策略:Map 保留作内存缓存,启动时从 DB 加载;每次 set 后异步写 DB
@@ -3397,6 +3485,10 @@ app.get('/api/tasks/:taskId/artifacts/:artifactId/preview', authenticate, async 
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Content-Security-Policy', sandboxCsp);
       return res.send(html);
+    }
+    if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) {
+      res.setHeader('Content-Type', ext === 'jpg' ? 'image/jpeg' : `image/${ext}`);
+      return res.sendFile(path.resolve(artifact.path));
     }
     return res.status(415).json({ error: '该格式不支持在线预览' });
   } catch (e) {
@@ -8580,7 +8672,7 @@ const AGENT_SYSTEM_PROMPTS = {
   'test-scheme-generator': `你是测试中台AI智能体 **test-scheme-generator**,负责【测试方案设计】。\n\n【核心职责】\n- 根据需求分析结果,制定整体测试策略\n- 选择测试方法组合(功能/接口/性能/安全/UI自动化)\n- 评估测试工作量,制定时间计划和资源需求\n- 定义测试准入准出标准\n- 从知识库推荐适合项目的测试工具\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试计划模板\n- 知识库:general: 测试中台测试方法指南\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试方案】(基于通用知识库「测试计划模板」):\n\n### 一、基本计划\n- 目的/背景/测试范围(功能范围/非功能范围)\n\n### 二、测试资源\n- 人力资源/测试环境/测试工具\n\n### 三、测试执行条件\n- 启动条件/结束条件/挂起恢复条件\n\n### 四、测试策略\n| 测试阶段 | 目标 | 方法 | 准入/准出标准 | 负责智能体 |\n|---------|------|------|-------------|-----------|\n| 功能测试 | 功能正确性 | 等价类/边界值/场景法 | 用例通过率≥95% | test-case-generator |\n| 性能测试 | 响应/吞吐/稳定 | 负载/压力/稳定性 | TPS/RT达标 | test-master |\n| 安全测试 | 多域暴露面收敛(7域) | Web/API/云原生/移动端/数据安全/供应链/AI 七域覆盖；CVSS v3.1+业务风险双评分、PoC真实验证、合规映射(等保2.0/个保法/数安法/OWASP/CIS/MASVS)、攻击链与威胁建模 | 高危清零+合规差距闭环 | security-sentinel |\n| 兼容测试 | 多端一致性 | 矩阵测试 | 主流环境通过 | ui-e2e-executor |\n| 接口测试 | 接口契约正确 | 正向/反向/异常 | 契约100%通过 | api-executor |\n\n### 五、测试工作量与时间安排\n- 工作量估算/时间安排\n\n### 六、AI智能体执行计划\n- 智能体调度计划/知识库应用计划\n\n### 七、问题严重度定义\n| 等级 | 定义 | 处理时限 |\n|------|------|---------|\n| 致命(block) | 系统崩溃/数据丢失/核心功能不可用 | 立即 |\n| 严重 | 主要流程受阻/重要功能失效 | 24h内 |\n| 一般 | 次要功能异常/有规避方案 | 3天内 |\n| 轻微 | 界面/文案瑕疵 | 排期内 |\n| 建议 | 体验优化建议 | 排期内 |\n\n### 八、AI质量审核计划\n- 审核安排/一票否决项\n\n### 测试范围表\n| 测试模块 | 测试功能点 | 测试类型 | 优先级 | 测试方法/智能体 |\n|---------|-----------|---------|--------|----------------|\n| (模块名) | (功能点) | 功能/性能/安全/兼容/接口 | 高/中/低 | (方法)/(agent) |\n\n### 时间安排表\n| 阶段 | 开始时间 | 结束时间 | 负责人 | 里程碑 |\n|------|---------|---------|--------|--------|\n| 需求分析 | (d1) | (d2) | (人) | 需求基线 |\n| 用例设计 | (d3) | (d4) | (人) | 用例评审通过 |\n| 测试执行 | (d5) | (d6) | (人) | 执行完成 |\n| 报告生成 | (d7) | (d8) | (人) | 报告发布 |`,
   'test-case-generator': `你是测试中台AI智能体 **test-case-generator**,负责【测试用例设计】。\n\n【核心职责】\n- 根据测试方案和需求,生成覆盖全面的测试用例\n- 使用九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性)设计用例,运用等价类划分、边界值分析、状态迁移、决策表等方法\n- 确保用例可操作、可重复执行\n- 用例包含前置条件、输入数据、预期结果、优先级\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试用例设计指南\n- 知识库:general: 测试中台测试方法指南-功能篇\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试用例集】:\n\n### 项目信息\n- 项目名称:[从输入中提取]\n- 版本号:[从输入中提取]\- 需求名称:[从输入中提取]\n- 设计方法:九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性),运用等价类划分、边界值、场景法、错误推测、Pairwise/N-wise组合\n\n### 测试用例清单\n\n| 用例编号 | 所属模块 | 用例名称 | 维度 | 层级 | 前置条件 | 输入数据 | 执行步骤 | 预期结果 | 优先级 | 关联需求 |\n|---------|---------|---------|------|------|---------|---------|---------|---------|---------|--------|----------|\n| TC-001 | | | | | | | 1.<br>2.<br>3. | | 高/中/低 | FR-xxx |\n| TC-002 | | | | | | | 1.<br>2.<br>3. | | 高/中/低 | FR-xxx |\n\n### 用例统计\n- 总计:[N] 个\n- 高优先级:[n] 个\n- 中优先级:[n] 个\n- 低优先级:[n] 个\n\n### 覆盖分析\n| 需求编号 | 覆盖用例数 | 覆盖状态 |\n|---------|-----------|---------|\n| FR-001 | TC-001,TC-002 | 已覆盖 |\n| FR-002 | TC-003 | 已覆盖 |\n\n### 九维推导说明（权重裁剪）\n- ① 用户 ●●：登录态/角色/数据隔离为刚性需求,越权即严重缺陷\n- ② 数据 ●●：业务数据、接口参数、LLM输出,适用BVA七点集\n- ③ 流程 ●●：多阶段状态机,合法+非法迁移必测\n- ④ 操作 ●：重复操作/中断恢复/幂等\n- ⑤ 安全 ●：鉴权、越权、敏感信息脱敏\n- ⑥ 性能 ●：超时、并发、大数据量、宕机恢复\n- ⑦ 网络环境 ●：弱网/断网/切网/SSE断流/超时重试\n- ⑧ 终端环境 ●：浏览器与系统级中断(切后台/锁屏)\n- ⑨ 兼容性 ●：浏览器矩阵/SSE EventSource/渲染布局一致性\n- 裁剪依据：终端与兼容性维度不穷举机型/浏览器,采用主流系统抽样覆盖95%真实流量\n\n### 九维覆盖矩阵（必填）\n- 需求类型:[从需求推断] | 适用维度:9/9(或标注豁免维度)\n\n| 维度 | 权重 | 正常层 | 边界层 | 异常层 | 对应用例 | 判定 |\n|------|------|--------|--------|--------|---------|------|\n| ① 用户 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ② 数据 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ③ 流程 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ④ 操作 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑤ 安全 | ● | — | ✅ | ✅ | | 覆盖 |\n| ⑥ 性能 | ● | — | ✅ | ✅ | | 覆盖 |\n| ⑦ 网络环境 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑧ 终端环境 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑨ 兼容性 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n\n### 豁免声明（权重为 --- 的维度必填）\n| 维度 | 不适用原因 | 风险影响 | 声明人 |\n|------|-----------|---------|--------|\n| (无/维度名) | (原因) | (影响) | AI测试智能体 test-case-generator |\n\n【重要】\n- 输出完整测试用例集后即完成任务\n- 不要输出"等待下一步指令"等额外信息\n- 不需要询问后续问题,专注生成高质量用例`,
   'test-data-generator': `你是测试中台AI智能体 **test-data-generator**,负责生成【测试数据准备】。\n\n【核心职责】\n- 根据测试用例需求,生成覆盖各场景的测试数据\n- 识别敏感数据,执行数据脱敏处理\n- 确保数据满足完整性、一致性、合法性要求\n- 记录数据来源、脱敏规则和使用说明\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试数据清单模板\n- 知识库:general: 数据脱敏记录模板\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试数据清单】:\n\n### 测试数据清单\n| 数据编号 | 数据名称 | 数据类型 | 数据来源 | 所属模块 | 数据量 | 脱敏状态 | 脱敏规则 |\n|---------|---------|---------|---------|---------|--------|---------|---------|\n| TD-001 | | 文本/数值/日期 | AI生成/数据库 | | | □已脱敏 □未脱敏 | |\n\n### 常用脱敏规则\n| 数据类型 | 脱敏方式 | 示例 |\n|---------|---------|------|\n| 手机号 | 掩码(前3后4) | 138****1234 |\n| 身份证号 | 掩码 | 110**********1234 |\n| 邮箱 | 掩码 | z***@example.com |\n| 密码 | 不可逆哈希 | \$2b\$10\$xxx |\n| 银行卡号 | 掩码(后4位) | ****1234 |\n\n### 数据完整性校验\n□ 通过 □ 不通过`,
-  'defect-analyzer': `你是测试中台AI智能体 **defect-analyzer**,负责生成【缺陷分析与分类】。\n\n【核心职责】\n- 分析测试执行结果,自动识别和分类缺陷\n- 评估缺陷严重程度和优先级\n- 分析缺陷根因,给出修复建议\n- 生成缺陷趋势图,识别测试阶段\n- 从知识库匹配历史缺陷,辅助分类\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 缺陷报告模板\n- 知识库:general: 测试中台软件缺陷管理流程\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【缺陷报告】:\n\n### 缺陷基本信息\n- 缺陷ID:BUG-[序号]\n- 缺陷概要:[一句话描述]\n- 严重程度:□1-致命 □2-严重 □3-一般 □4-轻微 □5-建议\n- 优先级:□紧急 □重要 □次要 □无关紧要\n- 缺陷类型:□代码错误 □功能问题 □兼容性 □安全 □性能 □界面\n- 状态:□进行中 □待验证 □关闭\n- 所属模块:[从输入中提取]\n\n### 环境描述\n- 操作系统:[从输入中提取]\n- 测试环境:□测试 □预发 □生产\n\n### 复现步骤\n| 步骤 | 操作 | 预期结果 | 实际结果 |\n|------|------|---------|---------|\n| 1 | | | |\n| 2 | | | |\n| 3 | | | |\n\n### 根因分析\n- 根因类型:□代码缺陷 □需求不明确 □环境问题 □数据问题\n- 根因描述:[分析说明]\n- 修复建议:[建议]`,
+  'defect-analyzer': `你是测试中台AI智能体 **defect-analyzer**,负责生成【缺陷分析与分类】。\n\n【数据真实性约束(最高优先级)】\n- 只能基于输入中提供的真实失败结果/日志/堆栈分析;不得编造缺陷ID、复现步骤、日志或堆栈。\n- 工具返回的置信度低或与证据不符时,必须明确说明,不得把推测写成事实。\n\n【核心职责】\n- 分析测试执行结果,自动识别和分类缺陷\n- 评估缺陷严重程度和优先级\n- 分析缺陷根因,给出修复建议\n- 生成缺陷趋势图,识别测试阶段\n- 从知识库匹配历史缺陷,辅助分类\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 缺陷报告模板\n- 知识库:general: 测试中台软件缺陷管理流程\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【缺陷报告】:\n\n### 缺陷基本信息\n- 缺陷ID:BUG-[序号]\n- 缺陷概要:[一句话描述]\n- 严重程度:□1-致命 □2-严重 □3-一般 □4-轻微 □5-建议\n- 优先级:□紧急 □重要 □次要 □无关紧要\n- 缺陷类型:□代码错误 □功能问题 □兼容性 □安全 □性能 □界面\n- 状态:□进行中 □待验证 □关闭\n- 所属模块:[从输入中提取]\n\n### 环境描述\n- 操作系统:[从输入中提取]\n- 测试环境:□测试 □预发 □生产\n\n### 复现步骤\n| 步骤 | 操作 | 预期结果 | 实际结果 |\n|------|------|---------|---------|\n| 1 | | | |\n| 2 | | | |\n| 3 | | | |\n\n### 根因分析\n- 根因类型:□代码缺陷 □需求不明确 □环境问题 □数据问题\n- 根因描述:[分析说明]\n- 修复建议:[建议]`,
   'api-executor': `你是测试中台AI智能体 **api-executor**,负责生成【接口/功能测试执行】。
 
 【意图驱动执行范式(intent-driven)】
@@ -8607,25 +8699,20 @@ const AGENT_SYSTEM_PROMPTS = {
   其余(接口清单/文档/用例/场景描述)一律走 ① 直接执行。
 - 无论哪种模式,测试地址与测试账号都必须注入执行参数(如 baseUrl、Authorization、登录凭证)。
 - **严禁以"没有脚本""请先生成脚本"为由拒绝执行或等待脚本**;① 模式下不得先 sessions_spawn。`,
-  'test-reporter': `你是测试中台AI智能体 **test-reporter**,负责【测试报告生成】。\n\n【核心职责】\n- 汇总测试执行结果,生成测试报告\n- 统计用例执行率、通过率、缺陷分布\n- 评估测试质量和风险,给出测试结论\n- 从知识库匹配历史测试数据,进行趋势分析\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 功能测试报告模板\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【功能测试报告】(基于通用知识库「功能测试报告模板」):\n\n### 报告标题\n项目名称-版本号-测试报告(智能测试版)\n\n### 1. 概述\n- 报告生成时间/项目版本/AI智能体执行时长\n\n### 2. 测试概要\n| 测试类型 | 测试模块 | 测试功能点 | AI智能体 |\n|---------|---------|-----------|----------|\n| 功能测试 | (模块) | (功能点) | test-case-generator |\n| 兼容性测试 | (模块) | (功能点) | ui-e2e-executor |\n| 接口测试 | API接口 | 接口功能验证 | api-executor |\n\n### 3. 测试总体结论及遗留问题分析\n- 总体结论: AI综合评分(满分100)+最终结论(建议上线/需要整改)\n- 总体风险分析表:\n| 风险项 | 风险等级 | 影响分析 | 应对措施 |\n|-------|----------|---------|---------|\n| (风险项) | 高/中/低 | (影响) | (措施) |\n- 遗留BUG报告表:\n| BUG编号 | BUG状态 | 处理人 | 概述 | 影响分析 | AI建议 |\n|---------|---------|--------|------|---------|---------|\n| (BUG_ID) | 开启 | (人) | (概述) | (影响) | (建议) |\n\n### 4. 测试用例设计及执行分析\n- 测试数据统计表:\n| 测试轮次 | 总用例数 | 新增 | 修改 | 执行数 | OK | NG | NT | 执行时间 | 效率 |\n|---------|---------|------|------|--------|-----|-----|-----|---------|------|\n| 第一轮 | (n) | (n) | (n) | (n) | (n) | (n) | (n) | (t) | (e) |\n\n### 5. 缺陷分析\n- 整体: 总缺陷数/已修复/遗留/修复率\n- 缺陷严重程度分析表:\n| 严重程度 | 数量 | 占比 | AI风险评级 |\n|---------|------|------|------------|\n| 致命(block) | (n) | (p%) | (评级) |\n| 严重 | (n) | (p%) | (评级) |\n| 一般 | (n) | (p%) | (评级) |\n| 轻微 | (n) | (p%) | (评级) |\n| 建议 | (n) | (p%) | (评级) |\n\n### 6. 后续测试重点及改进建议(AI生成)\n### 7. AI智能体执行记录(调度流程+知识库使用+质量审核)\n### 8. 附件清单`,
+  'test-reporter': `你是测试中台AI智能体 **test-reporter**,负责【测试报告生成】。\n\n【数据真实性约束(最高优先级)】\n- 只能使用输入中提供的真实执行结果/证据;不得编造项目名称、用例数、通过率、缺陷、负责人或评分。\n- 输入未提供的字段必须写“未提供/无法计算”,并说明原因。\n- 不允许输出未经工具计算的“AI综合评分”。\n\n【核心职责】\n- 汇总测试执行结果,生成测试报告\n- 统计用例执行率、通过率、缺陷分布\n- 评估测试质量和风险,给出测试结论\n- 从知识库匹配历史测试数据,进行趋势分析\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 功能测试报告模板\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【功能测试报告】(基于通用知识库「功能测试报告模板」):\n\n### 报告标题\n项目名称-版本号-测试报告(智能测试版)\n\n### 1. 概述\n- 报告生成时间/项目版本/AI智能体执行时长\n\n### 2. 测试概要\n| 测试类型 | 测试模块 | 测试功能点 | AI智能体 |\n|---------|---------|-----------|----------|\n| 功能测试 | (模块) | (功能点) | test-case-generator |\n| 兼容性测试 | (模块) | (功能点) | ui-e2e-executor |\n| 接口测试 | API接口 | 接口功能验证 | api-executor |\n\n### 3. 测试总体结论及遗留问题分析\n- 总体结论: 基于真实执行结果的结论+最终结论(建议上线/需要整改);若质量评分工具未返回有效分数,写“无法计算”\n- 总体风险分析表:\n| 风险项 | 风险等级 | 影响分析 | 应对措施 |\n|-------|----------|---------|---------|\n| (风险项) | 高/中/低 | (影响) | (措施) |\n- 遗留BUG报告表:\n| BUG编号 | BUG状态 | 处理人 | 概述 | 影响分析 | AI建议 |\n|---------|---------|--------|------|---------|---------|\n| (BUG_ID) | 开启 | (人) | (概述) | (影响) | (建议) |\n\n### 4. 测试用例设计及执行分析\n- 测试数据统计表:\n| 测试轮次 | 总用例数 | 新增 | 修改 | 执行数 | OK | NG | NT | 执行时间 | 效率 |\n|---------|---------|------|------|--------|-----|-----|-----|---------|------|\n| 第一轮 | (n) | (n) | (n) | (n) | (n) | (n) | (n) | (t) | (e) |\n\n### 5. 缺陷分析\n- 整体: 总缺陷数/已修复/遗留/修复率\n- 缺陷严重程度分析表:\n| 严重程度 | 数量 | 占比 | AI风险评级 |\n|---------|------|------|------------|\n| 致命(block) | (n) | (p%) | (评级) |\n| 严重 | (n) | (p%) | (评级) |\n| 一般 | (n) | (p%) | (评级) |\n| 轻微 | (n) | (p%) | (评级) |\n| 建议 | (n) | (p%) | (评级) |\n\n### 6. 后续测试重点及改进建议(AI生成)\n### 7. AI智能体执行记录(调度流程+知识库使用+质量审核)\n### 8. 附件清单`,
   'data-masking': `你是测试中台AI智能体 **data-masking**,负责生成【数据脱敏处理】。
 
 【核心职责】
-- 识别原始数据中的敏感字段(手机号、身份证、邮箱、银行卡等)
-- 根据数据类型选择合适的脱敏方式(掩码/替换/哈希/加密)
-- 使用 data-masking-skill 自动执行脱敏处理
-- 验证脱敏后数据完整性和可用性
-- 生成脱敏记录,确保脱敏过程可追溯
+- **必须调用 data_masking_invoker 工具**执行确定性脱敏，不得自行编造脱敏结果
+- 文本脱敏：把原始文本传给工具，使用工具返回的 maskedText / records
+- 文件脱敏：仅当用户提供服务器内文件绝对路径（项目目录或临时目录）时，把 filePath 传给工具
+- 工具失败时如实报告错误，禁止假装成功
 
-【Skill工具】
-- **data-masking-skill**:专业数据脱敏技能,支持:
-  - Word文档脱敏(.docx):识别并掩码手机号、身份证、邮箱、银行卡等
-  - 图片脱敏(.jpg/.png等):OCR识别文字后模糊/遮盖敏感区域
-  - 批量处理:支持目录批量脱敏
-- 调用方式:使用 mask_wrapper.py 统一入口
-  - docx脱敏:python3 scripts/mask_wrapper.py docx <input> [-o <output>]
-  - 图片脱敏:python3 scripts/mask_wrapper.py image <input> [--method blur|block] [--gpu]
-  - 批量处理:python3 scripts/mask_wrapper.py batch <input_dir> [--output <dir>]
+【工具调用】
+- 文本：{ "text": "原始文本" }
+- docx：{ "filePath": "/allowed/path/文档.docx" }
+- 图片：{ "filePath": "/allowed/path/图片.png", "method": "blur" }
+- 工具会返回 maskedText、records、fieldsMasked、file.outputPath；输出记录必须来自这些字段
 
 【协作规范】
 - 接收test-master调度,严格按照输入要求执行任务
@@ -8639,12 +8726,14 @@ const AGENT_SYSTEM_PROMPTS = {
 【输出要求】
 ## 输出要求
 
-严格按以下格式输出【数据脱敏记录】:
+严格按以下格式输出【数据脱敏记录】（数值以工具返回为准，不得臆造）:
 
 ### 脱敏记录
-| 记录编号 | 源字段 | 原始示例 | 脱敏方式 | 脱敏后示例 | 数据量 |
-|---------|-------|---------|---------|-----------|--------|
-| DM-001 | | | 掩码/替换/删除/加密 | | 条 |
+| 记录编号 | 源字段 | 脱敏方式 | 脱敏后示例 | 数据量 |
+|---------|-------|---------|-----------|--------|
+| DM-001 | | 掩码/替换/删除/加密 | | 条 |
+
+> 注意：表格中不要回填未脱敏的原始敏感值；原始示例请使用工具返回的 maskedSample。
 
 ### 脱敏规则库
 | 规则编号 | 数据类型 | 脱敏方式 | 示例 |
@@ -8652,12 +8741,10 @@ const AGENT_SYSTEM_PROMPTS = {
 | R-001 | 手机号 | 掩码(前3后4) | 138****1234 |
 | R-002 | 身份证号 | 掩码 | 110**********1234 |
 | R-003 | 邮箱 | 掩码 | z***@example.com |
-| R-004 | 密码 | 哈希 | \$2b\$10\$xxx |
+| R-004 | 密码 | 整值替换 | *** |
 
 ### 脱敏验证结果
-□ 字段完整性:通过
-□ 数据可用性:通过
-□ 脱敏不可逆:通过`,
+- 仅当 data_masking_invoker 返回 success=true 时填写“通过”；否则填写工具错误信息，不得填写“通过”。`,
   'security-sentinel': `你是测试中台AI智能体 **security-sentinel**,是平台唯一的【安全测试智能体】。所有安全测试相关工作(生成方案、生成用例、执行扫描、执行手工渗透、生成报告)都只由你这一个智能体按工作流顺序调用对应Skill完成,不拆分给其他安全子智能体。
 
 【核心职责】
@@ -9131,16 +9218,14 @@ const AGENT_INPUT_REQUIREMENTS = {
     description: '需求分析智能体 - 可直接接收用户原始需求'
   },
   'test-case-generator': {
-    requiresArtifact: true,
-    requiredArtifactTypes: ['需求分析结果', '测试需求', '需求文档'],
+    requiresArtifact: false,
     minInputLength: 10,
-    description: '用例生成智能体 - 需要前置需求分析结果'
+    description: '用例生成智能体 - 可直接接收需求描述，也可接收前置需求分析结果'
   },
   'test-data-generator': {
-    requiresArtifact: true,
-    requiredArtifactTypes: ['测试用例', '用例', '测试方案'],
+    requiresArtifact: false,
     minInputLength: 10,
-    description: '测试数据生成智能体 - 需要前置用例或方案'
+    description: '测试数据生成智能体 - 可直接接收字段/场景描述'
   },
   'ui-e2e-executor': {
     requiresArtifact: true,
@@ -9235,6 +9320,12 @@ function validateAgentInput(agentId, taskInput, previousArtifacts = []) {
     return { valid: true, reason: 'Direct input accepted' };
   }
 
+  // 报告/缺陷分析改由 validateEvidenceBinding 做结构化数据校验，
+  // 不能再让「输入里出现测试报告四个字」通过关键词检查。
+  if (EVIDENCE_BOUND_AGENTS.has(agentId)) {
+    return { valid: true, reason: 'Evidence binding validated separately' };
+  }
+
   // 检查是否有前置产出物
   if (previousArtifacts && previousArtifacts.length > 0) {
     return { valid: true, reason: 'Has previous artifacts', artifacts: previousArtifacts.length };
@@ -9323,6 +9414,168 @@ function removeWaitingSession(taskId) {
 }
 
 // 调用OpenClaw Gateway生成Agent会话(Gateway API优先,CLI回退)
+// 执行证据持久化前的脱敏/裁剪：去掉凭证、base64 大图与超长字段
+const EVIDENCE_REDACT_KEY = /(pass(word)?|pwd|secret|token|authorization|cookie|api[_-]?key|credential)/i;
+function sanitizeEvidenceValue(value, depth = 0, seen = new WeakSet()) {
+  if (value == null) return value;
+  if (depth > 8) return '[depth-limit]';
+  if (typeof value === 'string') {
+    return value.length > 4000 ? `${value.slice(0, 4000)}... [truncated ${value.length}]` : value;
+  }
+  if (typeof value !== 'object') return value;
+  if (seen.has(value)) return '[circular]';
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.slice(0, 200).map((v) => sanitizeEvidenceValue(v, depth + 1, seen));
+  }
+  const out = {};
+  let count = 0;
+  for (const [k, v] of Object.entries(value)) {
+    if (count++ >= 120) break;
+    if (k === 'base64' || EVIDENCE_REDACT_KEY.test(k)) continue;
+    out[k] = sanitizeEvidenceValue(v, depth + 1, seen);
+  }
+  return out;
+}
+
+// ── 报告/缺陷分析的数据来源绑定 ──────────────────────────────────────────
+// 只有两类输入被接受：① 输入里直接包含结构化 UTRM/缺陷数据；② 引用一个带
+// 「执行证据.json」的真实任务。任何「请生成测试报告」式的空输入都会被拒绝。
+const EVIDENCE_BOUND_AGENTS = new Set(['test-reporter', 'defect-analyzer']);
+const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+function extractStructuredJson(text) {
+  const found = [];
+  const src = String(text || '');
+  for (const m of src.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    try { found.push(JSON.parse(m[1])); } catch (_) { /* ignore */ }
+  }
+  const first = src.indexOf('{');
+  const last = src.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    try { found.push(JSON.parse(src.slice(first, last + 1))); } catch (_) { /* ignore */ }
+  }
+  return found;
+}
+
+function hasReporterEvidence(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  const cases = Array.isArray(obj.testcases) ? obj.testcases
+    : Array.isArray(obj.results) ? obj.results
+    : Array.isArray(obj.cases) ? obj.cases : null;
+  if (cases && cases.length > 0) return true;
+  const s = obj.summary;
+  if (s && typeof s === 'object' && Number(s.total) > 0) return true;
+  return false;
+}
+
+function hasDefectEvidence(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  if (Array.isArray(obj.defects) && obj.defects.length > 0) return true;
+  if (Array.isArray(obj.failures) && obj.failures.length > 0) return true;
+  const cases = Array.isArray(obj.testcases) ? obj.testcases
+    : Array.isArray(obj.results) ? obj.results : [];
+  if (cases.some(c => c && c.status && String(c.status).toLowerCase() !== 'passed')) return true;
+  const s = obj.summary;
+  if (s && typeof s === 'object' && (Number(s.failed) > 0 || Number(s.errored) > 0)) return true;
+  return false;
+}
+
+function evidencePayloadHas(payload, predicate) {
+  const executions = Array.isArray(payload?.executions) ? payload.executions : [];
+  return executions.some((e) => predicate(e?.result) || predicate(e?.result?.result));
+}
+
+async function loadReferencedTaskEvidence(taskId, userId) {
+  let task = tasks.get(taskId);
+  if (!task) {
+    try { task = await taskDAO.getTaskById(taskId); } catch (_) { task = null; }
+  }
+  if (!task) return null;
+  if (userId && task.userId && String(task.userId) !== String(userId)) return null;
+
+  let files = [];
+  try { files = await taskDAO.getTaskOutputFiles(taskId); } catch (_) { /* ignore */ }
+  const evFile = files
+    .map(f => f.filePath || f.file_path || f)
+    .find(p => typeof p === 'string' && /执行证据\.json$/.test(p));
+  if (!evFile || !fsSync.existsSync(evFile)) return null;
+
+  try {
+    const payload = JSON.parse(fsSync.readFileSync(evFile, 'utf-8'));
+    return { task, payload, file: evFile };
+  } catch (e) {
+    console.warn(`[EvidenceBinding] 读取证据失败 ${evFile}: ${e.message}`);
+    return null;
+  }
+}
+
+async function validateEvidenceBinding(agentId, taskInput, userId) {
+  if (!EVIDENCE_BOUND_AGENTS.has(agentId)) return { valid: true };
+
+  const input = String(taskInput || '');
+  const predicate = agentId === 'test-reporter' ? hasReporterEvidence : hasDefectEvidence;
+  const direct = extractStructuredJson(input).find(predicate);
+  if (direct) return { valid: true, source: 'input-json' };
+
+  const ids = [...new Set((input.match(UUID_PATTERN) || []))];
+  for (const id of ids) {
+    const found = await loadReferencedTaskEvidence(id, userId);
+    if (!found) continue;
+    if (evidencePayloadHas(found.payload, predicate)) {
+      const evidenceText = JSON.stringify(found.payload, null, 2).slice(0, 60000);
+      return {
+        valid: true,
+        source: 'task-evidence',
+        taskId: id,
+        enrichedInput: `【引用任务 ${id} 的真实执行证据（系统自动注入，禁止修改/补造）】\n\`\`\`json\n${evidenceText}\n\`\`\`\n\n--- 用户任务 ---\n${input}`,
+      };
+    }
+  }
+
+  const need = agentId === 'test-reporter' ? '真实执行结果（UTRM/测试用例状态）' : '真实失败/缺陷数据';
+  return {
+    valid: false,
+    reason: `缺少${need}，已拒绝生成。请提供 UTRM JSON，或在输入中引用一个带「执行证据.json」的任务 ID。`,
+  };
+}
+
+// 设计/分析类智能体支持在输入里引用历史任务：自动把该任务的真实结果与证据注入提示词
+const TASK_REFERENCE_AGENTS = new Set([
+  'test-requirement-analyzer', 'test-scheme-generator', 'test-case-generator',
+  'test-data-generator', 'data-masking', 'test-reporter', 'defect-analyzer',
+]);
+
+async function enrichInputWithTaskReferences(agentId, taskInput, userId, currentTaskId) {
+  if (!TASK_REFERENCE_AGENTS.has(agentId)) return null;
+  const input = String(taskInput || '');
+  const ids = [...new Set((input.match(UUID_PATTERN) || []))].filter((id) => id !== currentTaskId);
+  if (!ids.length) return null;
+
+  const blocks = [];
+  for (const id of ids.slice(0, 2)) {
+    let task = tasks.get(id);
+    if (!task) {
+      try { task = await taskDAO.getTaskById(id); } catch (_) { task = null; }
+    }
+    if (!task) continue;
+    if (userId && task.userId && String(task.userId) !== String(userId)) continue;
+    if (!task.result) continue;
+
+    const resultText = String(task.result).slice(0, 20000);
+    let evidenceBrief = '';
+    const found = await loadReferencedTaskEvidence(id, userId).catch(() => null);
+    if (found) {
+      const execs = Array.isArray(found.payload?.executions) ? found.payload.executions : [];
+      evidenceBrief = execs.map((e) => `- 工具 ${e.skillId}: ${JSON.stringify(sanitizeEvidenceValue(e.result)).slice(0, 2500)}`).join('\n');
+    }
+    blocks.push(`## 任务 ${id}（智能体 ${task.agent}）\n${resultText}${evidenceBrief ? `\n\n### 执行证据摘要\n${evidenceBrief}` : ''}`);
+  }
+
+  if (!blocks.length) return null;
+  return `【引用任务结果（系统自动注入，仅作为真实输入，不要修改来源数据）】\n\n${blocks.join('\n\n')}\n\n--- 用户任务 ---\n${input}`;
+}
+
 async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, skipReview = false, previousArtifacts = [], userId = null, forceToolCall = false) {
   // 全局暴露，供 owasp-knowledge-generator.js 通过 globalThis.spawnAgentSession 调用
   globalThis.spawnAgentSession = spawnAgentSession;
@@ -9365,6 +9618,38 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
   }
 
   console.log(`[InputValidation] PASSED: Agent "${agentId}" 输入物校验通过 (${validation.reason})`);
+
+  // ========== 报告/缺陷：必须绑定真实执行数据 ==========
+  const evidenceUserId = userId || (taskId && tasks.get(taskId)?.userId) || null;
+  const evidenceBinding = await validateEvidenceBinding(agentId, taskInput, evidenceUserId);
+  if (!evidenceBinding.valid) {
+    console.error(`[EvidenceBinding] REJECTED: ${agentId} - ${evidenceBinding.reason}`);
+    broadcast({
+      type: 'agent_rejected',
+      agentId,
+      taskId,
+      reason: '缺少真实执行数据',
+      description: evidenceBinding.reason,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      success: false,
+      rejected: true,
+      error: evidenceBinding.reason,
+      skillExecutions: [],
+      validation: { valid: false, reason: evidenceBinding.reason },
+    };
+  }
+  if (evidenceBinding.enrichedInput) {
+    console.log(`[EvidenceBinding] ${agentId} 已注入任务 ${evidenceBinding.taskId} 的真实执行证据`);
+    taskInput = evidenceBinding.enrichedInput;
+  } else {
+    const referenced = await enrichInputWithTaskReferences(agentId, taskInput, evidenceUserId, taskId);
+    if (referenced) {
+      console.log(`[EvidenceBinding] ${agentId} 已注入引用任务结果`);
+      taskInput = referenced;
+    }
+  }
 
   // ========== 熔断器检查 ==========
   if (isAgentCircuitOpen(agentId)) {
@@ -9477,6 +9762,24 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
 
       // ── 多轮 tool 循环:让智能体"真正调用"可执行 skill / 调度子智能体 ──
       const tools = getAgentToolSchemas(agentId);
+      const requiredSkills = REQUIRED_SKILLS_BY_AGENT[agentId] || null;
+      const skillExecutions = [];
+
+      // reasoning 模型不支持 tool_choice=required，只能通过提示词纠偏一次：
+      // 若第一轮完全没调用工具，明确要求其调用，否则任务会被证据门禁拒绝。
+      if (tools.length > 0 && requiredSkills && toolCalls.length === 0) {
+        console.warn(`[EvidenceGate] ${agentId} 首轮未调用工具，发送一次强制纠偏`);
+        const nudge = `【系统校验】你上一轮没有调用任何真实执行工具。必须调用以下工具之一并完成真实执行：${requiredSkills.map(skillToolName).join('、')}。禁止只输出文字结果或声称已执行。`;
+        const nudgeMessages = conversationMessages
+          ? [...conversationMessages, { role: 'system', content: systemPrompt }, { role: 'user', content: taskInput }, { role: 'user', content: nudge }]
+          : [{ role: 'system', content: systemPrompt }, { role: 'user', content: taskInput }, { role: 'user', content: nudge }];
+        const nudged = await callOpenClawAPI(agentId, taskInput, unifiedStreamCallback, nudgeMessages, userId, true);
+        if (nudged) {
+          text = nudged.content || text;
+          toolCalls = nudged.toolCalls || [];
+        }
+      }
+
       if (tools.length > 0 && toolCalls.length > 0) {
         const MAX_TOOL_ITERS = 6;
         // 构建多轮消息:前置对话历史 + system + 当前 user 输入
@@ -9531,6 +9834,12 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                   // 直接传完整参数,让各 invoker 自行解析(通用化)
                   const out = await skillMod[exec.main](a);
                   toolResult = JSON.stringify(out);
+                  skillExecutions.push({
+                    skillId,
+                    at: new Date().toISOString(),
+                    args: sanitizeEvidenceValue(a),
+                    result: sanitizeEvidenceValue(out),
+                  });
                   try {
                     broadcast({ type: 'agent_skill_result', agentId, skillId, taskId, result: out, timestamp: new Date().toISOString() });
                   } catch (_) {}
@@ -9546,6 +9855,33 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
           text = (next && next.content) || '';
           toolCalls = (next && next.toolCalls) || [];
         }
+      }
+
+      // ── 执行证据门禁：必须至少成功执行一个必需工具 ──
+      if (requiredSkills) {
+        const executed = skillExecutions.filter((e) => {
+          if (!requiredSkills.includes(e.skillId)) return false;
+          const r = e.result;
+          return r && typeof r === 'object' && r.success !== false && !r.error;
+        });
+        if (!executed.length) {
+          console.error(`[EvidenceGate] ${agentId} 未执行必需工具: ${requiredSkills.join('/')}，拒绝完成`);
+          return {
+            success: false,
+            error: `未执行真实工具（需要 ${requiredSkills.join('/')}），已拒绝生成无依据结果。请检查模型是否调用了工具后重试。`,
+            skillExecutions,
+          };
+        }
+        console.log(`[EvidenceGate] ${agentId} 通过，已执行: ${executed.map((e) => e.skillId).join(',')}`);
+      }
+
+      // 防御：部分模型在无工具时会输出伪工具调用标记，不能当结果返回给用户
+      if (/<｜｜DSML｜｜|<\|tool_calls\|>/i.test(String(text || ''))) {
+        return {
+          success: false,
+          error: '智能体输出了未真正执行的伪工具调用标记，任务已拒绝。',
+          skillExecutions,
+        };
       }
 
       const duration = Date.now() - startTime;
@@ -9568,7 +9904,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
       // === 审核由 executeTaskWithReview 统一处理 ===
       // spawnAgentSession 中不再自动调用审核智能体,避免重复
       // 返回 usage 用于成本计算
-      const result = { success: true, text };
+      const result = { success: true, text, skillExecutions };
       if (resultFromAPI && resultFromAPI.usage) {
         result.usage = resultFromAPI.usage;
       }
@@ -9934,6 +10270,109 @@ const SKILL_EXECUTORS = {
     main: 'invoke',
     description: '结果聚合器:聚合多工具测试结果,生成统一报告(Markdown/HTML/JSON)。',
   },
+  // ── 设计与分析类可执行技能（此前只有 SKILL.md 提示，模型无法真正调用）──
+  'requirement-parser': {
+    modulePath: path.join(SKILLS_DIR, 'requirement-parser', 'backend', 'requirement-parser-invoker.js'),
+    main: 'invoke',
+    description: '需求解析器:从需求文本中确定性提取模块、功能点、验收标准、优先级与边界条件。',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '完整需求文本/用户故事/验收标准' },
+        options: { type: 'object', description: '解析选项（可选）' },
+      },
+      required: ['text'],
+    },
+  },
+  'test-strategy-designer': {
+    modulePath: path.join(SKILLS_DIR, 'test-strategy-designer', 'backend', 'test-strategy-invoker.js'),
+    main: 'invoke',
+    description: '测试策略设计器:根据需求与约束确定性生成测试模式、层级策略、里程碑、工具链与风险缓解。',
+    parameters: {
+      type: 'object',
+      properties: {
+        requirement: { type: 'string', description: '需求文本或需求摘要' },
+        constraints: {
+          type: 'object',
+          description: '约束 { timeBudget, budget, teamSize, techStack, excludeLevels, riskPreference }',
+        },
+      },
+      required: ['requirement'],
+    },
+  },
+  'test-data-generator-skill': {
+    modulePath: path.join(SKILLS_DIR, 'test-data-generator-skill', 'backend', 'test-data-generator-invoker.js'),
+    main: 'invoke',
+    description: '测试数据生成器:按字段规格生成真实测试数据，支持随机/边界值/组合（pairwise）三种模式。',
+    parameters: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['random', 'boundary', 'combinations'], description: '生成模式' },
+        spec: {
+          type: 'object',
+          description: '单字段规格 {field,type,min,max,minLength,maxLength,values}；多字段请用 fields',
+        },
+        fields: {
+          type: 'array',
+          items: { type: 'object' },
+          description: '多字段规格数组，每项 {field,type,min,max,minLength,maxLength,values}',
+        },
+        count: { type: 'number', description: '生成条数（默认 10，最大 200）' },
+        min: { type: 'number', description: 'boundary 模式下限' },
+        max: { type: 'number', description: 'boundary 模式上限' },
+        type: { type: 'string', description: 'boundary 模式类型 number/string/date' },
+        factors: { type: 'array', description: 'combinations 模式的因子数组' },
+        strategy: { type: 'string', description: '组合策略 all/pairwise/random' },
+      },
+    },
+  },
+  'defect-classifier': {
+    modulePath: path.join(SKILLS_DIR, 'defect-classifier', 'backend', 'defect-classifier-invoker.js'),
+    main: 'invoke',
+    description: '缺陷分类器:根据标题/描述/日志/堆栈确定性输出缺陷类型、严重度、优先级、模块与根因类别。',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '缺陷标题' },
+        description: { type: 'string', description: '缺陷描述' },
+        log: { type: 'string', description: '错误日志' },
+        stack: { type: 'string', description: '异常堆栈' },
+        environment: { type: 'object', description: '环境信息' },
+        severity: { type: 'string', description: '已知严重度 Blocker/Critical/Major/Minor/Cosmetic（可选）' },
+        reproductionDifficulty: { type: 'number', description: '复现难度 1-5（可选）' },
+        impactScope: { type: 'number', description: '影响范围 1-5（可选）' },
+      },
+    },
+  },
+  'failure-root-cause-analyzer': {
+    modulePath: path.join(SKILLS_DIR, 'failure-root-cause-analyzer', 'backend', 'rca-invoker.js'),
+    main: 'invoke',
+    description: '根因分析器:对失败现象/日志/堆栈做 5Why + 鱼骨图 + 因果链的确定性根因分析。',
+    parameters: {
+      type: 'object',
+      properties: {
+        failure: { type: 'string', description: '失败现象/缺陷描述' },
+        logs: { type: 'array', items: { type: 'string' }, description: '日志行数组' },
+        stackTrace: { type: 'array', items: { type: 'string' }, description: '堆栈行数组' },
+        environment: { type: 'object', description: '环境信息' },
+        mode: { type: 'string', enum: ['full', '5why', 'fishbone'], description: '分析模式，默认 full' },
+      },
+      required: ['failure'],
+    },
+  },
+  'data-masking-invoker': {
+    modulePath: path.join(SKILLS_DIR, 'data-masking-skill', 'backend', 'data-masking-invoker.js'),
+    main: 'invoke',
+    description: '数据脱敏执行器:对文本做确定性正则脱敏（手机号/身份证/邮箱/银行卡/姓名/口令/地址），对服务器内 docx/图片调用 mask_wrapper.py 真实脱敏。',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '待脱敏文本' },
+        filePath: { type: 'string', description: '服务器内待脱敏文件绝对路径（项目目录或临时目录内）' },
+        method: { type: 'string', enum: ['blur', 'block'], description: '图片脱敏方式，默认 blur' },
+      },
+    },
+  },
   // 性能测试:JMeter/k6 执行器
   'execute_perf_script': {
     modulePath: path.join(SKILLS_DIR, 'jmeter-executor', 'backend', 'jmeter-invoker.js'),
@@ -9966,9 +10405,27 @@ const AGENT_EXECUTABLE_SKILLS = {
   // V1.0 核心智能体:强制调用专业技能
   'test-case-generator': ['9dem-executor'],  // 用例生成必须走九维穷举
   'test-reporter': ['result-aggregator', 'quality-metrics-calculator'],  // 报告生成必须聚合+度量
+  'test-requirement-analyzer': ['requirement-parser'],
+  'test-scheme-generator': ['test-strategy-designer'],
+  'test-data-generator': ['test-data-generator-skill'],
+  'data-masking': ['data-masking-invoker'],
+  'defect-analyzer': ['defect-classifier', 'failure-root-cause-analyzer'],
   'ai-evaluation-agent': ['evaluation-system', 'quality-metrics-calculator'],  // 智能评估必须调用评估系统和质量度量
   'performance-tester': ['execute_perf_script'],  // 性能测试必须调用 JMeter/k6 执行器
   'compatibility-coordinator': ['compatibility-coordinator-invoker'],  // 兼容性协调器调度 web-compatibility 执行器
+};
+
+// 必须至少成功执行一个真实工具的智能体；否则任务失败，禁止用 LLM 文本冒充执行结果。
+const REQUIRED_SKILLS_BY_AGENT = {
+  'api-executor': ['api-direct-invoker', 'api-test-tool-invoker'],
+  'ui-e2e-executor': ['ui-direct-invoker', 'ui-test-tool-invoker', 'mobile-e2e-invoker', 'desktop-e2e-invoker'],
+  'test-case-generator': ['9dem-executor'],
+  'test-reporter': ['result-aggregator', 'quality-metrics-calculator'],
+  'test-requirement-analyzer': ['requirement-parser'],
+  'test-scheme-generator': ['test-strategy-designer'],
+  'test-data-generator': ['test-data-generator-skill'],
+  'data-masking': ['data-masking-invoker'],
+  'defect-analyzer': ['defect-classifier', 'failure-root-cause-analyzer'],
 };
 
 // 工具名:skill id 中连字符 -> 下划线(OpenAI tool 名规范)
@@ -10139,71 +10596,64 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
   // OpenClaw 鉴权头已移除,agent 直连 Deepseek 使用独立 deepseekHeaders 鉴权
   const AGENT_SKILLS_CONFIG = {
     'test-requirement-analyzer': {
-      autoInvoke: '接到需求分析任务时,调用context-manager Skill对长文档分层压缩;调用requirement-parser解析结构化需求;调用quality-metrics-definer为需求定义量化质量指标。',
+      autoInvoke: '接到需求分析任务时,必须调用 requirement_parser 工具对需求文本做结构化解析,再基于解析结果输出报告。不要声称调用未注册的 context-manager/quality-metrics-definer。',
       skillHints: {
-        'context-manager': 'qclaw-skills/context-manager/SKILL.md - 上下文管理Skill,L0-L4分层、压缩与智能淘汰。',
-        'requirement-parser': 'qclaw-skills/requirement-parser/SKILL.md - 需求解析Skill,通用短语/动词/命名实体提取与功能列表提取。',
-        'quality-metrics-definer': 'qclaw-skills/quality-metrics-definer/SKILL.md - 质量指标定义Skill,按模块推荐覆盖率/缺陷密度/通过率。'
+        'requirement-parser': 'requirement_parser - 可执行工具，输入 text，返回 modules/functionalPoints/acceptanceCriteria/priority/edgeCases。'
       }
     },
     'test-scheme-generator': {
-      autoInvoke: '接到方案生成任务时,调用test-strategy-designer Skill从需求特征自动推荐测试策略。',
+      autoInvoke: '接到方案生成任务时,必须调用 test_strategy_designer 工具生成测试策略、层级、里程碑、工具链与风险缓解。',
       skillHints: {
-        'test-strategy-designer': 'qclaw-skills/test-strategy-designer/SKILL.md - 测试策略设计Skill,基于需求特征自动推荐策略与评估方法。'
+        'test-strategy-designer': 'test_strategy_designer - 可执行工具，输入 requirement 与 constraints。'
       }
     },
     'test-case-generator': {
-      autoInvoke: '接到用例生成任务时,必须先调用9dem-executor Skill获取专业方法;调用9dem-planner规划覆盖策略;长文档调用context-manager压缩。',
+      autoInvoke: '接到用例生成任务时,必须先调用 9dem_executor 工具获取九维穷举方法/覆盖组合,再输出用例。',
       skillHints: {
-        '9dem-executor': 'qclaw-skills/9dem-executor/SKILL.md - 九维穷举模型执行器,基于用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性九维,提供等价类划分、边界值分析、状态迁移、决策表等专业测试设计方法。',
-        '9dem-planner': 'qclaw-skills/9dem-planner/SKILL.md - 九维规划Skill,按N-wise/正交/全对偶规划九维最优覆盖组合。',
-        'context-manager': 'qclaw-skills/context-manager/SKILL.md - 上下文管理Skill,处理长需求/大量数据时分层的压缩与淘汰。'
+        '9dem-executor': '9dem_executor - 可执行工具，返回九维等价类/边界值/组合覆盖结果。'
       }
     },
     'test-data-generator': {
-      autoInvoke: '接到数据生成任务时,优先调用test-data-generator-skill反向生成测试数据;涉及敏感数据时调用data-masking脱敏;参考9dem-executor数据维度。',
+      autoInvoke: '接到数据生成任务时,必须调用 test_data_generator_skill 生成真实数据（random/boundary/combinations）；脱敏场景调用 data_masking_invoker。',
       skillHints: {
-        '9dem-executor': 'qclaw-skills/9dem-executor/SKILL.md - 九维穷举模型执行器的数据维度模块(等价类/边界值/Pairwise)。',
-        'data-masking': 'qclaw-skills/data-masking/SKILL.md - 数据脱敏Skill,对敏感字段做识别与脱敏替换。',
-        'test-data-generator-skill': 'qclaw-skills/test-data-generator-skill/SKILL.md - 测试数据生成Skill,边界值/手机号/邮箱/身份证/银行卡等自动生成。'
+        'test-data-generator-skill': 'test_data_generator_skill - 可执行工具，输入 spec/count/mode。',
+        'data-masking-invoker': 'data_masking_invoker - 可执行工具，对文本或文件做确定性脱敏。'
       }
     },
     'data-masking': {
-      autoInvoke: '接到脱敏任务时,调用data-masking Skill识别敏感字段并执行脱敏替换,保留业务有效性。',
+      autoInvoke: '接到脱敏任务时,必须调用 data_masking_invoker 执行确定性脱敏，并使用其返回的 maskedText/records；不得自行编造脱敏结果。',
       skillHints: {
-        'data-masking': 'qclaw-skills/data-masking/SKILL.md - 数据脱敏Skill,提供多格式(文档/图片/结构化)脱敏能力。'
+        'data-masking-invoker': 'data_masking_invoker - 可执行工具，输入 text 或 filePath。'
       }
     },
     'api-executor': {
-      autoInvoke: '接到接口测试任务时,先判断输入是「测试脚本文档」还是「测试用例文档」:若为可执行的脚本(Postman JSON/pytest/RestAssured等)直接调用api-test-tool-invoker执行;若为测试用例文档(自然语言用例)则先调用sessions_spawn(test-script-generator)把用例转成脚本,再把脚本路径传给api-test-tool-invoker执行;测试地址与账号写入env参数。调用result-aggregator的PostmanAdapter聚合结果。',
+      autoInvoke: '接到接口测试任务时,优先调用 api_direct_invoker 直接发真实 HTTP 请求并断言；只有用户明确要求生成可复用脚本资产时才调用 sessions_spawn。测试地址与账号写入 baseUrl/headers/auth。',
       skillHints: {
-        'api-test-tool-invoker': 'qclaw-skills/api-test-tool-invoker/SKILL.md - API测试工具调用Skill,封装Newman/RestAssured/pytest。',
-        'result-aggregator': 'qclaw-skills/result-aggregator/SKILL.md - 结果聚合Skill,PostmanAdapter统一UTRM格式。'
+        'api-direct-invoker': 'api_direct_invoker - 可执行工具，输入 baseUrl/cases/headers/auth。',
+        'api-test-tool-invoker': 'api_test_tool_invoker - 可执行工具，执行现成 Newman/pytest/RestAssured 脚本。'
       }
     },
     'ui-e2e-executor': {
-      autoInvoke: '接到UI/E2E测试任务时,先判断输入是「测试脚本文档」还是「测试用例文档」:若为可执行的脚本(Playwright/Selenium/Cypress/Postman等)直接调用ui-test-tool-invoker或mobile-e2e-invoker执行;若为测试用例文档(自然语言用例)则先调用sessions_spawn(test-script-generator)把用例转成脚本,再把脚本路径传给对应invoker执行;测试地址与账号写入env参数。Web→ui-test-tool-invoker/Playwright;移动端→mobile-e2e-invoker/Appium+uiautomator2/XCUITest/HDC;定位失败时调用self-healing自愈合。',
+      autoInvoke: '接到UI/E2E测试任务时,优先调用 ui_direct_invoker 用 Playwright 真实驱动浏览器；移动端用 mobile_e2e_invoker；只有用户明确要求脚本资产时才调用 sessions_spawn。',
       skillHints: {
-        'ui-test-tool-invoker': 'qclaw-skills/ui-test-tool-invoker/SKILL.md - Web UI测试Skill,封装Playwright/Selenium/Cypress。',
-        'mobile-e2e-invoker': 'qclaw-skills/ui-e2e-executor/backend/mobile-e2e-invoker.js - 移动端E2E Skill,支持Android(Appium+uiautomator2)/iOS(XCUITest)/HarmonyOS(HDC)。',
-        'result-aggregator': 'qclaw-skills/result-aggregator/SKILL.md - 结果聚合Skill,统一UTRM格式。',
-        'self-healing': 'qclaw-skills/self-healing/SKILL.md - 自愈合Skill,元素定位失败时尝试替代定位策略。'
+        'ui-direct-invoker': 'ui_direct_invoker - 可执行工具，输入 baseUrl/steps/cases/browser。',
+        'ui-test-tool-invoker': 'ui_test_tool_invoker - 可执行工具，执行现成 Playwright/Selenium/Cypress 脚本。',
+        'mobile-e2e-invoker': 'mobile_e2e_invoker - 可执行工具，Appium 驱动 Android/iOS/HarmonyOS。',
+        'desktop-e2e-invoker': 'desktop_e2e_invoker - 可执行工具，驱动 Windows/macOS 桌面应用。'
       }
     },
     'defect-analyzer': {
-      autoInvoke: '接到缺陷分析任务时,先调用defect-classifier分类缺陷严重度;调用failure-root-cause-analyzer自动化根因分析;再调用defect-knowledge-queryer查询历史相似缺陷。',
+      autoInvoke: '接到缺陷分析任务时,必须调用 defect_classifier 做确定性分类,并调用 failure_root_cause_analyzer 做 5Why/鱼骨图根因分析；最终报告必须引用工具返回的字段。',
       skillHints: {
-        'defect-classifier': 'qclaw-skills/defect-classifier/SKILL.md - 缺陷分类Skill,按严重度/类型/模块自动分类。',
-        'failure-root-cause-analyzer': 'qclaw-skills/failure-root-cause-analyzer/SKILL.md - 根因分析Skill,5W1H+鱼骨图多维度根因分析。',
-        'defect-knowledge-queryer': 'qclaw-skills/defect-knowledge-queryer/SKILL.md - 缺陷知识库查询Skill,匹配相似缺陷、提取根因模式。'
+        'defect-classifier': 'defect_classifier - 可执行工具，输入 title/description/log/stack。',
+        'failure-root-cause-analyzer': 'failure_root_cause_analyzer - 可执行工具，输入 failure/logs/stackTrace。'
       }
     },
     'test-reporter': {
-      autoInvoke: '接到报告生成任务时,先调用result-aggregator聚合多工具结果,再调用quality-metrics-calculator计算质量指标,最后调用unified-report-generator生成多格式统一报告。',
+      autoInvoke: '接到报告生成任务时,必须调用 result_aggregator 聚合真实 UTRM 结果,并调用 quality_metrics_calculator 计算指标；缺失数据必须标注“未提供”，不得编造。',
       skillHints: {
-        'result-aggregator': 'qclaw-skills/result-aggregator/SKILL.md - 结果聚合Skill,UTRM统一格式跨工具关联。',
-        'quality-metrics-calculator': 'qclaw-skills/quality-metrics-calculator/SKILL.md - 质量度量计算Skill,计算用例/执行/覆盖/缺陷质量分。',
-        'unified-report-generator': 'qclaw-skills/unified-report-generator/SKILL.md - 统一报告生成Skill,Markdown/HTML/Excel多格式输出。'
+        'result-aggregator': 'result_aggregator - 可执行工具，输入 UTRM results。',
+        'quality-metrics-calculator': 'quality_metrics_calculator - 可执行工具，输入 results/coverageData/defectData。'
       }
     },
     'ai-evaluation-agent': {
@@ -10247,7 +10697,7 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
     for (const [skillName, hint] of Object.entries(skillsConfig.skillHints)) {
       skillsPrompt += `- ${skillName}:${hint}\n`;
     }
-    skillsPrompt += '\n重要:接到任务后,先识别需要使用的Skills,读取对应SKILL.md获取专业指引,然后按指引执行。不要跳过Skill直接凭经验回答--Skills提供的专业方法论能显著提升输出质量。';
+    skillsPrompt += '\n重要:接到任务后,优先调用系统提供的可执行工具获取真实数据/结果。只有上面列出的可执行工具才能调用;没有注册为工具的 Skill,禁止声称已调用或读取其 SKILL.md,也不要输出未执行的伪工具调用标记。工具执行失败时如实报告错误。';
   }
 
   const systemPrompt = basePrompt + skillsPrompt;
@@ -10687,8 +11137,16 @@ async function executeTaskWithReview(task, userId = null) {
       console.log(`[TaskWithReview] Task ${task.id} passed review: scores=${scores}`);
 
       // ========== 保存交付物 ==========
-      const { deliverables, hasMultiple } = extractDeliverables(task.result || '');
+      let { deliverables, hasMultiple } = extractDeliverables(task.result || '');
       let savedFiles = [];
+
+      // 执行/分析类智能体：主交付件应是完整的 Markdown 报告，
+      // 不能把报告里的响应体 JSON 代码块误当成唯一交付物（否则用户只能下载一个 .json）。
+      const markdownPrimaryAgents = new Set(['api-executor', 'ui-e2e-executor', 'test-reporter', 'defect-analyzer', 'data-masking']);
+      if (markdownPrimaryAgents.has(task.agent) && /(^|\n)#{1,3}\s+\S/.test(task.result || '')) {
+        deliverables = [{ format: 'md', content: task.result, fileName: 'output.md', deliverableName: 'output' }];
+        hasMultiple = false;
+      }
 
       if (hasMultiple && deliverables.length > 1) {
         // 多个交付物
@@ -10715,6 +11173,13 @@ async function executeTaskWithReview(task, userId = null) {
           downloadUrl: `/api/tasks/${task.id}/artifacts/artifact-${i}/download`,
           createdAt: new Date().toISOString()
         }));
+      }
+
+      // 把真实执行证据（UTRM JSON/截图/脱敏文件）挂到交付件，供用户审计
+      try {
+        await attachExecutionEvidence(task);
+      } catch (e) {
+        console.error(`[Evidence] 挂载执行证据失败 task=${task.id}: ${e.message}`);
       }
 
       broadcast({
@@ -10779,6 +11244,12 @@ async function executeTaskWithReview(task, userId = null) {
           createdAt: new Date().toISOString()
         }));
         console.log(`[TaskWithReview] Saved ${failFiles.length} deliverable file(s) despite review failure for task ${task.id}`);
+      }
+
+      try {
+        await attachExecutionEvidence(task);
+      } catch (e) {
+        console.error(`[Evidence] 失败任务挂载执行证据失败 task=${task.id}: ${e.message}`);
       }
 
       broadcast({
@@ -11129,6 +11600,7 @@ function extractDeliverable(agentResponse) {
 // 智能体ID到交付件名称的映射
 const AGENT_DELIVERABLE_NAMES = {
   'test-requirement-analyzer': '需求分析报告',
+  'test-scheme-generator': '测试方案',
   'test-case-generator': '测试用例',
   'test-plan-generator': '测试方案',
   'test-script-generator': '测试脚本',
@@ -11139,7 +11611,11 @@ const AGENT_DELIVERABLE_NAMES = {
   'ai-quality-reviewer-3': 'AI质量审核报告',
   'test-data-generator': '测试数据',
   'test-environment-configurator': '环境配置',
-  'test-master': '测试主报告'
+  'test-master': '测试主报告',
+  'api-executor': '接口测试执行报告',
+  'ui-e2e-executor': 'UI_E2E测试执行报告',
+  'defect-analyzer': '缺陷分析报告',
+  'data-masking': '数据脱敏记录'
 };
 
 // 交付件格式→标准文件扩展名映射(避免 .python/.bash/.javascript 等非标准后缀)
@@ -11186,9 +11662,8 @@ function extractProjectInfo(content) {
   // 2. 提取需求名称(如果没有版本号)
   if (!result.versionOrFeature) {
     const featurePatterns = [
-      /需求[名称]*[::]*\s*([^\n\r,,]{2,30})/,   // 需求名称:xxx(不包含逗号)
+      /(?:^|\n)\s*需求[名称]*\s*[:：]\s*([^\n,，]{2,30})/, // 需求名称:xxx（必须带标签，避免从表格中截取片段）
       /【([^】]{2,30})需求】/,                     // 【xxx需求】
-      /(([\u4e00-\u9fa5]{2,20})需求)/,            // xxx需求
     ];
 
     for (const pattern of featurePatterns) {
@@ -11206,7 +11681,7 @@ function extractProjectInfo(content) {
 
   // 3. 提取项目名称(排除版本号和需求名称部分)
   const projectPatterns = [
-    /项目[名称]*[::]*\s*([^\n\r,,]{2,20}?)(?:,|,|\s*版本|\s*需求|\s*V\d+)/,  // 项目名称:xxx(截断到逗号/版本/需求)
+    /项目(?:名称)?\s*[:：]\s*([^\n\r,，]{2,20}?)(?:,|，|\s*版本|\s*需求|\s*V\d+)/,  // 项目名称:xxx（必须带冒号）
     /项目[名称]*[::]*\s*【([^】]+)】/,          // 项目名称:【xxx】
     /【([^】]{2,20})】[^】]*项目/,               // 【xxx】...项目
     /项目[名称]*[::]*\s*\*\*([^*]+)\*\*/,      // 项目名称:**xxx**
@@ -11214,11 +11689,16 @@ function extractProjectInfo(content) {
     /(([\u4e00-\u9fa5]{2,10})活动)/,           // xxx活动
   ];
 
-  for (const pattern of projectPatterns) {
+  for (let pi = 0; pi < projectPatterns.length; pi++) {
+    const pattern = projectPatterns[pi];
     const match = content.match(pattern);
     if (match) {
       const name = match[1] || match[0];
       let cleanName = name.replace(/[【】\[\]*_\s]/g, '').trim();
+
+      // 排除通用词（如「操作系统」「测试系统」「业务平台」），避免把报告里的环境描述当项目名
+      const GENERIC_PREFIX = new Set(['操作', '测试', '被测', '业务', '应用', '管理', '数据', '文件', '安全', '质量', '监控', '告警', '目标', '当前', '本']);
+      if (pi === 4 && GENERIC_PREFIX.has(cleanName)) continue;
 
       // 排除包含版本号的情况
       if (cleanName.includes('版本') || /V\d+\.\d+/.test(cleanName)) {
@@ -11840,6 +12320,7 @@ async function executeTaskAsync(task) {
 
   // 更新状态为运行中
   task.status = 'running';
+  task.skillExecutions = [];
   task.updatedAt = new Date().toISOString();
   agentStatus.set(task.agent, 'busy');
   // 【Bug修复】必须同步更新 MySQL updated_at,否则 cleanup 查询
@@ -11895,6 +12376,8 @@ async function executeTaskAsync(task) {
     if (result && result.success !== false) {
       task.status = 'completed';
       task.result = result.text || result.data || (typeof result === 'string' ? result : JSON.stringify(result));
+      // 保存真实执行证据（技能输出），供审核前校验与交付件落盘
+      task.skillExecutions = Array.isArray(result.skillExecutions) ? result.skillExecutions : [];
 
       // ========== 成本计算 ==========
       try {
@@ -11988,6 +12471,10 @@ async function executeTaskAsync(task) {
             const followUpResult = await spawnAgentSession(task.agent, followUpInput, task.id, null, true);
             if (followUpResult && followUpResult.success !== false) {
               task.result = followUpResult.text || followUpResult.data || (typeof followUpResult === 'string' ? followUpResult : JSON.stringify(followUpResult));
+              task.skillExecutions = [
+                ...(task.skillExecutions || []),
+                ...(Array.isArray(followUpResult.skillExecutions) ? followUpResult.skillExecutions : []),
+              ];
             }
           } catch (err) {
             console.log(`[Task] Follow-up agent call failed: ${err.message}`);
@@ -11998,11 +12485,11 @@ async function executeTaskAsync(task) {
       console.log(`[Task] Task ${task.id} completed, result length: ${typeof task.result === 'string' ? task.result.length : 'N/A'}`);
     } else {
       // Bug修复:失败不应标记 completed,应为 failed
+      // 安全整改:不再生成 mock 测试数据（mock 的 passed/failed 数字会被误当成真实结果）
       task.status = 'failed';
-      const mock = generateMockResult(task);
-      task.result = typeof mock === 'string' ? mock : JSON.stringify(mock, null, 2);
-      task.fallback = true;
       task.error = result?.error || 'Agent execution failed';
+      task.result = `❌ 任务执行失败：${task.error}\n\n未生成任何测试结果或报告。请检查输入、工具可用性与智能体配置后重试。`;
+      task.fallback = false;
       console.log(`[Task] Task ${task.id} failed: ${task.error}`);
     }
 
@@ -12027,11 +12514,11 @@ async function executeTaskAsync(task) {
     });
 
     // Bug修复:出错不应标记 completed,应为 failed + 持久化
+    // 安全整改:不再生成 mock 测试数据
     task.status = 'failed';
-    const mockErr = generateMockResult(task);
-    task.result = typeof mockErr === 'string' ? mockErr : JSON.stringify(mockErr, null, 2);
+    task.result = `❌ 任务执行失败：${error.message}\n\n未生成任何测试结果或报告。请检查输入、工具可用性与智能体配置后重试。`;
     task.error = error.message;
-    task.fallback = true;
+    task.fallback = false;
     task.updatedAt = new Date().toISOString();
     agentStatus.set(task.agent, 'idle');
     
@@ -12127,54 +12614,6 @@ async function executeWorkflowAsync(workflow) {
     type: 'workflow_completed',
     workflow
   });
-}
-
-function generateMockResult(task) {
-  const mockResults = {
-    'requirement-analysis': {
-      testPoints: ['登录功能', '权限验证', '数据校验'],
-      coverage: '95%'
-    },
-    'test-case-design': {
-      caseCount: 25,
-      passRate: '预估90%'
-    },
-    'test-data-preparation': {
-      dataCount: 100,
-      types: ['正常数据', '边界数据', '异常数据']
-    },
-    'data-masking': {
-      maskedFields: ['手机号', '身份证', '银行卡'],
-      recordCount: 1000
-    },
-    'api-test': {
-      total: 20,
-      passed: 18,
-      failed: 2
-    },
-    'ui-e2e-test': {
-      totalScenarios: 15,
-      passed: 13,
-      failed: 2
-    },
-    'defect-analysis': {
-      totalDefects: 4,
-      severity: { P0: 1, P1: 2, P2: 1 }
-    },
-    'report-generation': {
-      reportPath: '/reports/test-report-2026-05-09.md',
-      sections: 7
-    },
-    'auto-workflow': {
-      message: '全自动工作流步骤执行完成',
-      timestamp: new Date().toISOString()
-    }
-  };
-
-  return mockResults[task.type] || {
-    message: '任务执行完成',
-    timestamp: new Date().toISOString()
-  };
 }
 
 // ============================================================================

@@ -85,18 +85,45 @@ const isVoiceActive = ref(false)
 const previewVisible = ref(false)
 const previewArtifact = ref<any>(null)
 const previewRenderedContent = ref('')
+const previewObjectUrl = ref('')
+
+function revokePreviewObjectUrl() {
+  if (previewObjectUrl.value) {
+    URL.revokeObjectURL(previewObjectUrl.value)
+    previewObjectUrl.value = ''
+  }
+}
 
 async function openPreview(artifact: any) {
   previewArtifact.value = artifact
-  
+  revokePreviewObjectUrl()
+
   const fname = (artifact.name || '').toLowerCase()
+  const _token_ = localStorage.getItem('token')
+  const authHeaders: Record<string, string> = _token_ ? { Authorization: `Bearer ${_token_}` } : {}
+
+  // 截图等图片证据：拉取 blob 后内联展示（<img> 无法携带 Authorization）
+  const previewableImages = ['.png', '.jpg', '.jpeg', '.webp', '.gif']
+  if (previewableImages.some(ext => fname.endsWith(ext)) && artifact.downloadUrl) {
+    try {
+      const response = await fetch(artifact.downloadUrl, { headers: authHeaders })
+      if (!response.ok) throw new Error(`加载失败(${response.status})`)
+      const blob = await response.blob()
+      previewObjectUrl.value = URL.createObjectURL(blob)
+      previewRenderedContent.value = `<div style="text-align:center;"><img src="${previewObjectUrl.value}" style="max-width:100%;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.12);" /></div>`
+    } catch (err: any) {
+      previewRenderedContent.value = `<p style="color:#f56c6c;text-align:center;">预览失败：${escapeHtml(err?.message || String(err))}</p>`
+    }
+    previewVisible.value = true
+    return
+  }
+
   // 支持在线预览的二进制格式(docx/xlsx -> HTML),走后端预览接口
   const previewableBin = ['.docx', '.xlsx']
   if (previewableBin.some(ext => fname.endsWith(ext)) && artifact.downloadUrl) {
     try {
-      const _token_ = localStorage.getItem('token')
       const previewUrl = artifact.downloadUrl.replace(/\/download$/, '/preview')
-      const response = await fetch(previewUrl, { headers: _token_ ? { 'Authorization': `Bearer ${_token_}` } : {} })
+      const response = await fetch(previewUrl, { headers: authHeaders })
       if (!response.ok) throw new Error(`预览生成失败(${response.status})`)
       // 后端 pandoc/mammoth 转换出的 HTML 同样可能带脚本,统一清洗
       previewRenderedContent.value = sanitizeHtml(await response.text())
@@ -301,8 +328,15 @@ function formatTime(iso: string) {
 /**
  * 简易 Markdown 渲染：代码块带复制按钮，标题加粗，列表缩进
  */
+// Markdown 渲染缓存：流式更新会高频触发整列表重渲染，历史消息内容不变却会被反复
+// 解析/清洗（marked + DOMPurify），长报告叠加时直接卡死主线程。按内容缓存后只解析一次。
+const markdownRenderCache = new Map<string, string>()
+const MAX_MARKDOWN_CACHE = 30
+
 function renderContent(text: string): string {
   if (!text) return ''
+  const cached = markdownRenderCache.get(text)
+  if (cached !== undefined) return cached
   let html = escapeHtml(text)
   // 代码块：```lang\ncode```
   html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m: string, lang: string, code: string) => {
@@ -326,7 +360,10 @@ function renderContent(text: string): string {
   // 连续 li 包装
   html = html.replace(/((?:<li>[\s\S]*?<\/li>\n?)+)/g, '<ul class="md-list">$1</ul>')
   // 输入已整体转义,这里再走一次白名单清洗,双保险
-  return sanitizeHtml(html)
+  const result = sanitizeHtml(html)
+  if (markdownRenderCache.size >= MAX_MARKDOWN_CACHE) markdownRenderCache.clear()
+  markdownRenderCache.set(text, result)
+  return result
 }
 
 /**
@@ -678,7 +715,9 @@ onMounted(() => { scrollToBottom() })
             </div>
 
             <!-- 智能体输出内容 -->
-            <div v-if="msg.content" class="message-text" v-html="renderContent(msg.content)"></div>
+            <!-- 流式阶段只做纯文本渲染，避免每个 token 都对不断增长的长报告做 Markdown 解析/清洗 -->
+            <div v-if="msg.content && msg.isStreaming" class="message-text streaming-text">{{ msg.content }}</div>
+            <div v-else-if="msg.content" class="message-text" v-html="renderContent(msg.content)"></div>
 
             <!-- 输出物列表 -->
             <div v-if="msg.artifacts && msg.artifacts.length > 0" class="artifacts-section">
@@ -810,6 +849,7 @@ onMounted(() => { scrollToBottom() })
     width="800px"
     :destroy-on-close="true"
     class="artifact-preview-dialog"
+    @closed="revokePreviewObjectUrl"
   >
     <div class="preview-meta" v-if="previewArtifact">
       <el-tag size="small" type="info">{{ previewArtifact.type?.toUpperCase() }}</el-tag>

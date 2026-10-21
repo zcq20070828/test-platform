@@ -930,6 +930,7 @@ async function runCase(rawCase, ctx, browserCtx, index) {
         detail: r.detail,
         error: r.error,
         locate: caseCtx.lastLocate || undefined,
+        screenshot: r.screenshot || undefined,
       });
       caseCtx.lastLocate = null;
       if (!r.ok) {
