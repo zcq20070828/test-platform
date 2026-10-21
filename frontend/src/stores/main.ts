@@ -1688,65 +1688,40 @@ export const useMainStore = defineStore('main', () => {
           // 兼容两种字段名：后端发 content/chunkText，前端期望 chunkType/chunkText
           const chunkType = data.chunkType || 'content'
           const chunkText = data.chunkText || data.content || ''
-          if (chunkType === 'thinking') {
-            // 追加到最后一个 thinking step 或创建新的
-            if (target.thinking && target.thinking.length > 0) {
-              const lastStep = target.thinking[target.thinking.length - 1]
-              if (lastStep && lastStep.type === 'thinking') {
-                lastStep.content += chunkText
-              } else {
-                target.thinking.push({
-                  id: `think-${Date.now()}`,
-                  type: 'thinking',
-                  content: chunkText,
-                  timestamp: new Date().toISOString()
-                })
-              }
-            } else {
-              target.thinking = [{
-                id: `think-${Date.now()}`,
-                type: 'thinking',
-                content: chunkText,
-                timestamp: new Date().toISOString()
-              }]
-            }
-          } else if (chunkType === 'tool_call') {
-            // 尝试解析 JSON 格式的工具调用
+          if (chunkType === 'tool_call') {
+            // 工具调用前先落盘已缓冲的 thinking/content，保证顺序
+            flushStreamBuffer(target.id)
+            // 后端每个 delta 都会回传「截至当前的完整 arguments」；这里必须【替换】而不是追加，
+            // 否则一次 5KB 的工具调用会产生 MB 级文本（平方级增长），直接卡死渲染。
             try {
               const toolInfo = JSON.parse(chunkText)
               if (!target.thinking) target.thinking = []
-              // 智能合并：查找同名的最后一个 tool_call 进行内容合并，避免重复
               const toolName = toolInfo.name || toolInfo.tool || 'unknown'
+              const argsText = typeof toolInfo.arguments === 'string'
+                ? toolInfo.arguments
+                : JSON.stringify(toolInfo.arguments ?? toolInfo, null, 2)
+              const displayArgs = argsText.length > 8000
+                ? `${argsText.slice(0, 8000)}\n…（参数过长，已截断 ${argsText.length} 字符）`
+                : argsText
               const lastToolStep = [...target.thinking].reverse().find(s => s.type === 'tool_call' && s.toolName === toolName)
               if (lastToolStep) {
-                // 追加参数（流式累积）
-                try {
-                  const merged = JSON.parse(lastToolStep.content)
-                  const incoming = toolInfo.arguments || toolInfo
-                  if (typeof incoming === 'string') {
-                    // 正在流式累积 JSON 字符串片段，直接拼接
-                    lastToolStep.content = lastToolStep.content.replace(/\s*$/, '') + (typeof incoming === 'string' ? incoming : JSON.stringify(incoming, null, 2))
-                  } else {
-                    Object.assign(merged, incoming)
-                    lastToolStep.content = JSON.stringify(merged, null, 2)
-                  }
-                } catch {
-                  lastToolStep.content += chunkText
-                }
+                lastToolStep.content = displayArgs
               } else {
                 target.thinking.push({
                   id: `tool-${Date.now()}`,
                   type: 'tool_call',
-                  content: JSON.stringify(toolInfo.arguments || toolInfo, null, 2),
+                  content: displayArgs,
                   timestamp: new Date().toISOString(),
                   toolName
                 })
               }
             } catch {
-              target.content += chunkText
+              scheduleStreamUpdate(target.id, 'content', chunkText, data.fullContent)
             }
+          } else if (chunkType === 'thinking') {
+            scheduleStreamUpdate(target.id, 'thinking', chunkText)
           } else {
-            target.content += chunkText
+            scheduleStreamUpdate(target.id, 'content', chunkText, data.fullContent)
           }
         }
         return
@@ -1761,6 +1736,8 @@ export const useMainStore = defineStore('main', () => {
             if (candidates.length > 0) target = candidates[candidates.length - 1]
           }
           if (target) {
+            // 先应用节流缓冲，避免最后 150ms 的 thinking/content 丢失
+            flushStreamBuffer(target.id)
             target.isStreaming = false
             // 如果有完整内容，覆盖（确保最终结果一致）
             // 兼容两种字段名
@@ -1848,6 +1825,76 @@ export const useMainStore = defineStore('main', () => {
 
   // 所有任务的聊天消息
   const workflowMessages = ref<ChatMessage[]>([])
+
+  // ==================== 流式更新节流 ====================
+  // 后端按 token 推送 chunk；若每个 token 都触发 Vue 更新，长报告+思考过程会把主线程拖死
+  // （实测 13KB 需求文档任务在流式 5-10 秒后页面无响应）。
+  // 这里把 thinking/content 合并到 150ms 一次刷新；tool_call 仍即时处理。
+  const STREAM_FLUSH_MS = 150
+  const streamUpdateBuffers = new Map<string, {
+    thinking: string
+    content: string
+    contentMode: 'full' | 'delta' | null
+    timer: ReturnType<typeof setTimeout> | null
+  }>()
+
+  function appendThinkingText(target: any, text: string) {
+    if (!text) return
+    if (target.thinking && target.thinking.length > 0) {
+      const last = target.thinking[target.thinking.length - 1]
+      if (last && last.type === 'thinking') {
+        last.content += text
+      } else {
+        target.thinking.push({
+          id: `think-${Date.now()}`,
+          type: 'thinking',
+          content: text,
+          timestamp: new Date().toISOString()
+        })
+      }
+    } else {
+      target.thinking = [{
+        id: `think-${Date.now()}`,
+        type: 'thinking',
+        content: text,
+        timestamp: new Date().toISOString()
+      }]
+    }
+  }
+
+  function flushStreamBuffer(key: string) {
+    const buf = streamUpdateBuffers.get(key)
+    if (!buf) return
+    if (buf.timer) clearTimeout(buf.timer)
+    streamUpdateBuffers.delete(key)
+    const target = messages.value.find(m => m.id === key)
+      || workflowMessages.value.find(m => m.id === key)
+    if (!target) return
+    if (buf.thinking) appendThinkingText(target, buf.thinking)
+    if (buf.content) {
+      if (buf.contentMode === 'full') target.content = buf.content
+      else target.content = (target.content || '') + buf.content
+    }
+  }
+
+  function scheduleStreamUpdate(key: string, chunkType: string, chunkText: string, fullContent?: string) {
+    let buf = streamUpdateBuffers.get(key)
+    if (!buf) {
+      buf = { thinking: '', content: '', contentMode: null, timer: null }
+      streamUpdateBuffers.set(key, buf)
+    }
+    if (chunkType === 'thinking') {
+      buf.thinking += chunkText
+    } else if (typeof fullContent === 'string') {
+      buf.content = fullContent
+      buf.contentMode = 'full'
+    } else {
+      buf.content += chunkText
+      buf.contentMode = 'delta'
+    }
+    if (buf.timer) return
+    buf.timer = setTimeout(() => flushStreamBuffer(key), STREAM_FLUSH_MS)
+  }
 
   // 重构后：store 自动持久化 workflowMessages（防抖 500ms）
   let _wfPersistTimer: ReturnType<typeof setTimeout> | null = null

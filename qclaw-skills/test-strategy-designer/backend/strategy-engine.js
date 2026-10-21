@@ -441,7 +441,7 @@ function generateId(prefix = 'ID') {
 // ============================================================
 // 自测入口
 // ============================================================
-if (import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}`) {
+if (process.argv[1] && import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}`) {
   console.log('=== strategy-engine 自测 ===\n');
 
   const req = '用户登录系统，包含表单校验、第三方OAuth集成、数据库查询、支付接口调用，需在7天内完成';
