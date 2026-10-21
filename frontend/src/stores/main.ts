@@ -617,9 +617,15 @@ export const useMainStore = defineStore('main', () => {
   }
 
   // 创建任务
+  // 执行证据 JSON 仅用于内部审计，不作为用户交付物展示
+  function userFacingArtifacts(artifacts: any[] | undefined): any[] {
+    return (Array.isArray(artifacts) ? artifacts : []).filter((a: any) => a && a.type !== 'evidence')
+  }
+
   // SSE 断线兜底：提交任务后轮询任务状态，完成后从 GET /api/tasks/:id 拉取 artifacts，
   // 确保聊天面板必现交付物（即使 task_completed 的 SSE 事件被丢也不会漏）。
   async function ensureTaskDeliverable(taskId: string, agentId: string, maxAttempts = 240) {
+    let artifactWait = 0
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise((r) => setTimeout(r, 2500))
       let task: any = null
@@ -631,7 +637,13 @@ export const useMainStore = defineStore('main', () => {
       if (!task) continue
       if (task.status === 'completed' || task.status === 'failed' || task.status === 'error') {
         const taskOutput = task.output || task.result || ''
-        const baseArtifacts: any[] = task.artifacts || []
+        const baseArtifacts: any[] = userFacingArtifacts(task.artifacts)
+        // 后端在 AI 审核开始前就会把任务置为 completed，但 md/docx/xlsx 要等审核通过后才挂载。
+        // 此时不能立刻退化成“只提取 md”，否则聊天面板会永久停在只有 md 的状态。
+        if (baseArtifacts.length === 0 && task.reviewPassed !== false && artifactWait < 80) {
+          artifactWait += 1
+          continue
+        }
         // 前端兜底：服务端没交付物时，从输出里提取 markdown 报告，避免聊天面板空白
         const reportArtifacts = extractArtifacts(taskOutput).filter((a: any) => a.type === 'report')
         const taskArtifacts: any[] = baseArtifacts.length > 0 ? baseArtifacts : reportArtifacts
@@ -641,7 +653,9 @@ export const useMainStore = defineStore('main', () => {
                 .map((a: any) => a.name || a.title || 'unnamed')
                 .join(', ')}`
             : ''
-        const content = `任务 ${taskId} 完成\n\n${taskOutput}${artifactMsgs}`
+        const failed = task.status === 'failed' || task.status === 'error'
+        const header = failed ? `❌ 任务 ${taskId} 执行失败` : `✅ 任务 ${taskId} 完成`
+        const content = `${header}\n\n${taskOutput}${artifactMsgs}`
         const existing = messages.value.find((m) => m.id === `task-output-${taskId}`)
         if (existing) {
           // SSE 已推送过，仅刷新 artifacts（防止 SSE 携带的数据不完整）
@@ -689,12 +703,19 @@ export const useMainStore = defineStore('main', () => {
         const taskId = task.id
         const taskOutput = task.output || (typeof task.result === 'string' ? task.result : (task.result ? JSON.stringify(task.result) : ''))
         if (!taskOutput) continue
-        // 跳过已存在的消息（避免与 task-output-XXX 或任务流式残留重复）
-        if (messages.value.some(m => m.id === `loaded-task-${taskId}` || m.id === `task-output-${taskId}`)) continue
+        const existing = messages.value.find(m => m.id === `loaded-task-${taskId}` || m.id === `task-output-${taskId}`)
+        // 清理旧数据：早期版本会在流式消息上挂“只有 md”的占位交付物；
+        // 统一交给 task-output-<taskId> 后，这些重复卡片应移除。
+        for (const m of messages.value) {
+          if (m.id !== `task-output-${taskId}` && m.id !== `loaded-task-${taskId}` &&
+              typeof m.content === 'string' && m.content.includes(`任务 ${taskId} 完成`)) {
+            m.artifacts = undefined
+          }
+        }
         // 提取 artifacts（与 task_completed 处理保持一致）
         // 列表接口不含 artifacts，按需拉详情补全交付物文件卡片(否则刷新后只有报告正文、缺 md/docx/xlsx 卡片)
         const reportArtifacts = extractArtifacts(taskOutput).filter((a: any) => a.type === 'report')
-        let baseArtifacts = task.artifacts || []
+        let baseArtifacts = userFacingArtifacts(task.artifacts)
         if (baseArtifacts.length === 0) {
           try {
             const _d = await taskApi.getById(taskId)
@@ -702,6 +723,15 @@ export const useMainStore = defineStore('main', () => {
           } catch { /* 忽略,退化为 report 提取 */ }
         }
         const taskArtifacts = baseArtifacts.length > 0 ? baseArtifacts : reportArtifacts
+        // 已存在消息也要回填：早期轮询可能在审核挂载 docx/xlsx 之前先写了“只有 md”的消息
+        if (existing) {
+          if (taskArtifacts.length > 0) {
+            existing.artifacts = taskArtifacts
+            const artifactMsgs = `\n\n📦 输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+            existing.content = `任务 ${taskId} 完成\n\n${taskOutput}${artifactMsgs}`
+          }
+          continue
+        }
         const agentId = task.agentId || task.agent
         messages.value.push({
           id: `loaded-task-${taskId}`,
@@ -1223,24 +1253,36 @@ export const useMainStore = defineStore('main', () => {
           if (!taskOutput && taskData.result) {
             taskOutput = typeof taskData.result === 'string' ? taskData.result : JSON.stringify(taskData.result)
           }
-          const baseArtifacts = taskData.artifacts || []
+          const baseArtifacts = userFacingArtifacts(taskData.artifacts)
           // 前端兜底：服务端没交付物时，从输出里提取 markdown 报告，避免聊天面板空白
           const reportArtifacts = extractArtifacts(taskOutput).filter((a: any) => a.type === 'report')
           const taskArtifacts = baseArtifacts.length > 0 ? baseArtifacts : reportArtifacts
+          const taskFailed = taskData.status === 'failed' || taskData.status === 'error' || !!taskData.error
+          const completionHeader = taskFailed
+            ? `❌ 任务 ${taskData.id} 执行失败`
+            : `✅ 任务 ${taskData.id} 完成`
 
           // 【Bug修复】覆盖已有的 agent 流式消息（agent_stream_start 创建的，content 只是流式累积的片段）：
           // 当流式中断、部分 chunk 丢失或 agent 未输出实际内容时，agent 消息只显示片段
           // （如"我先读取..."+ tool_call 文本而无后续完整报告）。任务完成时用 taskData.result 覆盖
           // 该 agent 消息的 content，保证用户看到完整报告，thinking/tool_call 累积保留。
-          const streamAgentMsg = messages.value.find(m =>
+          // 优先匹配“正在流式输出”的那条消息；否则会误覆盖历史任务的消息，
+          // 导致当前任务的消息只剩 md（历史消息反而拿到新的 artifacts）。
+          const streamAgentMsg = [...messages.value].reverse().find(m =>
+            m.role === 'assistant' && m.type === 'agent' &&
+            m.agentId === (taskData.agentId || taskData.agent) &&
+            m.isStreaming === true &&
+            m.id !== `task-output-${taskData.id}`
+          ) || [...messages.value].reverse().find(m =>
             m.role === 'assistant' && m.type === 'agent' &&
             m.agentId === (taskData.agentId || taskData.agent) &&
             m.id !== `task-output-${taskData.id}`
           )
           if (streamAgentMsg && taskOutput) {
             // 【修复】覆盖流式片段为完整报告，并追加明确的“任务完成”标记，避免用户看不到完成信号
-            streamAgentMsg.content = `✅ 任务 ${taskData.id} 完成\n\n${taskOutput}`
-            if (taskArtifacts.length > 0) streamAgentMsg.artifacts = taskArtifacts
+            streamAgentMsg.content = `${completionHeader}\n\n${taskOutput}`
+            // 交付物卡片只挂在 task-output-<taskId> 上，避免同一份 md/docx/xlsx 出现两遍
+            streamAgentMsg.artifacts = undefined
             if (streamAgentMsg.isStreaming) streamAgentMsg.isStreaming = false
           }
 
@@ -1251,7 +1293,7 @@ export const useMainStore = defineStore('main', () => {
           if (alreadyExists) {
             // 已由轮询兜底插入，仅更新 artifacts 和 content（确保内容最新）
             const existingMsg = messages.value.find(m => m.id === existingMsgId)!
-            existingMsg.content = `任务 ${taskData.id} 完成\n\n${taskOutput}${taskArtifacts.length > 0 ? `\n\n📦 输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}` : ''}`
+            existingMsg.content = `${completionHeader}\n\n${taskOutput}${taskArtifacts.length > 0 ? `\n\n📦 输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}` : ''}`
             existingMsg.artifacts = taskArtifacts.length > 0 ? taskArtifacts : undefined
           } else if (taskOutput || taskArtifacts.length > 0) {
             const artifactMsgs = taskArtifacts.length > 0
@@ -1261,7 +1303,7 @@ export const useMainStore = defineStore('main', () => {
               id: existingMsgId,
               role: 'assistant',
               type: 'agent',
-              content: `任务 ${taskData.id} 完成\n\n${taskOutput}${artifactMsgs}`,
+              content: `${completionHeader}\n\n${taskOutput}${artifactMsgs}`,
               timestamp: new Date().toISOString(),
               agentId: taskData.agentId || taskData.agent,
               artifacts: taskArtifacts.length > 0 ? taskArtifacts : undefined,
@@ -1294,22 +1336,23 @@ export const useMainStore = defineStore('main', () => {
           }
         }
         // 【修复】审核未通过也展示脚本交付件(后端已在 task_review_exhausted 中保留 artifacts)
-        if (data.artifacts && data.artifacts.length > 0) {
+        const exhaustedArtifacts = userFacingArtifacts(data.artifacts)
+        if (exhaustedArtifacts.length > 0) {
           const outId = `task-output-${data.taskId}`
           const existing = messages.value.find(m => m.id === outId)
           if (existing) {
-            existing.artifacts = data.artifacts
+            existing.artifacts = exhaustedArtifacts
             if (!existing.content.includes('📦')) {
-              existing.content += `\n\n📦 已保留生成的脚本交付物(${data.artifacts.length}个): ${data.artifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+              existing.content += `\n\n📦 已保留生成的脚本交付物(${exhaustedArtifacts.length}个): ${exhaustedArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
             }
           } else {
             writeMsg({
               id: outId,
               role: 'assistant',
               type: 'agent',
-              content: `📦 AI 审核未通过,但已保留生成的脚本交付物(${data.artifacts.length}个): ${data.artifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`,
+              content: `📦 AI 审核未通过,但已保留生成的脚本交付物(${exhaustedArtifacts.length}个): ${exhaustedArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`,
               timestamp: new Date().toISOString(),
-              artifacts: data.artifacts,
+              artifacts: exhaustedArtifacts,
             })
           }
         }
@@ -1363,18 +1406,27 @@ export const useMainStore = defineStore('main', () => {
             }
           }
           // 将审核通过和输出物同步到 messages，供聊天面板显示
-          const taskArtifacts = data.artifacts || []
+          // 统一使用 task-output-<taskId> 作为唯一的交付物消息，避免
+          // task-review-output / task-output 两份相同交付件在面板里重复出现。
+          const taskArtifacts = userFacingArtifacts(data.artifacts)
           if (taskArtifacts.length > 0) {
             const artifactMsgs = `\n\n📦 输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
-            writeMsg({
-              id: `task-review-output-${data.taskId}`,
-              role: 'assistant',
-              type: 'agent',
-              content: `${message}${artifactMsgs}`,
-              timestamp: new Date().toISOString(),
-              agentId: data.agentId,
-              artifacts: taskArtifacts,
-            });
+            const outId = `task-output-${data.taskId}`
+            const existingOut = messages.value.find(m => m.id === outId)
+            if (existingOut) {
+              existingOut.artifacts = taskArtifacts
+              if (!existingOut.content.includes('📦')) existingOut.content += artifactMsgs
+            } else {
+              writeMsg({
+                id: outId,
+                role: 'assistant',
+                type: 'agent',
+                content: `${message}${artifactMsgs}`,
+                timestamp: new Date().toISOString(),
+                agentId: data.agentId,
+                artifacts: taskArtifacts,
+              })
+            }
           }
         }
         break
@@ -1744,8 +1796,9 @@ export const useMainStore = defineStore('main', () => {
             if ((data.fullContent || data.content) && (data.fullContent || data.content).trim()) {
               target.content = data.fullContent || data.content
             }
-            // 提取输出物（代码块 / markdown 报告等）
-            if (!target.artifacts || target.artifacts.length === 0) {
+            // 单任务的交付物统一由 task-output-<taskId> 承载（含服务端 md/docx/xlsx）；
+            // 这里不再从流式文本提取占位 md 卡片，避免审核期间先显示“只有 md”再重复挂载。
+            if (target.workflowId && (!target.artifacts || target.artifacts.length === 0)) {
               target.artifacts = extractArtifacts(target.content)
             }
           }

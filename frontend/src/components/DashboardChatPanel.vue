@@ -390,6 +390,11 @@ function getArtifactTypeLabel(type: string): string {
   return labelMap[type] || '未知'
 }
 
+// 执行证据 JSON 仅用于内部审计，不作为用户交付物展示（兼容旧消息里已存在的 evidence 卡片）
+function userFacingArtifacts(artifacts: any[] | undefined): any[] {
+  return (Array.isArray(artifacts) ? artifacts : []).filter((a: any) => a && a.type !== 'evidence')
+}
+
 // 格式化文件大小
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 B'
@@ -720,13 +725,13 @@ onMounted(() => { scrollToBottom() })
             <div v-else-if="msg.content" class="message-text" v-html="renderContent(msg.content)"></div>
 
             <!-- 输出物列表 -->
-            <div v-if="msg.artifacts && msg.artifacts.length > 0" class="artifacts-section">
+            <div v-if="userFacingArtifacts(msg.artifacts).length > 0" class="artifacts-section">
               <div class="artifacts-label">
                 <el-icon><Document /></el-icon>
-                输出物（{{ msg.artifacts.length }}个）
+                输出物（{{ userFacingArtifacts(msg.artifacts).length }}个）
               </div>
               <div class="artifacts-list">
-                <div v-for="artifact in msg.artifacts" :key="artifact.id" class="artifact-card">
+                <div v-for="artifact in userFacingArtifacts(msg.artifacts)" :key="artifact.id" class="artifact-card">
                   <div class="artifact-icon">
                     <el-icon v-if="artifact.type === 'text'"><Document /></el-icon>
                     <el-icon v-else-if="artifact.type === 'code'"><EditPen /></el-icon>
