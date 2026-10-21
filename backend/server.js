@@ -626,11 +626,17 @@ async function attachExecutionEvidence(task) {
     } catch (e) {
       console.warn(`[Evidence] 注册证据文件失败 ${filePath}: ${e.message}`);
     }
+    // 执行证据.json 仅用于内部审计（仍写入 task_output_files 和输出目录），
+    // 不作为用户交付物展示，避免 md/docx/xlsx 中多出一个 JSON 文件。
+    if (name === '执行证据.json') continue;
+
+    const ext = path.extname(name).toLowerCase();
+    const isImage = ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(ext);
     artifacts.push({
       id: `evidence-${i}`,
       name,
-      type: 'evidence',
-      ext: path.extname(name).toLowerCase(),
+      type: isImage ? 'image' : 'file',
+      ext,
       path: filePath,
       downloadUrl: `/api/tasks/${task.id}/artifacts/evidence-${i}/download`,
       createdAt: new Date().toISOString(),
@@ -8604,30 +8610,41 @@ async function checkGatewayHealth() {
     return GATEWAY_HEALTH.lastStatus === 'ok';
   }
   GATEWAY_HEALTH.lastCheck = now;
-  try {
-    const controller = new AbortController();
-    const tid = setTimeout(() => controller.abort(), 5000);
-    // Deepseek 健康检查(直接调用,不需要 Gateway auth)
-    const res = await fetch('https://api.deepseek.com/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: 'deepseek-v4-pro',
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 2
-      }),
-      signal: controller.signal
-    });
-    clearTimeout(tid);
-    // 401/403 表示 auth 问题但 API 端点可达;2xx 表示成功
-    GATEWAY_HEALTH.lastStatus = (res.ok || res.status === 401 || res.status === 403) ? 'ok' : 'unavailable';
-  } catch {
-    GATEWAY_HEALTH.lastStatus = 'unavailable';
+
+  // 1 次重试，避免瞬时网络抖动/429 直接判定不可用
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const controller = new AbortController();
+      const tid = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'deepseek-v4-pro',
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 2
+        }),
+        signal: controller.signal
+      });
+      clearTimeout(tid);
+      // 只要能拿到 HTTP 响应，就说明端点可达；401/403/429/5xx 交给真实调用去报具体错误
+      GATEWAY_HEALTH.lastStatus = 'ok';
+      if (!res.ok) {
+        console.warn(`[GatewayHealth] endpoint reachable but status=${res.status} (attempt ${attempt})`);
+      }
+      return true;
+    } catch (e) {
+      console.warn(`[GatewayHealth] attempt ${attempt} failed: ${e.message}`);
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1000));
+    }
   }
-  return GATEWAY_HEALTH.lastStatus === 'ok';
+
+  GATEWAY_HEALTH.lastStatus = 'unavailable';
+  console.warn('[GatewayHealth] Deepseek endpoint unreachable after 2 attempts');
+  return false;
 }
 
 /**
@@ -9660,12 +9677,12 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     return { success: false, error: `Agent "${agentId}" circuit breaker open: ${state.lastError}` };
   }
 
-  // ========== Deepseek 可用性健康检查(异步,不阻塞;QClaw 网关已剥离) ==========
+  // ========== Deepseek 可用性健康检查（仅告警，不阻断任务） ==========
+  // 健康检查只有 5-10 秒预算，一次网络抖动/429 就把长任务判死是错误的；
+  // 真正的 API 调用在 callOpenClawAPI 内自带重试与 600s 超时，让它给出准确错误。
   const gatewayHealthy = await checkGatewayHealth();
   if (!gatewayHealthy) {
-    // Deepseek 不可用,直接返回失败,无 CLI 回退
-    recordAgentFailure(agentId, 'Deepseek unavailable');
-    return { success: false, error: 'Deepseek service unavailable' };
+    console.warn(`[GatewayHealth] Deepseek 健康检查未通过，仍尝试真实调用 agent=${agentId}（实际失败会由 API 层返回具体状态码）`);
   }
 
   console.log(`[Agent] Executing: ${agentId} (skill: ${skillId})`);
