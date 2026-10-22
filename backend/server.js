@@ -8647,6 +8647,38 @@ async function checkGatewayHealth() {
   return false;
 }
 
+// DeepSeek 余额检查：缓存 60s，余额不足时提前失败，避免把 402 拖进审核/重试流程
+const DEEPSEEK_BALANCE = { at: 0, available: null, balance: 0, currency: '', checking: null };
+async function checkDeepSeekBalance() {
+  if (Date.now() - DEEPSEEK_BALANCE.at < 60000 && DEEPSEEK_BALANCE.available !== null) {
+    return DEEPSEEK_BALANCE;
+  }
+  if (DEEPSEEK_BALANCE.checking) return DEEPSEEK_BALANCE.checking;
+  DEEPSEEK_BALANCE.checking = (async () => {
+    try {
+      const res = await fetch('https://api.deepseek.com/user/balance', {
+        headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) return { available: null, balance: 0, currency: '', error: `balance HTTP ${res.status}` };
+      const data = await res.json();
+      const infos = Array.isArray(data.balance_infos) ? data.balance_infos : [];
+      const total = infos.reduce((sum, x) => sum + (parseFloat(x.total_balance) || 0), 0);
+      const available = data.is_available !== false && total > 0;
+      Object.assign(DEEPSEEK_BALANCE, {
+        at: Date.now(), available, balance: total,
+        currency: (infos[0] && infos[0].currency) || '',
+      });
+      return DEEPSEEK_BALANCE;
+    } catch (e) {
+      return { available: null, balance: 0, currency: '', error: e.message };
+    } finally {
+      DEEPSEEK_BALANCE.checking = null;
+    }
+  })();
+  return DEEPSEEK_BALANCE.checking;
+}
+
 /**
  * 检查 Agent 熔断器状态
  */
@@ -9431,6 +9463,43 @@ function removeWaitingSession(taskId) {
 }
 
 // 调用OpenClaw Gateway生成Agent会话(Gateway API优先,CLI回退)
+
+// 附件文件名与文档内容项目一致性校验：防止把“移动云盘报告”当成“文案读取运营平台”继续生成用例
+const PROJECT_GUARD_AGENTS = new Set(['test-requirement-analyzer', 'test-case-generator', 'test-scheme-generator']);
+function normalizeProjectToken(name) {
+  return String(name || '')
+    .replace(/\.[a-z0-9]{1,8}$/i, '')
+    .replace(/[（(]\s*\d+\s*[)）]/g, '')
+    .replace(/V?\d+(?:\.\d+){1,3}/ig, '')
+    .replace(/(需求分析报告|需求文档|需求说明书|需求规格说明书|测试用例集?|测试报告|测试方案|缺陷分析报告|接口测试执行报告|UI_E2E测试执行报告|数据脱敏记录|报告|文档)/g, '')
+    .replace(/[_\-—\s]+/g, '')
+    .trim();
+}
+
+function detectAttachmentProjectMismatch(taskInput) {
+  const src = String(taskInput || '');
+  const m = src.match(/===\s*附件:\s*(.+?)\s*===/);
+  if (!m) return null;
+  const filename = m[1].trim();
+  const filenameProject = normalizeProjectToken(filename);
+  // 只解析附件正文，避免把“【用户上传的文档内容】”误认为项目名
+  const blockMatch = src.match(/===\s*附件:[^\n]*===\s*\n([\s\S]*?)(?:---以上是用户原始任务---|$)/);
+  const contentSource = (blockMatch ? blockMatch[1] : src)
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*(?:===|---)/.test(line))
+    .join('\n');
+  const contentProject = extractReportProjectName(contentSource);
+  if (!filenameProject || !contentProject) return null;
+  if (filenameProject.length < 6) return null; // “登录用例”这类功能名不做强校验
+  const generic = new Set(['需求', '需求分析', '测试用例', '测试报告', '报告', '文档', '附件', '文件', '用例', '方案']);
+  if (generic.has(filenameProject) || generic.has(contentProject)) return null;
+  if (filenameProject.includes(contentProject) || contentProject.includes(filenameProject)) return null;
+  const common = [...new Set(contentProject)].filter((ch) => filenameProject.includes(ch)).length;
+  const ratio = common / Math.max(filenameProject.length, contentProject.length);
+  if (ratio < 0.3) return { filename, filenameProject, contentProject };
+  return null;
+}
+
 // 执行证据持久化前的脱敏/裁剪：去掉凭证、base64 大图与超长字段
 const EVIDENCE_REDACT_KEY = /(pass(word)?|pwd|secret|token|authorization|cookie|api[_-]?key|credential)/i;
 function sanitizeEvidenceValue(value, depth = 0, seen = new WeakSet()) {
@@ -9593,6 +9662,102 @@ async function enrichInputWithTaskReferences(agentId, taskInput, userId, current
   return `【引用任务结果（系统自动注入，仅作为真实输入，不要修改来源数据）】\n\n${blocks.join('\n\n')}\n\n--- 用户任务 ---\n${input}`;
 }
 
+
+// ── 接口测试用例补齐 ─────────────────────────────────────────────
+// 用例生成经常只覆盖功能维度；只要输入里有接口清单，就确定性补齐接口用例，
+// 不依赖模型“想起来”。输入报告里有多少个 API 编号，就覆盖多少个。
+function extractApiRequirements(input) {
+  const text = String(input || '');
+  const map = new Map();
+  const lines = text.split(/\r?\n/).map((x) => x.trim());
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = lines[i].match(/^(API-\d{2,4})$/i);
+    if (!m) continue;
+    const id = m[1].toUpperCase();
+    // Word 解析后 API 编号、名称、方法之间可能有空行：跳过空行再取值
+    let j = i + 1;
+    const nextNonEmpty = () => {
+      while (j < lines.length && !lines[j]) j += 1;
+      return (lines[j++] || '').replace(/^\|/, '').trim();
+    };
+    const name = nextNonEmpty();
+    const method = nextNonEmpty().toUpperCase();
+    const desc = nextNonEmpty();
+    if (['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+      map.set(id, { id, name, method, description: desc });
+    }
+  }
+  for (const m of text.matchAll(/^\|\s*(API-\d{2,4})\s*\|\s*([^|]+?)\s*\|\s*(GET|POST|PUT|DELETE|PATCH)\s*\|\s*([^|]*?)\s*\|/gim)) {
+    const id = m[1].toUpperCase();
+    if (!map.has(id)) map.set(id, { id, name: m[2].trim(), method: m[3].toUpperCase(), description: m[4].trim() });
+  }
+  return [...map.values()];
+}
+
+function buildApiTestCaseRows(apis, existingText = '') {
+  // 只有在原文确实存在“接口测试”章节时才按 API 编号去重；
+  // 否则即使正文偶然提到 API-001，也要为每个接口补齐用例。
+  const hasApiSection = /接口测试用例|接口测试|API\s*测试/i.test(existingText);
+  const missing = apis.filter((a) => !hasApiSection || !new RegExp(`\\b${a.id}\\b`, 'i').test(existingText));
+  if (!missing.length) return [];
+  const rows = [];
+  for (const api of missing) {
+    const name = api.name || api.id;
+    const base = { apiId: api.id, name, method: api.method };
+    rows.push({ ...base, suffix: '01', type: '正向', priority: '高',
+      pre: '接口已部署；准备合法测试账号/令牌',
+      steps: `按接口文档构造合法请求调用 ${api.method} ${name}`,
+      expect: 'HTTP 2xx；业务成功码；必填返回字段齐全；响应时间符合接口 SLA' });
+    rows.push({ ...base, suffix: '02', type: '鉴权', priority: '高',
+      pre: '未登录或使用无权限账号',
+      steps: `不携带登录态/使用越权账号调用 ${api.method} ${name}`,
+      expect: '返回 401/403 或业务鉴权失败；不返回敏感数据/其他用户数据' });
+    rows.push({ ...base, suffix: '03', type: '参数异常', priority: '中',
+      pre: '接口已部署',
+      steps: `缺失必填参数、参数类型错误、边界值/超长值调用 ${api.method} ${name}`,
+      expect: '返回 4xx 或业务参数错误码；服务不返回 5xx、不泄露堆栈/数据库信息' });
+    if (api.method === 'POST' || api.method === 'PUT' || api.method === 'PATCH') {
+      rows.push({ ...base, suffix: '04', type: '幂等/重复提交', priority: '中',
+        pre: '同一用户/同一业务单号',
+        steps: `连续两次提交相同请求调用 ${api.method} ${name}`,
+        expect: '幂等或限流生效；不产生重复派奖/重复扣减/重复写入' });
+    }
+  }
+  return rows;
+}
+
+function buildApiTestCasesMarkdown(apis, existingText = '') {
+  const rows = buildApiTestCaseRows(apis, existingText);
+  if (!rows.length) return '';
+  const lines = [];
+  lines.push('');
+  lines.push('## 接口测试用例（系统按接口清单补齐）');
+  lines.push('');
+  const modelCaseCount = (String(existingText || '').match(/^\|\s*TC-\d+\s*\|/gm) || []).length;
+  lines.push(`> 输入报告的接口清单共 ${apis.length} 个（${apis.map((a) => a.id).join('、')}）。以下用例由系统确定性生成，确保每个接口至少覆盖正向、鉴权、参数异常；POST/PUT/PATCH 额外覆盖幂等/重复提交。具体请求字段、响应结构需接口文档补充后细化。`);
+  lines.push('');
+  lines.push(`> 用例统计：原用例集（模型生成）${modelCaseCount} 条；接口用例（系统补齐）${rows.length} 条；合计 ${modelCaseCount + rows.length} 条（均按表格行统计）。`);
+  lines.push('');
+  lines.push('| 用例编号 | 接口编号 | 接口名称 | 请求方式 | 用例类型 | 前置条件 | 测试步骤 | 预期结果 | 优先级 | 关联需求 |');
+  lines.push('|---|---|---|---|---|---|---|---|---|---|');
+  for (const r of rows) {
+    const esc = (v) => String(v == null ? '' : v).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+    lines.push(`| IT-${r.apiId}-${r.suffix} | ${r.apiId} | ${esc(r.name)} | ${r.method} | ${r.type} | ${esc(r.pre)} | ${esc(r.steps)} | ${esc(r.expect)} | ${r.priority} | ${r.apiId} |`);
+  }
+  return lines.join('\n');
+}
+
+function appendToPrimaryDeliverable(text, extra) {
+  if (!extra) return text;
+  const blocks = [...String(text || '').matchAll(/```([a-zA-Z]*)\s*\n([\s\S]*?)```/g)];
+  if (blocks.length) {
+    const target = blocks.find((b) => /^(md|markdown)?$/i.test(b[1] || '')) || blocks[0];
+    const content = target[2].replace(/\s+$/, '');
+    return String(text).replace(target[0], '```md\n' + content + '\n' + extra + '\n```');
+  }
+  return `${text || ''}\n${extra}`;
+}
+
 async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, skipReview = false, previousArtifacts = [], userId = null, forceToolCall = false) {
   // 全局暴露，供 owasp-knowledge-generator.js 通过 globalThis.spawnAgentSession 调用
   globalThis.spawnAgentSession = spawnAgentSession;
@@ -9635,6 +9800,14 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
   }
 
   console.log(`[InputValidation] PASSED: Agent "${agentId}" 输入物校验通过 (${validation.reason})`);
+
+  // ========== 附件文件名/内容项目提示（不阻断，交付物始终按内容项目命名） ==========
+  if (PROJECT_GUARD_AGENTS.has(agentId)) {
+    const mismatch = detectAttachmentProjectMismatch(taskInput);
+    if (mismatch) {
+      console.warn(`[ProjectGuard] 附件名「${mismatch.filenameProject}」与内容项目「${mismatch.contentProject}」不一致，交付物将按内容项目命名`);
+    }
+  }
 
   // ========== 报告/缺陷：必须绑定真实执行数据 ==========
   const evidenceUserId = userId || (taskId && tasks.get(taskId)?.userId) || null;
@@ -9901,6 +10074,18 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
         };
       }
 
+      // 用例生成：输入有接口清单但模型漏了接口用例时，确定性补齐
+      if (agentId === 'test-case-generator') {
+        const apis = extractApiRequirements(taskInput);
+        if (apis.length > 0) {
+          const extra = buildApiTestCasesMarkdown(apis, text);
+          if (extra) {
+            text = appendToPrimaryDeliverable(text, extra);
+            console.log(`[ApiCases] 已补齐 ${apis.length} 个接口的测试用例`);
+          }
+        }
+      }
+
       const duration = Date.now() - startTime;
       console.log(`[Agent] Gateway API success for ${agentId} (took ${duration}ms)`);
       recordAgentSuccess(agentId);
@@ -9937,7 +10122,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
       return { success: false, error: `上下文超限：${err.message.substring(0, 200)}` };
     }
     // 已完全剥离 QClaw,agent 仅直连 Deepseek 一条调用路径,失败即透出
-    return { success: false, error: `Agent 调用失败：${err.message}` };
+    return { success: false, error: `Agent 调用失败：${err.message}`, balance: !!err.balance };
   }
 }
 
@@ -10784,6 +10969,8 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
             { role: 'user', content: taskInput }
           ]),
           ...toolChoiceConfig,
+          // 用例生成对同一条需求应尽量稳定，降低不同轮次条目数量/粒度漂移
+          ...(agentId === 'test-case-generator' ? { temperature: 0 } : {}),
           stream: true,  // 启用流式输出
           stream_options: { include_usage: true }  // 流式响应末尾返回 usage(token 统计)
         }),
@@ -10795,17 +10982,20 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
       if (!response.ok) {
         const errorText = await response.text();
         const status = response.status;
-        const errMsg = `Gateway ${status}: ${errorText.substring(0, 200)}`;
+        const isBalance = status === 402 || /Insufficient Balance|余额不足/i.test(errorText);
+        const errMsg = isBalance
+          ? 'DeepSeek 账户余额不足（402），请充值后再试'
+          : `Gateway ${status}: ${errorText.substring(0, 200)}`;
 
-        // 区分可重试 / 不可重试错误
-        const isRetriable = retryOn.includes(status) || status === 429;
+        // 区分可重试 / 不可重试错误；余额不足重试也没有意义
+        const isRetriable = !isBalance && (retryOn.includes(status) || status === 429);
 
         if (isRetriable && attempt < maxRetries) {
           console.warn(`[GatewayAPI] Retriable error ${status} for ${agentId}, retrying (${attempt + 1}/${maxRetries})...`);
           lastError = errMsg;
           continue; // 进入下一次重试
         } else {
-          throw Object.assign(new Error(errMsg), { status, retriable: isRetriable });
+          throw Object.assign(new Error(errMsg), { status, retriable: isRetriable, balance: isBalance });
         }
       }
 
@@ -11283,8 +11473,9 @@ async function executeTaskWithReview(task, userId = null) {
       task.reviewPassed = false;
       task.reviewFailed = true;
 
-      // 设置任务完成状态
-      task.status = 'completed';
+      // 执行阶段已经失败（如 402 余额不足/网关错误）时保留 failed，
+      // 不能被审核流程覆盖成 completed；只有“执行成功但审核未通过”才是 completed。
+      if (task.status !== 'failed') task.status = 'completed';
       task.completedAt = localNowStr();
       task.updatedAt = new Date().toISOString();
 
@@ -11651,6 +11842,60 @@ const DELIVERABLE_EXT_MAP = {
  * @param {string} content - 文本内容
  * @returns {{ projectName: string, versionOrFeature: string }} 项目信息
  */
+/**
+ * 从需求分析报告/测试报告中提取项目名（只认表格、标签和标题，不从正文句子中猜）。
+ */
+function extractReportProjectName(content) {
+  if (!content || typeof content !== 'string') return '';
+  const clean = (v) => String(v || '').replace(/[|*_`【】\[\]]/g, '').replace(/V?\d+(?:\.\d+){1,3}/ig, '').trim();
+  const looksLikeProjectName = (name) => {
+    const v = String(name || '').trim();
+    if (v.length < 2 || v.length > 40) return false;
+    if (/^(需求分析|测试用例|测试报告|报告|方案|需求|文档|接口测试执行报告|UI_E2E测试执行报告|数据脱敏记录)$/.test(v)) return false;
+    // 标题只是报告类型（如“缺陷分析与分类报告”“安全测试报告”）时，不要当项目名
+    if (/(报告|分析|用例|方案|记录|清单|汇总|总结|测试)/.test(v) && !/(项目|系统|平台|应用|活动|产品|业务|中台)/.test(v)) return false;
+    return true;
+  };
+
+  for (const table of content.matchAll(/^\|\s*(?:项目名称|系统名称|产品名称|项目)\s*\|\s*([^|\n]{2,40})\s*\|/gm)) {
+    const value = clean(table[1]);
+    // 跳过表头 | 项目 | 内容 |
+    if (!/^(内容|值|说明|详情|信息|项目信息项)$/.test(value)) return value;
+  }
+
+  const plain = content.match(/^(?:项目名称|项目|系统名称|产品名称)\s*[:：]\s*([^\n,，]{2,40})/m);
+  if (plain) return clean(plain[1]);
+
+  // Markdown 列表标签：- **项目名称**：移动云盘...
+  const bullet = content.match(/^[-*+]\s*(?:\*\*)?(?:项目名称|系统名称|产品名称)(?:\*\*)?\s*[:：]\s*([^\n]{2,40})/m);
+  if (bullet) return clean(bullet[1]);
+
+  // mammoth 解析 Word 后，表格会变成「项目名称\n\n移动云盘...\n\n版本号...」这种纯文本行对
+  const linePair = content.match(/^(?:项目名称|系统名称|产品名称)\s*\n+\s*([^\n]{2,40})\s*$/m);
+  if (linePair) return clean(linePair[1]);
+
+  const heading = content.match(/^#{1,2}\s+(.{2,80})$/m);
+  if (heading) {
+    let h = clean(heading[1])
+      .replace(/[（(]\s*智能测试版\s*[)）]/g, '')
+      .replace(/(需求分析报告|需求文档|需求说明书|需求规格说明书|测试用例集?|测试报告|测试方案|缺陷分析报告|接口测试执行报告|UI_E2E测试执行报告|数据脱敏记录|报告|文档).*$/, '')
+      .replace(/^[【\[]|[】\]]$/g, '')
+      .trim();
+    if (looksLikeProjectName(h)) return h;
+  }
+
+  // 无 # 标题时的首行兜底（Word 解析后常见：移动云盘...需求文档V1.0.0）
+  const firstLine = content.split(/\r?\n/).map((x) => x.trim()).find(Boolean);
+  if (firstLine && firstLine.length >= 4 && firstLine.length <= 80) {
+    const h = clean(firstLine)
+      .replace(/V?\d+(?:\.\d+){1,3}/ig, '')
+      .replace(/(需求分析报告|需求文档|需求说明书|需求规格说明书|测试用例集?|测试报告|测试方案|缺陷分析报告|接口测试执行报告|UI_E2E测试执行报告|数据脱敏记录|报告|文档).*$/, '')
+      .trim();
+    if (looksLikeProjectName(h)) return h;
+  }
+  return '';
+}
+
 function extractProjectInfo(content) {
   const result = {
     projectName: '项目',
@@ -11661,18 +11906,34 @@ function extractProjectInfo(content) {
     return result;
   }
 
-  // 1. 提取版本号(优先)
+  // 0. 优先从报告表格/标题取项目名，避免把正文里的“文案读取运营平台配置”当成项目名
+  const reportProject = extractReportProjectName(content);
+  if (reportProject) result.projectName = reportProject;
+
+  // 1. 提取版本号：优先读表格/标签，再退回正文正则
+  const tableVersion = content.match(/^\|\s*(?:版本号|版本)\s*\|\s*([^|\n]{1,30})\s*\|/m);
+  const plainVersion = content.match(/^(?:版本号|版本)\s*[:：]\s*([^\n,，]{1,30})/m);
+  const lineVersion = content.match(/^(?:版本号|版本)\s*\n+\s*([^\n]{1,30})\s*$/m);
+  const bulletVersion = content.match(/^[-*+]\s*(?:\*\*)?(?:版本号|版本)(?:\*\*)?\s*[:：]\s*([^\n]{1,30})/m);
+  const versionText = String((tableVersion && tableVersion[1]) || (plainVersion && plainVersion[1]) || (lineVersion && lineVersion[1]) || (bulletVersion && bulletVersion[1]) || '').trim();
+  const versionMatch = versionText.match(/V?(\d+\.\d+(?:\.\d+)?)/i);
+  if (versionMatch) {
+    result.versionOrFeature = `V${versionMatch[1]}`;
+  }
+
   const versionPatterns = [
     /版本[号]*[::]*\s*V?(\d+\.\d+\.\d+)/i,      // 版本号:V3.2.1
     /V(\d+\.\d+\.\d+)/i,                          // V3.2.1
     /版本[::]*\s*(\d+\.\d+\.\d+)/,              // 版本:3.2.1
   ];
 
-  for (const pattern of versionPatterns) {
-    const match = content.match(pattern);
-    if (match) {
-      result.versionOrFeature = `V${match[1]}`;
-      break;
+  if (!result.versionOrFeature) {
+    for (const pattern of versionPatterns) {
+      const match = content.match(pattern);
+      if (match) {
+        result.versionOrFeature = `V${match[1]}`;
+        break;
+      }
     }
   }
 
@@ -11692,44 +11953,6 @@ function extractProjectInfo(content) {
           result.versionOrFeature = cleanName.substring(0, 30);
           break;
         }
-      }
-    }
-  }
-
-  // 3. 提取项目名称(排除版本号和需求名称部分)
-  const projectPatterns = [
-    /项目(?:名称)?\s*[:：]\s*([^\n\r,，]{2,20}?)(?:,|，|\s*版本|\s*需求|\s*V\d+)/,  // 项目名称:xxx（必须带冒号）
-    /项目[名称]*[::]*\s*【([^】]+)】/,          // 项目名称:【xxx】
-    /【([^】]{2,20})】[^】]*项目/,               // 【xxx】...项目
-    /项目[名称]*[::]*\s*\*\*([^*]+)\*\*/,      // 项目名称:**xxx**
-    /(([\u4e00-\u9fa5]{2,10})(项目|系统|平台|应用))/,  // xxx项目/系统/平台
-    /(([\u4e00-\u9fa5]{2,10})活动)/,           // xxx活动
-  ];
-
-  for (let pi = 0; pi < projectPatterns.length; pi++) {
-    const pattern = projectPatterns[pi];
-    const match = content.match(pattern);
-    if (match) {
-      const name = match[1] || match[0];
-      let cleanName = name.replace(/[【】\[\]*_\s]/g, '').trim();
-
-      // 排除通用词（如「操作系统」「测试系统」「业务平台」），避免把报告里的环境描述当项目名
-      const GENERIC_PREFIX = new Set(['操作', '测试', '被测', '业务', '应用', '管理', '数据', '文件', '安全', '质量', '监控', '告警', '目标', '当前', '本']);
-      if (pi === 4 && GENERIC_PREFIX.has(cleanName)) continue;
-
-      // 排除包含版本号的情况
-      if (cleanName.includes('版本') || /V\d+\.\d+/.test(cleanName)) {
-        cleanName = cleanName.replace(/版本[::]*\s*V?\d+\.\d+\.\d+/g, '').replace(/V\d+\.\d+\.\d+/g, '').trim();
-      }
-
-      // 排除与版本/需求名称重复
-      if (result.versionOrFeature && cleanName.includes(result.versionOrFeature.replace('V', ''))) {
-        continue;
-      }
-
-      if (cleanName && cleanName.length >= 2) {
-        result.projectName = cleanName.substring(0, 20);
-        break;
       }
     }
   }
@@ -11942,14 +12165,24 @@ function sanitizeFileName(name) {
     .slice(0, 180) || 'output';
 }
 
+/**
+ * 交付件文件名：项目名只从“内容”里取。
+ * - 内容里有明确项目名 → 用内容项目名（输入文件名与内容冲突时也以内容为准）
+ * - 内容里没有项目名 → 不硬写项目名，只用交付件类型（如“需求分析报告.md”）
+ */
+function buildDeliverableBaseName(content, deliverableName) {
+  const info = extractProjectInfo(content);
+  const project = info.projectName && info.projectName !== '项目' ? info.projectName : '';
+  const version = info.versionOrFeature || '';
+  if (!project) return deliverableName;
+  return `${project}${version}${deliverableName}`;
+}
+
 async function saveDeliverableToFile(workflowId, stage, agentId, deliverableContent, format = 'md') {
   try {
     // 创建输出目录(如果不存在)
     const outputDir = path.join(__dirname, 'output', workflowId);
     await fs.mkdir(outputDir, { recursive: true });
-
-    // 提取项目信息
-    const projectInfo = extractProjectInfo(deliverableContent);
 
     // 获取交付件名称
     const deliverableName = AGENT_DELIVERABLE_NAMES[agentId] || '输出物';
@@ -11957,14 +12190,9 @@ async function saveDeliverableToFile(workflowId, stage, agentId, deliverableCont
     // 【修复】使用交付件真实格式作为扩展名(python/js/md 等),不再强制 .md
     const fileExt = format === 'md' ? '.md' : '.' + (DELIVERABLE_EXT_MAP[format] || format);
 
-    // 生成文件名:项目名称 + 版本号(或需求名称)+ 交付件名称 + 扩展名
-    let fileName;
-    if (projectInfo.versionOrFeature) {
-      fileName = `${projectInfo.projectName}${projectInfo.versionOrFeature}${deliverableName}${fileExt}`;
-    } else {
-      fileName = `${projectInfo.projectName}${deliverableName}${fileExt}`;
-    }
-    fileName = sanitizeFileName(fileName);
+    // 文件名只使用内容里的项目名；内容没有项目名则只用交付件类型
+    const baseName = buildDeliverableBaseName(deliverableContent, deliverableName);
+    const fileName = sanitizeFileName(`${baseName}${fileExt}`);
 
     const filePath = path.join(outputDir, fileName);
 
@@ -12015,21 +12243,9 @@ async function saveDeliverablesToFiles(workflowId, stage, agentId, deliverables)
       const deliverable = deliverables[i];
       const fileExt = deliverable.format === 'md' ? '.md' : '.' + (DELIVERABLE_EXT_MAP[deliverable.format] || deliverable.format);
 
-      // 提取项目信息
-      const projectInfo = extractProjectInfo(deliverable.content);
-
-      // 生成文件名:项目名称 + 版本号(或需求名称)+ 交付件名称 + 序号 + 扩展名
-      let fileName;
-      const baseName = projectInfo.versionOrFeature
-        ? `${projectInfo.projectName}${projectInfo.versionOrFeature}${deliverableName}`
-        : `${projectInfo.projectName}${deliverableName}`;
-
-      if (deliverables.length === 1) {
-        fileName = `${baseName}${fileExt}`;
-      } else {
-        fileName = `${baseName}_${i + 1}${fileExt}`;
-      }
-      fileName = sanitizeFileName(fileName);
+      // 文件名只使用内容里的项目名；内容没有项目名则只用交付件类型
+      const baseName = buildDeliverableBaseName(deliverable.content, deliverableName);
+      const fileName = sanitizeFileName(deliverables.length === 1 ? `${baseName}${fileExt}` : `${baseName}_${i + 1}${fileExt}`);
 
       const filePath = path.join(outputDir, fileName);
 
@@ -12363,6 +12579,20 @@ async function executeTaskAsync(task) {
   });
 
   try {
+    // 余额不足时提前失败，避免 402 被审核/重试流程放大成“任务完成”
+    const balance = await checkDeepSeekBalance();
+    if (balance && balance.available === false) {
+      const msg = `DeepSeek 账户余额不足（当前 ${balance.balance} ${balance.currency || ''}），请充值后重试`;
+      console.error(`[Task] ${task.id} blocked: ${msg}`);
+      task.status = 'failed';
+      task.error = msg;
+      task.result = `❌ 任务执行失败：${msg}`;
+      task.updatedAt = new Date().toISOString();
+      agentStatus.set(task.agent, 'idle');
+      await persistTask(task.id);
+      return;
+    }
+
     // 尝试真实的Agent调用
     console.log(`[Task] Executing task ${task.id} with agent ${task.agent}`);
 

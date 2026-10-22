@@ -1,0 +1,2014 @@
+{
+  "name": "通用测试智能体技能包",
+  "version": "1.0.0",
+  "generatedAt": "2026-10-22T12:23:10.988Z",
+  "description": "从测试中台抽取的 18 个智能体提示词与核心 Skill（含可执行后端与 SKILL.md），用于迁移到其他 Agent 运行时。",
+  "source": "test-platform / qclaw-skills",
+  "counts": {
+    "agents": 18,
+    "prompts": 17,
+    "executableSkills": 18,
+    "skillDirectories": 43
+  },
+  "agents": [
+    {
+      "id": "test-master",
+      "name": "测试主控",
+      "type": "controller",
+      "description": "测试主控Agent,调度中枢",
+      "capabilities": [
+        "调度",
+        "需求分析",
+        "用例生成",
+        "缺陷分析",
+        "报告生成"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "🧪",
+      "executableSkills": [],
+      "declaredSkills": [],
+      "coreSkills": [],
+      "promptAvailable": true,
+      "promptFile": "agents/test-master/AGENT.md",
+      "promptOnly": true
+    },
+    {
+      "id": "test-requirement-analyzer",
+      "name": "需求分析",
+      "type": "executor",
+      "description": "深度解析需求文档,提取测试要点。支持 Word、PDF、Excel、Markdown 等多种格式,自动识别功能点、边界条件、异常场景,生成结构化的测试需求分析报告。适用于敏捷迭代中的需求澄清和测试范围确认。",
+      "capabilities": [
+        "需求解析",
+        "文档处理",
+        "测试点提取",
+        "范围分析"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "🔍",
+      "executableSkills": [
+        "requirement-parser"
+      ],
+      "declaredSkills": [],
+      "coreSkills": [
+        "requirement-parser"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/test-requirement-analyzer/AGENT.md",
+      "promptOnly": false
+    },
+    {
+      "id": "test-case-generator",
+      "name": "测试用例生成",
+      "type": "executor",
+      "description": "基于需求分析结果,运用九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性)生成高质量测试用例。支持等价类划分、边界值分析、状态迁移、决策表等多种测试设计技术,输出含九维覆盖矩阵的标准格式测试用例文档。",
+      "capabilities": [
+        "用例设计",
+        "九维穷举",
+        "边界分析",
+        "状态迁移"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "✅",
+      "executableSkills": [
+        "9dem-executor"
+      ],
+      "declaredSkills": [],
+      "coreSkills": [
+        "9dem-executor"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/test-case-generator/AGENT.md",
+      "promptOnly": false
+    },
+    {
+      "id": "test-data-generator",
+      "name": "测试数据生成",
+      "type": "executor",
+      "description": "根据测试用例自动生成合规的测试数据。支持结构化数据(JSON/XML/CSV)、数据库数据、文件数据等多种格式。内置数据脱敏和敏感信息识别,确保测试数据符合隐私合规要求。",
+      "capabilities": [
+        "数据生成",
+        "格式转换",
+        "数据脱敏",
+        "合规检查"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "📊",
+      "executableSkills": [
+        "test-data-generator-skill"
+      ],
+      "declaredSkills": [],
+      "coreSkills": [
+        "test-data-generator-skill"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/test-data-generator/AGENT.md",
+      "promptOnly": false
+    },
+    {
+      "id": "defect-analyzer",
+      "name": "缺陷分析",
+      "type": "executor",
+      "description": "智能分析缺陷报告,自动归类问题类型(功能/性能/兼容/安全),定位根因并评估影响范围。提供修复建议和优先级排序,帮助团队高效处理缺陷。",
+      "capabilities": [
+        "缺陷归类",
+        "根因分析",
+        "影响评估",
+        "修复建议"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "🐛",
+      "executableSkills": [
+        "defect-classifier",
+        "failure-root-cause-analyzer"
+      ],
+      "declaredSkills": [],
+      "coreSkills": [
+        "defect-classifier",
+        "failure-root-cause-analyzer"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/defect-analyzer/AGENT.md",
+      "promptOnly": false
+    },
+    {
+      "id": "test-reporter",
+      "name": "测试报告生成",
+      "type": "executor",
+      "description": "自动生成专业的测试报告,包含测试概况、执行统计、缺陷汇总、风险分析等模块。支持 Word、PDF、HTML 等多种格式导出,提供数据可视化图表和趋势分析。",
+      "capabilities": [
+        "报告生成",
+        "数据可视化",
+        "多格式导出",
+        "趋势分析"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "📝",
+      "executableSkills": [
+        "result-aggregator",
+        "quality-metrics-calculator"
+      ],
+      "declaredSkills": [],
+      "coreSkills": [
+        "result-aggregator",
+        "quality-metrics-calculator"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/test-reporter/AGENT.md",
+      "promptOnly": false
+    },
+    {
+      "id": "data-masking",
+      "name": "数据脱敏",
+      "type": "executor",
+      "description": "自动识别并脱敏敏感数据(手机号、身份证号、银行卡号、邮箱等)。支持多种脱敏策略(掩码、哈希、加密、替换),确保测试数据符合 GDPR、个人信息保护法等合规要求。",
+      "capabilities": [
+        "敏感识别",
+        "数据脱敏",
+        "合规处理",
+        "隐私保护"
+      ],
+      "knowledgeBases": [
+        "general"
+      ],
+      "icon": "🔒",
+      "executableSkills": [
+        "data-masking-invoker"
+      ],
+      "declaredSkills": [
+        "data-masking"
+      ],
+      "coreSkills": [
+        "data-masking-invoker",
+        "data-masking"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/data-masking/AGENT.md",
+      "promptOnly": false
+    },
+    {
+      "id": "test-script-generator",
+      "name": "测试脚本生成",
+      "type": "generator",
+      "description": "根据测试用例或需求描述,自动生成可执行的自动化测试脚本。支持 Jest、Pytest、Playwright、Cypress、Postman/Newman 等多种框架。生成内容包括测试用例代码、环境配置、测试数据、断言逻辑。",
+      "capabilities": [
+        "用例转脚本",
+        "框架适配",
+        "脚本生成",
+        "断言构建"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "✍️",
+      "executableSkills": [],
+      "declaredSkills": [
+        "9dem-executor",
+        "context-manager",
+        "quality-self-checker"
+      ],
+      "coreSkills": [
+        "9dem-executor",
+        "context-manager",
+        "quality-self-checker"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/test-script-generator/AGENT.md",
+      "promptOnly": true
+    },
+    {
+      "id": "ui-e2e-executor",
+      "name": "UI/E2E测试",
+      "type": "executor",
+      "description": "执行 Web、移动 App(Android/iOS/鸿蒙)与 PC 客户端(macOS/Windows)的 UI 端到端功能测试。Web 走 Playwright,移动端走 Appium(UiAutomator2/XCUITest/Harmony),PC 客户端走 Appium Windows/mac2 或 WinAppDriver。能根据用例文件或测试脚本自动判定目标平台,支持元素定位、表单填写、截图、失败自愈与统一 UTRM 结果输出。",
+      "capabilities": [
+        "UI自动化",
+        "端到端测试",
+        "截图对比",
+        "视频录制"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "🖥️",
+      "executableSkills": [
+        "ui-direct-invoker",
+        "ui-test-tool-invoker",
+        "mobile-e2e-invoker",
+        "desktop-e2e-invoker"
+      ],
+      "declaredSkills": [
+        "ui-direct-invoker",
+        "ui-test-tool-invoker",
+        "mobile-e2e-invoker",
+        "desktop-e2e-invoker",
+        "result-aggregator",
+        "failure-root-cause-analyzer",
+        "self-healing"
+      ],
+      "coreSkills": [
+        "ui-direct-invoker",
+        "ui-test-tool-invoker",
+        "mobile-e2e-invoker",
+        "desktop-e2e-invoker",
+        "result-aggregator",
+        "failure-root-cause-analyzer",
+        "self-healing"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/ui-e2e-executor/AGENT.md",
+      "promptOnly": false
+    },
+    {
+      "id": "api-executor",
+      "name": "API测试",
+      "type": "executor",
+      "description": "执行 API 自动化测试,基于 Postman/Newman、RestAssured、pytest 等框架。支持接口发现、参数化测试、数据驱动、断言验证,自动生成测试报告和趋势分析。",
+      "capabilities": [
+        "接口测试",
+        "参数化测试",
+        "数据驱动",
+        "报告生成"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test"
+      ],
+      "icon": "🔌",
+      "executableSkills": [
+        "api-direct-invoker",
+        "api-test-tool-invoker"
+      ],
+      "declaredSkills": [
+        "api-direct-invoker",
+        "api-test-tool-invoker",
+        "result-aggregator",
+        "failure-root-cause-analyzer"
+      ],
+      "coreSkills": [
+        "api-direct-invoker",
+        "api-test-tool-invoker",
+        "result-aggregator",
+        "failure-root-cause-analyzer"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/api-executor/AGENT.md",
+      "promptOnly": false
+    },
+    {
+      "id": "test-scheme-generator",
+      "name": "测试方案生成",
+      "type": "executor",
+      "description": "根据项目特点设计完整的测试方案,包括测试策略、测试范围、资源规划、进度安排、风险评估等。支持敏捷、瀑布、DevOps 等多种研发模式,输出标准化的测试方案文档。",
+      "capabilities": [
+        "方案设计",
+        "策略制定",
+        "资源规划",
+        "风险评估"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "📋",
+      "executableSkills": [
+        "test-strategy-designer"
+      ],
+      "declaredSkills": [
+        "test-strategy-designer"
+      ],
+      "coreSkills": [
+        "test-strategy-designer"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/test-scheme-generator/AGENT.md",
+      "promptOnly": false
+    },
+    {
+      "id": "ai-quality-reviewer-1",
+      "name": "AI质量审核-1",
+      "type": "reviewer",
+      "description": "AI质量审核智能体,从事实准确性、逻辑一致性、安全合规性、格式规范性四个维度评估测试交付物。采用比例扣分制,满分100分,≥80分通过。确保输出内容专业、准确、安全。",
+      "capabilities": [
+        "事实核查",
+        "逻辑验证",
+        "安全检测",
+        "格式审查"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "🛡️",
+      "executableSkills": [],
+      "declaredSkills": [],
+      "coreSkills": [],
+      "promptAvailable": true,
+      "promptFile": "agents/ai-quality-reviewer-1/AGENT.md",
+      "promptOnly": true
+    },
+    {
+      "id": "ai-quality-reviewer-2",
+      "name": "AI质量审核-2",
+      "type": "reviewer",
+      "description": "AI质量审核智能体(第二审核员),从事实准确性、逻辑一致性、安全合规性、格式规范性四个维度独立评估测试交付物。与审核员1、3形成交叉验证,确保审核结果客观公正。",
+      "capabilities": [
+        "事实核查",
+        "逻辑验证",
+        "安全检测",
+        "格式审查"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "🛡️",
+      "executableSkills": [],
+      "declaredSkills": [],
+      "coreSkills": [],
+      "promptAvailable": true,
+      "promptFile": "agents/ai-quality-reviewer-2/AGENT.md",
+      "promptOnly": true
+    },
+    {
+      "id": "ai-quality-reviewer-3",
+      "name": "AI质量审核-3",
+      "type": "reviewer",
+      "description": "AI质量审核智能体(第三审核员),从事实准确性、逻辑一致性、安全合规性、格式规范性四个维度独立评估测试交付物。三审核员机制确保质量把关严格,降低漏检风险。",
+      "capabilities": [
+        "事实核查",
+        "逻辑验证",
+        "安全检测",
+        "格式审查"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "🛡️",
+      "executableSkills": [],
+      "declaredSkills": [],
+      "coreSkills": [],
+      "promptAvailable": true,
+      "promptFile": "agents/ai-quality-reviewer-3/AGENT.md",
+      "promptOnly": true
+    },
+    {
+      "id": "ai-evaluation-agent",
+      "name": "AI评估智能体(人工)",
+      "type": "evaluator",
+      "description": "对测试中台各智能体的能力、输出质量和业务价值进行持续评估。采用三层五级评估模型(能力层/质量层/业务价值层),生成量化评估报告,驱动智能体迭代优化。",
+      "capabilities": [
+        "能力评估",
+        "质量评估",
+        "业务价值评估",
+        "趋势分析",
+        "改进建议"
+      ],
+      "knowledgeBases": [
+        "general"
+      ],
+      "icon": "📊",
+      "executableSkills": [
+        "evaluation-system",
+        "quality-metrics-calculator"
+      ],
+      "declaredSkills": [
+        "evaluation-system",
+        "quality-metrics-calculator",
+        "trend-analyzer",
+        "improvement-advisor"
+      ],
+      "coreSkills": [
+        "evaluation-system",
+        "quality-metrics-calculator",
+        "trend-analyzer",
+        "improvement-advisor"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/ai-evaluation-agent/AGENT.md",
+      "promptOnly": false
+    },
+    {
+      "id": "security-sentinel",
+      "name": "安全测试",
+      "type": "security",
+      "description": "自动化安全测试专家。覆盖 7 大测试域:Web应用(OWASP Top 10)、API/接口、云原生与基础设施、移动端、数据安全与隐私合规(等保2.0/个保法/数安法)、软件供应链、AI/大模型安全。支持 SQL注入、XSS、越权、SSRF、JWT攻击、容器逃逸、组件导出、提示注入/越狱等,提供真实PoC验证、CVSS v3.1+业务风险双评分、合规映射与代码级修复。",
+      "capabilities": [
+        "渗透测试",
+        "漏洞扫描",
+        "OWASP Top 10",
+        "SQL注入检测",
+        "XSS检测",
+        "安全审计",
+        "越狱防御",
+        "提示词注入检测"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "🛡️",
+      "executableSkills": [],
+      "declaredSkills": [
+        "security-sentinel-skill",
+        "security-audit-toolkit",
+        "security-vuln-scanner",
+        "security-scanner",
+        "security-operator",
+        "pentest-workbench",
+        "openclaw-vps-hardening",
+        "security-review",
+        "security-scheme-generator",
+        "security-case-generator",
+        "security-report-generator"
+      ],
+      "coreSkills": [
+        "security-sentinel-skill",
+        "security-audit-toolkit",
+        "security-vuln-scanner",
+        "security-scanner",
+        "security-operator",
+        "pentest-workbench",
+        "openclaw-vps-hardening",
+        "security-review",
+        "security-scheme-generator",
+        "security-case-generator",
+        "security-report-generator"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/security-sentinel/AGENT.md",
+      "promptOnly": true
+    },
+    {
+      "id": "performance-tester",
+      "name": "性能测试",
+      "type": "performance",
+      "description": "自动化性能测试专家。调用JMeter/k6/Locust等压测工具对被测目标发真实流量，采集TPS、响应时间(P50/P95/P99)、错误率等指标，识别性能瓶颈并给出优化建议，按7步工作流推进（需求分析→方案制定→场景设计→脚本实现→执行→结果分析→报告生成）。",
+      "capabilities": [
+        "负载测试",
+        "压力测试",
+        "稳定性测试",
+        "并发测试",
+        "瓶颈分析",
+        "SLA评估",
+        "JMeter/k6/Locust脚本生成"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test",
+        "project-biz"
+      ],
+      "icon": "📈",
+      "executableSkills": [
+        "execute_perf_script"
+      ],
+      "declaredSkills": [
+        "performance-tester",
+        "jmeter-executor",
+        "load-testing",
+        "performance-profiler"
+      ],
+      "coreSkills": [
+        "execute_perf_script",
+        "performance-tester",
+        "jmeter-executor",
+        "load-testing",
+        "performance-profiler"
+      ],
+      "promptAvailable": false,
+      "promptFile": "agents/performance-tester/AGENT.md",
+      "promptOnly": false
+    },
+    {
+      "id": "compatibility-coordinator",
+      "name": "兼容性测试协调",
+      "type": "compatibility",
+      "description": "兼容性测试总协调智能体。接收用户兼容性测试需求，识别测试类型（Web/安卓/iOS/鸿蒙/Windows/Mac），分发给对应的专项 skill 执行，协调执行流程，汇总报告。已实现 Web 浏览器兼容性测试，其他平台测试暂未实现。",
+      "capabilities": [
+        "兼容性测试协调",
+        "Web兼容测试",
+        "多端兼容识别"
+      ],
+      "knowledgeBases": [
+        "general",
+        "project-test"
+      ],
+      "icon": "🧭",
+      "executableSkills": [
+        "compatibility-coordinator-invoker"
+      ],
+      "declaredSkills": [
+        "compatibility-coordinator"
+      ],
+      "coreSkills": [
+        "compatibility-coordinator-invoker",
+        "compatibility-coordinator"
+      ],
+      "promptAvailable": true,
+      "promptFile": "agents/compatibility-coordinator/AGENT.md",
+      "promptOnly": false
+    }
+  ],
+  "skills": [
+    {
+      "id": "mobile-e2e-invoker",
+      "directory": "skills/ui-e2e-executor",
+      "entry": "skills/ui-e2e-executor/backend/mobile-e2e-invoker.js",
+      "exportName": "executeMobileE2E",
+      "description": "移动App功能测试执行器(Android / iOS / HarmonyOS 鸿蒙):通过 Appium W3C 协议驱动真机/模拟器,按用例步骤操作原生控件并产出 UTRM 结果。platform 不传时,执行器会根据【用例文件/测试脚本/需求描述】自动判定目标平台;若判定结果不是移动端,会返回 ROUTE_MISMATCH 并指明应改调的工具。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "目标平台 android / ios / harmony。**留空则由执行器自动判定**(推荐,智能体无需人工声明)",
+            "enum": [
+              "android",
+              "ios",
+              "harmony"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "description": "需求描述 / 测试范围说明,参与平台自动判定"
+          },
+          "caseFile": {
+            "type": "string",
+            "description": "用例文件路径(.xlsx/.csv/.md/.json)或用例正文,参与平台自动判定"
+          },
+          "testScript": {
+            "type": "string",
+            "description": "测试脚本路径或脚本内容(Appium/Espresso/XCUITest/Hypium 等),参与平台自动判定"
+          },
+          "goal": {
+            "type": "string",
+            "description": "mode=intent 时的自然语言测试目标"
+          },
+          "mode": {
+            "type": "string",
+            "description": "script(默认)=按 steps 执行; intent=意图驱动:模型临场观察控件树决定下一步并自动生成断言",
+            "enum": [
+              "script",
+              "intent"
+            ]
+          },
+          "cases": {
+            "type": "array",
+            "description": "场景数组。每项 { name, steps:[...] };intent 模式下每项可只给 { name, goal }。action 支持 click/tap/fill/type/clear/press/swipe/scroll/wait/waitFor/expectVisible/expectHidden/expectNotExists/expectText/expectValue/screenshot/launch/restart/close/back/hideKeyboard/goto",
+            "items": {
+              "type": "object"
+            }
+          },
+          "steps": {
+            "type": "array",
+            "description": "单场景简写(与 cases 二选一)",
+            "items": {
+              "type": "object"
+            }
+          },
+          "appPath": {
+            "type": "string",
+            "description": "安装包路径(.apk / .ipa / .hap)"
+          },
+          "appPackage": {
+            "type": "string",
+            "description": "Android 包名(与 appActivity 配对,要求 App 已安装)"
+          },
+          "appActivity": {
+            "type": "string",
+            "description": "Android 入口 Activity"
+          },
+          "bundleId": {
+            "type": "string",
+            "description": "iOS Bundle ID"
+          },
+          "bundleName": {
+            "type": "string",
+            "description": "鸿蒙 bundleName"
+          },
+          "abilityName": {
+            "type": "string",
+            "description": "鸿蒙 abilityName"
+          },
+          "deviceName": {
+            "type": "string",
+            "description": "设备/模拟器名称"
+          },
+          "platformVersion": {
+            "type": "string",
+            "description": "系统版本"
+          },
+          "udid": {
+            "type": "string",
+            "description": "设备唯一标识(多设备时强烈建议传入)"
+          },
+          "automationName": {
+            "type": "string",
+            "description": "覆盖默认驱动名(UiAutomator2 / XCUITest / HarmonyOS)"
+          },
+          "noReset": {
+            "type": "boolean",
+            "description": "不重置应用状态,默认 true"
+          },
+          "fullReset": {
+            "type": "boolean",
+            "description": "执行前卸载重装应用,默认 false"
+          },
+          "appiumUrl": {
+            "type": "string",
+            "description": "Appium Server 地址,默认 http://127.0.0.1:4723;执行机在远端时填远端地址"
+          },
+          "capabilities": {
+            "type": "object",
+            "description": "额外的 Appium capabilities,会合并覆盖默认值"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "单步超时(ms),默认 15000"
+          },
+          "vars": {
+            "type": "object",
+            "description": "初始变量,供 {{var}} 引用"
+          },
+          "restartAppBetweenCases": {
+            "type": "boolean",
+            "description": "每个用例前重启 App,保证用例互相隔离"
+          },
+          "screenshotOnFail": {
+            "type": "boolean",
+            "description": "失败时截图,默认 true"
+          },
+          "screenshotOnSuccess": {
+            "type": "boolean",
+            "description": "成功时截图,默认 false"
+          },
+          "stopOnFail": {
+            "type": "boolean",
+            "description": "失败后中止后续场景,默认 false"
+          }
+        }
+      }
+    },
+    {
+      "id": "desktop-e2e-invoker",
+      "directory": "skills/ui-e2e-executor",
+      "entry": "skills/ui-e2e-executor/backend/desktop-e2e-invoker.js",
+      "exportName": "executeDesktopE2E",
+      "description": "PC客户端功能测试执行器(Windows / macOS 桌面应用):通过 Appium Windows 驱动 / WinAppDriver / mac2 驱动操作原生桌面控件并产出 UTRM 结果。platform 不传时按【用例文件/测试脚本/需求描述】自动判定;Windows 用例需在 Windows 执行机上运行并把地址传给 winAppDriverUrl。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "目标平台 windows / mac。**留空则由执行器自动判定**",
+            "enum": [
+              "windows",
+              "mac"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "description": "需求描述 / 测试范围说明,参与平台自动判定"
+          },
+          "caseFile": {
+            "type": "string",
+            "description": "用例文件路径或正文,参与平台自动判定"
+          },
+          "testScript": {
+            "type": "string",
+            "description": "测试脚本路径或内容(WinAppDriver / pywinauto / atomacos 等),参与平台自动判定"
+          },
+          "goal": {
+            "type": "string",
+            "description": "mode=intent 时的自然语言测试目标"
+          },
+          "mode": {
+            "type": "string",
+            "description": "script(默认)=按 steps 执行; intent=意图驱动",
+            "enum": [
+              "script",
+              "intent"
+            ]
+          },
+          "cases": {
+            "type": "array",
+            "description": "场景数组,每项 { name, steps:[...] };动作同移动端执行器",
+            "items": {
+              "type": "object"
+            }
+          },
+          "steps": {
+            "type": "array",
+            "description": "单场景简写",
+            "items": {
+              "type": "object"
+            }
+          },
+          "windowsAppId": {
+            "type": "string",
+            "description": "Windows 应用标识(形如 Microsoft.WindowsCalculator_8wekyb3d8bbwe!App)"
+          },
+          "appPath": {
+            "type": "string",
+            "description": "应用路径(.exe / .app)"
+          },
+          "bundleId": {
+            "type": "string",
+            "description": "macOS Bundle ID"
+          },
+          "appTopLevelWindow": {
+            "type": "string",
+            "description": "Windows 顶层窗口句柄(十六进制字符串)"
+          },
+          "driverMode": {
+            "type": "string",
+            "description": "winappdriver=直连 WinAppDriver(caps 不带 appium: 前缀);留空走 Appium",
+            "enum": [
+              "appium",
+              "winappdriver"
+            ]
+          },
+          "winAppDriverUrl": {
+            "type": "string",
+            "description": "WinAppDriver / Appium 地址,默认 http://127.0.0.1:4723"
+          },
+          "automationName": {
+            "type": "string",
+            "description": "覆盖默认驱动名(Windows / mac2)"
+          },
+          "capabilities": {
+            "type": "object",
+            "description": "额外的 capabilities,会合并覆盖默认值"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "单步超时(ms),默认 15000"
+          },
+          "vars": {
+            "type": "object",
+            "description": "初始变量,供 {{var}} 引用"
+          },
+          "restartAppBetweenCases": {
+            "type": "boolean",
+            "description": "每个用例前重启应用"
+          },
+          "screenshotOnFail": {
+            "type": "boolean",
+            "description": "失败时截图,默认 true"
+          },
+          "stopOnFail": {
+            "type": "boolean",
+            "description": "失败后中止后续场景,默认 false"
+          }
+        }
+      }
+    },
+    {
+      "id": "compatibility-coordinator-invoker",
+      "directory": "skills/web-compatibility",
+      "entry": "skills/web-compatibility/backend/browser-matrix-invoker.js",
+      "exportName": "executeBrowserMatrix",
+      "description": "兼容性测试统一执行器（由 compatibility-coordinator 调度）。Web 平台：真实驱动 Chromium/Firefox/WebKit × 多分辨率浏览器矩阵，采集控制台错误/页面异常/失败请求/CSS-JS 特性；移动端(android/ios/harmony)与 PC 端(windows/mac)：有 http(s) URL 时设备仿真实测，无 URL 时生成平台专属兼容性测试设计（九维穷举模型）。支持逗号分隔多平台（如 \"android,ios,harmony\"），逐平台串行执行并按平台分节汇总。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "目标平台: web / android / ios / harmony / windows / mac，或逗号分隔多平台组合（如 android,ios,harmony）。Web 走真实浏览器矩阵；其余有 URL 走设备仿真实测、无 URL 走平台专属兼容性测试设计生成；多平台逐个执行后汇总。"
+          },
+          "url": {
+            "type": "string",
+            "description": "待测 URL（Web 平台必填；移动/PC 有 URL 则设备仿真实测，设计生成可留空；多平台时所有平台共用该 URL）"
+          },
+          "matrix": {
+            "type": "object",
+            "description": "Web 矩阵配置: { browsers:[\"chromium\",\"firefox\",\"webkit\"], viewports:[{name,width,height}] }，留空用默认 3 浏览器 × 5 分辨率"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "单页面加载超时(ms)，默认 30000"
+          }
+        },
+        "required": [
+          "platform"
+        ]
+      }
+    },
+    {
+      "id": "ui-test-tool-invoker",
+      "directory": "skills/ui-test-tool-invoker",
+      "entry": "skills/ui-test-tool-invoker/backend/ui-test-invoker.js",
+      "exportName": "invoke",
+      "description": "UI/E2E 测试工具调用:执行 Playwright/Selenium/Cypress 脚本并返回 UTRM 标准结果。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "testScript": {
+            "type": "string",
+            "description": "测试脚本路径或脚本内容"
+          },
+          "testFramework": {
+            "type": "string",
+            "description": "强制指定框架: playwright/selenium/cypress;留空则自动检测"
+          },
+          "testType": {
+            "type": "string",
+            "description": "测试类型(可选)"
+          },
+          "testPattern": {
+            "type": "string",
+            "description": "测试匹配模式(可选)"
+          },
+          "env": {
+            "type": "object",
+            "description": "执行环境变量"
+          },
+          "options": {
+            "type": "object",
+            "description": "执行选项(workers/timeout/retries/coverage/verbose/debug)"
+          }
+        },
+        "required": [
+          "testScript"
+        ]
+      }
+    },
+    {
+      "id": "api-test-tool-invoker",
+      "directory": "skills/api-test-tool-invoker",
+      "entry": "skills/api-test-tool-invoker/backend/api-test-invoker.js",
+      "exportName": "invoke",
+      "description": "API 测试工具调用:执行 Newman/RestAssured/pytest 接口测试并返回 UTRM 标准结果。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "testScript": {
+            "type": "string",
+            "description": "测试脚本路径或集合文件"
+          },
+          "testFramework": {
+            "type": "string",
+            "description": "强制指定框架: newman/restassured/pytest;留空则自动检测"
+          },
+          "env": {
+            "type": "object",
+            "description": "执行环境变量"
+          },
+          "options": {
+            "type": "object",
+            "description": "执行选项(workers/timeout/retries/coverage/verbose/debug)"
+          }
+        },
+        "required": [
+          "testScript"
+        ]
+      }
+    },
+    {
+      "id": "api-direct-invoker",
+      "directory": "skills/api-direct-invoker",
+      "entry": "skills/api-direct-invoker/backend/api-direct-invoker.js",
+      "exportName": "invoke",
+      "description": "接口测试免脚本直执:直接用 HTTP 客户端按用例定义发请求并断言,返回 UTRM 结果。不需要先生成 Postman 集合 / pytest / RestAssured 脚本;当输入是接口清单、接口文档、测试用例表格或自然语言场景描述时使用。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "baseUrl": {
+            "type": "string",
+            "description": "公共基地址,用例 url 可写相对路径(如 /api/login)"
+          },
+          "headers": {
+            "type": "object",
+            "description": "公共请求头(如 Authorization、Cookie)"
+          },
+          "vars": {
+            "type": "object",
+            "description": "初始变量,供 {{var}} 引用"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "单请求超时(ms),默认 15000"
+          },
+          "mode": {
+            "type": "string",
+            "description": "script(默认)=按 cases 原样执行; intent=意图驱动:先用模型把 goal 解析成结构化 Test Intent 与请求序列再执行;用例缺 expect 时自动生成兜底断言",
+            "enum": [
+              "script",
+              "intent"
+            ]
+          },
+          "goal": {
+            "type": "string",
+            "description": "mode=intent 时必填:自然语言测试目标,如「验证用户能登录并看到用户名」。执行器据此解析意图、请求序列与断言点"
+          },
+          "auth": {
+            "type": "object",
+            "description": "鉴权配置 { login:{url,method,body,headers,tokenPath}, injectAs:\"Authorization\", tokenVar:\"token\" }。遇到 401/403 自动重登取 token 注入请求头并重试一次"
+          },
+          "autoAssert": {
+            "type": "boolean",
+            "description": "用例未声明 expect 时,由模型基于意图与实际响应生成断言点(判定在本地客观完成),默认 true"
+          },
+          "cases": {
+            "type": "array",
+            "description": "用例数组。每项: { name, method, url, headers, query, body, expect:{status,json,jsonPath,contains,notContains,equals,header,maxDurationMs}, extract:{变量名:\"data.token\"} }。mode=intent 时每项可只给 { name, goal }",
+            "items": {
+              "type": "object"
+            }
+          },
+          "spec": {
+            "type": "object",
+            "description": "单用例简写(与 cases 二选一)"
+          },
+          "stopOnFail": {
+            "type": "boolean",
+            "description": "失败后中止后续用例,默认 false"
+          }
+        }
+      }
+    },
+    {
+      "id": "ui-direct-invoker",
+      "directory": "skills/ui-direct-invoker",
+      "entry": "skills/ui-direct-invoker/backend/ui-direct-invoker.js",
+      "exportName": "invoke",
+      "description": "UI/E2E 测试免脚本直执:直接用 Playwright 驱动真实浏览器按步骤序列执行(goto/click/fill/断言),返回 UTRM 结果。不需要先生成 Playwright/Selenium/Cypress 脚本文件;当输入是用例文档、操作步骤或 测试URL+账号密码 时使用。失败自动截图。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "baseUrl": {
+            "type": "string",
+            "description": "基地址,步骤 url 可写相对路径"
+          },
+          "browser": {
+            "type": "string",
+            "description": "chromium(默认)/firefox/webkit"
+          },
+          "headless": {
+            "type": "boolean",
+            "description": "无头模式,默认 true"
+          },
+          "viewport": {
+            "type": "object",
+            "description": "{ width, height },默认 1280x720"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "单步超时(ms),默认 15000"
+          },
+          "mode": {
+            "type": "string",
+            "description": "script(默认)=按 steps/cases 执行; intent=意图驱动:模型临场观察页面决定下一步,元素用语义描述定位、失效自愈",
+            "enum": [
+              "script",
+              "intent"
+            ]
+          },
+          "goal": {
+            "type": "string",
+            "description": "mode=intent 时必填:自然语言测试目标,如「验证用户能登录并看到用户名」"
+          },
+          "credentials": {
+            "type": "object",
+            "description": "登录凭证 { username, password },注入为 {{username}}/{{password}} 供模型生成的填表步骤引用"
+          },
+          "maxSteps": {
+            "type": "number",
+            "description": "mode=intent 时最大执行步数,默认 25"
+          },
+          "maxLlmCalls": {
+            "type": "number",
+            "description": "mode=intent 时最大模型调用次数(成本控制),默认 12"
+          },
+          "visualMode": {
+            "type": "string",
+            "description": "compare(默认)=与视觉基线比对; update=刷新基线; off=关闭",
+            "enum": [
+              "compare",
+              "update",
+              "off"
+            ]
+          },
+          "visualThreshold": {
+            "type": "number",
+            "description": "视觉差异率阈值,默认 0.15,超出判 fail"
+          },
+          "screenshotOnFail": {
+            "type": "boolean",
+            "description": "失败时截图,默认 true"
+          },
+          "screenshotOnSuccess": {
+            "type": "boolean",
+            "description": "成功时截图,默认 false"
+          },
+          "cases": {
+            "type": "array",
+            "description": "场景数组。每项: { name, steps:[ {action,selector,value,url,...} ], extract:{变量名:\"text:.sel\"} }。action 支持 goto/click/dblclick/fill/type/press/select/check/uncheck/hover/wait/waitFor/waitForUrl/reload/goBack/screenshot/expectText/expectVisible/expectHidden/expectUrl/expectTitle/expectCount/expectValue/expectAttribute",
+            "items": {
+              "type": "object"
+            }
+          },
+          "steps": {
+            "type": "array",
+            "description": "单场景简写(与 cases 二选一)",
+            "items": {
+              "type": "object"
+            }
+          },
+          "vars": {
+            "type": "object",
+            "description": "初始变量,供 {{var}} 引用"
+          },
+          "stopOnFail": {
+            "type": "boolean",
+            "description": "失败后中止后续场景,默认 false"
+          }
+        }
+      }
+    },
+    {
+      "id": "9dem-executor",
+      "directory": "skills/9dem-executor",
+      "entry": "skills/9dem-executor/backend/9dem-invoker.js",
+      "exportName": "invoke",
+      "description": "九维穷举模型执行器:基于用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性九维,生成等价类划分、边界值分析、Pairwise 组合等专业测试设计。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "需求/场景描述文本(与 inputSpec 二选一)"
+          },
+          "inputSpec": {
+            "type": "object",
+            "description": "结构化输入规范(优先),如 {field:{type:\"string\",minLength:1,maxLength:100}}"
+          },
+          "fields": {
+            "type": "array",
+            "description": "字段列表(三选一),每项 {name,type,min,max,minLength,maxLength,values}"
+          },
+          "dimensions": {
+            "type": "array",
+            "description": "计算维度,默认 [\"data\"];可选全部九维:user/data/process/operation/security/performance/network/terminal/compatibility",
+            "items": {
+              "type": "string",
+              "enum": [
+                "user",
+                "data",
+                "process",
+                "operation",
+                "security",
+                "performance",
+                "network",
+                "terminal",
+                "compatibility"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "quality-metrics-calculator",
+      "directory": "skills/quality-metrics-calculator",
+      "entry": "skills/quality-metrics-calculator/backend/quality-metrics-invoker.js",
+      "exportName": "invoke",
+      "description": "质量度量计算器:计算覆盖率、缺陷密度、测试效率、质量评分等指标。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "description": "UTRM 格式测试结果数组(自动推导各度量数据)"
+          },
+          "coverageData": {
+            "type": "object",
+            "description": "覆盖率数据(显式传入)"
+          },
+          "defectData": {
+            "type": "object",
+            "description": "缺陷数据"
+          },
+          "efficiencyData": {
+            "type": "object",
+            "description": "效率数据"
+          },
+          "qualityData": {
+            "type": "object",
+            "description": "质量评分数据"
+          },
+          "metrics": {
+            "type": "string",
+            "description": "计算哪些指标(all/codeCoverage/requirementCoverage/testCaseCoverage/defectDensity/testEfficiency/qualityScore)",
+            "enum": [
+              "all",
+              "codeCoverage",
+              "requirementCoverage",
+              "testCaseCoverage",
+              "defectDensity",
+              "testEfficiency",
+              "qualityScore"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "evaluation-system",
+      "directory": "skills/evaluation-system",
+      "entry": "skills/evaluation-system/backend/evaluation-system-invoker.js",
+      "exportName": "invoke",
+      "description": "三层五级智能体评估系统:自动收集任务数据,深度评估智能体能力/质量/业务价值,生成趋势报告。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "操作类型",
+            "enum": [
+              "autoCollect",
+              "evaluate",
+              "evaluateAll",
+              "getHistory",
+              "listReports",
+              "getTrend"
+            ]
+          },
+          "agentId": {
+            "type": "string",
+            "description": "智能体ID(用于 getHistory/listReports/getTrend)"
+          },
+          "taskId": {
+            "type": "string",
+            "description": "任务ID(用于 evaluateByTaskId)"
+          },
+          "daysBack": {
+            "type": "integer",
+            "description": "回溯天数(默认30)"
+          },
+          "limitPerAgent": {
+            "type": "integer",
+            "description": "每智能体最多任务数(默认20)"
+          },
+          "scope": {
+            "type": "array",
+            "description": "评估范围(capability/quality/business,默认全开)"
+          },
+          "taskType": {
+            "type": "string",
+            "description": "任务类型(用于 evaluate)"
+          },
+          "output": {
+            "type": "string",
+            "description": "智能体输出内容(用于 evaluate)"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "元数据"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
+      "id": "result-aggregator",
+      "directory": "skills/result-aggregator",
+      "entry": "skills/result-aggregator/backend/result-aggregator-invoker.js",
+      "exportName": "invoke",
+      "description": "结果聚合器:聚合多工具测试结果,生成统一报告(Markdown/HTML/JSON)。",
+      "parameters": null
+    },
+    {
+      "id": "requirement-parser",
+      "directory": "skills/requirement-parser",
+      "entry": "skills/requirement-parser/backend/requirement-parser-invoker.js",
+      "exportName": "invoke",
+      "description": "需求解析器:从需求文本中确定性提取模块、功能点、验收标准、优先级与边界条件。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "完整需求文本/用户故事/验收标准"
+          },
+          "options": {
+            "type": "object",
+            "description": "解析选项（可选）"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      }
+    },
+    {
+      "id": "test-strategy-designer",
+      "directory": "skills/test-strategy-designer",
+      "entry": "skills/test-strategy-designer/backend/test-strategy-invoker.js",
+      "exportName": "invoke",
+      "description": "测试策略设计器:根据需求与约束确定性生成测试模式、层级策略、里程碑、工具链与风险缓解。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "requirement": {
+            "type": "string",
+            "description": "需求文本或需求摘要"
+          },
+          "constraints": {
+            "type": "object",
+            "description": "约束 { timeBudget, budget, teamSize, techStack, excludeLevels, riskPreference }"
+          }
+        },
+        "required": [
+          "requirement"
+        ]
+      }
+    },
+    {
+      "id": "test-data-generator-skill",
+      "directory": "skills/test-data-generator-skill",
+      "entry": "skills/test-data-generator-skill/backend/test-data-generator-invoker.js",
+      "exportName": "invoke",
+      "description": "测试数据生成器:按字段规格生成真实测试数据，支持随机/边界值/组合（pairwise）三种模式。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "random",
+              "boundary",
+              "combinations"
+            ],
+            "description": "生成模式"
+          },
+          "spec": {
+            "type": "object",
+            "description": "单字段规格 {field,type,min,max,minLength,maxLength,values}；多字段请用 fields"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "多字段规格数组，每项 {field,type,min,max,minLength,maxLength,values}"
+          },
+          "count": {
+            "type": "number",
+            "description": "生成条数（默认 10，最大 200）"
+          },
+          "min": {
+            "type": "number",
+            "description": "boundary 模式下限"
+          },
+          "max": {
+            "type": "number",
+            "description": "boundary 模式上限"
+          },
+          "type": {
+            "type": "string",
+            "description": "boundary 模式类型 number/string/date"
+          },
+          "factors": {
+            "type": "array",
+            "description": "combinations 模式的因子数组"
+          },
+          "strategy": {
+            "type": "string",
+            "description": "组合策略 all/pairwise/random"
+          }
+        }
+      }
+    },
+    {
+      "id": "defect-classifier",
+      "directory": "skills/defect-classifier",
+      "entry": "skills/defect-classifier/backend/defect-classifier-invoker.js",
+      "exportName": "invoke",
+      "description": "缺陷分类器:根据标题/描述/日志/堆栈确定性输出缺陷类型、严重度、优先级、模块与根因类别。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "缺陷标题"
+          },
+          "description": {
+            "type": "string",
+            "description": "缺陷描述"
+          },
+          "log": {
+            "type": "string",
+            "description": "错误日志"
+          },
+          "stack": {
+            "type": "string",
+            "description": "异常堆栈"
+          },
+          "environment": {
+            "type": "object",
+            "description": "环境信息"
+          },
+          "severity": {
+            "type": "string",
+            "description": "已知严重度 Blocker/Critical/Major/Minor/Cosmetic（可选）"
+          },
+          "reproductionDifficulty": {
+            "type": "number",
+            "description": "复现难度 1-5（可选）"
+          },
+          "impactScope": {
+            "type": "number",
+            "description": "影响范围 1-5（可选）"
+          }
+        }
+      }
+    },
+    {
+      "id": "failure-root-cause-analyzer",
+      "directory": "skills/failure-root-cause-analyzer",
+      "entry": "skills/failure-root-cause-analyzer/backend/rca-invoker.js",
+      "exportName": "invoke",
+      "description": "根因分析器:对失败现象/日志/堆栈做 5Why + 鱼骨图 + 因果链的确定性根因分析。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "failure": {
+            "type": "string",
+            "description": "失败现象/缺陷描述"
+          },
+          "logs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "日志行数组"
+          },
+          "stackTrace": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "堆栈行数组"
+          },
+          "environment": {
+            "type": "object",
+            "description": "环境信息"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "full",
+              "5why",
+              "fishbone"
+            ],
+            "description": "分析模式，默认 full"
+          }
+        },
+        "required": [
+          "failure"
+        ]
+      }
+    },
+    {
+      "id": "data-masking-invoker",
+      "directory": "skills/data-masking-skill",
+      "entry": "skills/data-masking-skill/backend/data-masking-invoker.js",
+      "exportName": "invoke",
+      "description": "数据脱敏执行器:对文本做确定性正则脱敏（手机号/身份证/邮箱/银行卡/姓名/口令/地址），对服务器内 docx/图片调用 mask_wrapper.py 真实脱敏。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "待脱敏文本"
+          },
+          "filePath": {
+            "type": "string",
+            "description": "服务器内待脱敏文件绝对路径（项目目录或临时目录内）"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "blur",
+              "block"
+            ],
+            "description": "图片脱敏方式，默认 blur"
+          }
+        }
+      }
+    },
+    {
+      "id": "execute_perf_script",
+      "directory": "skills/jmeter-executor",
+      "entry": "skills/jmeter-executor/backend/jmeter-invoker.js",
+      "exportName": "executeJmeter",
+      "description": "JMeter/k6 压测脚本执行器:执行 JMX 或 k6 JS 脚本,返回 TPS/RT/错误率等结构化指标。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "script": {
+            "type": "string",
+            "description": "压测脚本内容（JMX XML 或 k6 JS）"
+          },
+          "tool": {
+            "type": "string",
+            "enum": [
+              "jmeter",
+              "k6",
+              "locust"
+            ],
+            "default": "k6",
+            "description": "压测工具类型"
+          },
+          "duration": {
+            "type": "number",
+            "default": 60,
+            "description": "压测持续时间（秒）"
+          },
+          "threads": {
+            "type": "number",
+            "default": 100,
+            "description": "并发线程数/虚拟用户数"
+          },
+          "rampUp": {
+            "type": "number",
+            "default": 30,
+            "description": "爬坡时间（秒），仅 JMeter"
+          },
+          "target": {
+            "type": "string",
+            "description": "被测目标主机"
+          },
+          "port": {
+            "type": "number",
+            "description": "被测目标端口"
+          },
+          "protocol": {
+            "type": "string",
+            "default": "http",
+            "description": "协议 http/https"
+          },
+          "path": {
+            "type": "string",
+            "default": "/",
+            "description": "被测路径"
+          },
+          "reportDir": {
+            "type": "string",
+            "description": "JMeter HTML 报告输出目录"
+          },
+          "thresholds": {
+            "type": "string",
+            "description": "k6 阈值 JSON（仅 k6）"
+          },
+          "out": {
+            "type": "string",
+            "default": "json",
+            "description": "k6 输出格式"
+          }
+        },
+        "required": [
+          "script"
+        ]
+      }
+    }
+  ],
+  "skillDirectories": [
+    {
+      "id": "9dem-executor",
+      "directory": "skills/9dem-executor",
+      "name": "九维穷举模型执行器（9DEM Executor）",
+      "description": "---",
+      "executable": true,
+      "entries": [
+        {
+          "id": "9dem-executor",
+          "entry": "skills/9dem-executor/backend/9dem-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "9dem-planner",
+      "directory": "skills/9dem-planner",
+      "name": "9dem-planner",
+      "description": "> 九维穷举测试规划与执行调度引擎",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "ai-evaluation-agent",
+      "directory": "skills/ai-evaluation-agent",
+      "name": "能力评估Agent",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "api-direct-invoker",
+      "directory": "skills/api-direct-invoker",
+      "name": "API 直执执行器（api-direct-invoker）",
+      "description": "---",
+      "executable": true,
+      "entries": [
+        {
+          "id": "api-direct-invoker",
+          "entry": "skills/api-direct-invoker/backend/api-direct-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "api-executor",
+      "directory": "skills/api-executor",
+      "name": "接口测试执行Agent",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "api-test-tool-invoker",
+      "directory": "skills/api-test-tool-invoker",
+      "name": "api-test-tool-invoker",
+      "description": "`api-test-tool-invoker`",
+      "executable": true,
+      "entries": [
+        {
+          "id": "api-test-tool-invoker",
+          "entry": "skills/api-test-tool-invoker/backend/api-test-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "context-manager",
+      "directory": "skills/context-manager",
+      "name": "context-manager",
+      "description": "> 上下文分层管理 · 压缩 · 智能淘汰",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "data-masking",
+      "directory": "skills/data-masking",
+      "name": "数据脱敏Agent",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "data-masking-skill",
+      "directory": "skills/data-masking-skill",
+      "name": "Data Masking Skill - 数据脱敏技能",
+      "description": "提供专业的数据脱敏能力，支持 Word 文档、图片和批量文件的敏感信息处理。",
+      "executable": true,
+      "entries": [
+        {
+          "id": "data-masking-invoker",
+          "entry": "skills/data-masking-skill/backend/data-masking-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "defect-analyzer",
+      "directory": "skills/defect-analyzer",
+      "name": "缺陷分析Agent",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "defect-classifier",
+      "directory": "skills/defect-classifier",
+      "name": "defect-classifier",
+      "description": "对缺陷进行标准化分类（类型/严重度/优先级/模块/根因），生成缺陷画像与分布报告。",
+      "executable": true,
+      "entries": [
+        {
+          "id": "defect-classifier",
+          "entry": "skills/defect-classifier/backend/defect-classifier-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "defect-knowledge-queryer",
+      "directory": "skills/defect-knowledge-queryer",
+      "name": "defect-knowledge-queryer",
+      "description": "`defect-analyzer`（缺陷分析智能体）",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "evaluation-system",
+      "directory": "skills/evaluation-system",
+      "name": "evaluation-system Skill",
+      "description": "`evaluation-system` 是测试中台的三层五级智能体评估系统，负责对系统中各智能体的能力、输出质量和业务价值进行持续评估，驱动迭代优化。",
+      "executable": true,
+      "entries": [
+        {
+          "id": "evaluation-system",
+          "entry": "skills/evaluation-system/backend/evaluation-system-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "failure-root-cause-analyzer",
+      "directory": "skills/failure-root-cause-analyzer",
+      "name": "failure-root-cause-analyzer",
+      "description": "对测试失败进行系统性根因分析（5-Why / 鱼骨图 / 因果链），输出根因链与改进建议优先级列表。",
+      "executable": true,
+      "entries": [
+        {
+          "id": "failure-root-cause-analyzer",
+          "entry": "skills/failure-root-cause-analyzer/backend/rca-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "improvement-advisor",
+      "directory": "skills/improvement-advisor",
+      "name": "improvement-advisor",
+      "description": "持续改进建议器 - 基于评估结果生成结构化改进建议（优先级排序 + 预期收益 + 路线图）。",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "jmeter-executor",
+      "directory": "skills/jmeter-executor",
+      "name": "jmeter-executor —— 性能压测脚本执行器",
+      "description": "`performance-tester`（性能测试智能体）的**必调工具** `execute_perf_script` 的实现。",
+      "executable": true,
+      "entries": [
+        {
+          "id": "execute_perf_script",
+          "entry": "skills/jmeter-executor/backend/jmeter-invoker.js",
+          "exportName": "executeJmeter"
+        }
+      ]
+    },
+    {
+      "id": "openclaw-vps-hardening",
+      "directory": "skills/openclaw-vps-hardening",
+      "name": "OpenClaw VPS Server Hardening",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "pentest-workbench",
+      "directory": "skills/pentest-workbench",
+      "name": "Pentest Workbench",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "quality-metrics-calculator",
+      "directory": "skills/quality-metrics-calculator",
+      "name": "质量度量计算器（Quality Metrics Calculator）",
+      "description": "---",
+      "executable": true,
+      "entries": [
+        {
+          "id": "quality-metrics-calculator",
+          "entry": "skills/quality-metrics-calculator/backend/quality-metrics-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "quality-metrics-definer",
+      "directory": "skills/quality-metrics-definer",
+      "name": "quality-metrics-definer",
+      "description": "> 质量指标定义器 — 为每个测试需求定义量化质量指标，使评估有标准可循。",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "quality-self-checker",
+      "directory": "skills/quality-self-checker",
+      "name": "测试脚本质量自检（Quality Self-Checker）",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "report-generator",
+      "directory": "skills/report-generator",
+      "name": "报告生成Agent",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "requirement-parser",
+      "directory": "skills/requirement-parser",
+      "name": "requirement-parser",
+      "description": "将各类格式的需求文档解析为结构化输出，供测试用例生成使用。",
+      "executable": true,
+      "entries": [
+        {
+          "id": "requirement-parser",
+          "entry": "skills/requirement-parser/backend/requirement-parser-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "result-aggregator",
+      "directory": "skills/result-aggregator",
+      "name": "结果聚合器（Result Aggregator）",
+      "description": "---",
+      "executable": true,
+      "entries": [
+        {
+          "id": "result-aggregator",
+          "entry": "skills/result-aggregator/backend/result-aggregator-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "security-audit-toolkit",
+      "directory": "skills/security-audit-toolkit",
+      "name": "Security Audit",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "security-case-generator",
+      "directory": "skills/security-case-generator",
+      "name": "安全测试用例生成 Skill",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "security-operator",
+      "directory": "skills/security-operator",
+      "name": "Security Operator v2.0",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "security-report-generator",
+      "directory": "skills/security-report-generator",
+      "name": "安全测试报告生成 Skill",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "security-review",
+      "directory": "skills/security-review",
+      "name": "Security Review Skill",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "security-scanner",
+      "directory": "skills/security-scanner",
+      "name": "Security Scanner（深度安全扫描）",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "security-scheme-generator",
+      "directory": "skills/security-scheme-generator",
+      "name": "安全测试方案生成 Skill",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "security-sentinel",
+      "directory": "skills/security-sentinel",
+      "name": "Security Sentinel",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "security-sentinel-skill",
+      "directory": "skills/security-sentinel-skill",
+      "name": "Security Sentinel",
+      "description": "---",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "security-vuln-scanner",
+      "directory": "skills/security-vuln-scanner",
+      "name": "Security Vulnerability Scanner",
+      "description": "针对 Web 应用源码和 API 进行**静态安全扫描**，覆盖 OWASP Top 10，输出结构化漏洞报告。",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "self-healing",
+      "directory": "skills/self-healing",
+      "name": "self-healing",
+      "description": "> UI 元素定位失败时，自动尝试替代定位策略，实现 E2E 测试自愈合，提升测试稳定性。",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "test-data-generator-skill",
+      "directory": "skills/test-data-generator-skill",
+      "name": "test-data-generator-skill",
+      "description": "生成测试数据（等价类/边界值/组合数据/特殊值），支持多格式输出，自动应用脱敏规则。",
+      "executable": true,
+      "entries": [
+        {
+          "id": "test-data-generator-skill",
+          "entry": "skills/test-data-generator-skill/backend/test-data-generator-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "test-strategy-designer",
+      "directory": "skills/test-strategy-designer",
+      "name": "test-strategy-designer",
+      "description": "> 测试策略设计器 —— 方案 V3.0 辅助 Skill，挂在 `test-scheme-generator` 智能体下",
+      "executable": true,
+      "entries": [
+        {
+          "id": "test-strategy-designer",
+          "entry": "skills/test-strategy-designer/backend/test-strategy-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "trend-analyzer",
+      "directory": "skills/trend-analyzer",
+      "name": "trend-analyzer",
+      "description": "分析智能体评估数据的时间序列趋势（上升/下降/平稳），识别周期性规律和异常点，为 ai-evaluation-agent 提供趋势洞察与异常告警。",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "ui-direct-invoker",
+      "directory": "skills/ui-direct-invoker",
+      "name": "UI 直执执行器（ui-direct-invoker）",
+      "description": "---",
+      "executable": true,
+      "entries": [
+        {
+          "id": "ui-direct-invoker",
+          "entry": "skills/ui-direct-invoker/backend/ui-direct-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "ui-e2e-executor",
+      "directory": "skills/ui-e2e-executor",
+      "name": "ui-e2e-executor —— 多端 UI/E2E 执行器",
+      "description": "承接「UI/E2E 测试」智能体(ui-e2e-executor)的**移动 App** 与 **PC 客户端**功能测试执行能力。",
+      "executable": true,
+      "entries": [
+        {
+          "id": "mobile-e2e-invoker",
+          "entry": "skills/ui-e2e-executor/backend/mobile-e2e-invoker.js",
+          "exportName": "executeMobileE2E"
+        },
+        {
+          "id": "desktop-e2e-invoker",
+          "entry": "skills/ui-e2e-executor/backend/desktop-e2e-invoker.js",
+          "exportName": "executeDesktopE2E"
+        }
+      ]
+    },
+    {
+      "id": "ui-test-tool-invoker",
+      "directory": "skills/ui-test-tool-invoker",
+      "name": "SKILL.md — ui-test-tool-invoker",
+      "description": "`ui-test-tool-invoker`",
+      "executable": true,
+      "entries": [
+        {
+          "id": "ui-test-tool-invoker",
+          "entry": "skills/ui-test-tool-invoker/backend/ui-test-invoker.js",
+          "exportName": "invoke"
+        }
+      ]
+    },
+    {
+      "id": "unified-report-generator",
+      "directory": "skills/unified-report-generator",
+      "name": "unified-report-generator",
+      "description": "将聚合结果与质量指标统一生成多格式测试报告（Markdown/HTML/Excel 友好）。",
+      "executable": false,
+      "entries": []
+    },
+    {
+      "id": "web-compatibility",
+      "directory": "skills/web-compatibility",
+      "name": "web-compatibility",
+      "description": "（无 SKILL.md）",
+      "executable": true,
+      "entries": [
+        {
+          "id": "compatibility-coordinator-invoker",
+          "entry": "skills/web-compatibility/backend/browser-matrix-invoker.js",
+          "exportName": "executeBrowserMatrix"
+        }
+      ]
+    }
+  ],
+  "requirements": {
+    "node": ">=22（全局 fetch；混合 CJS/ESM 需要 Node 22+ 的语法自动检测；UI/兼容性 skill 需要 Playwright）",
+    "python": "数据脱敏/文档转换 skill 需要 Python 3.10+ 与对应 requirements.txt",
+    "externalTools": [
+      "playwright/chromium",
+      "appium（移动/桌面 E2E）",
+      "jmeter 或 k6（性能）"
+    ]
+  }
+}
