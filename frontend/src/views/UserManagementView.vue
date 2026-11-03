@@ -1,9 +1,9 @@
 <template>
   <div class="user-management">
     <div class="page-header">
-      <h2>👥 用户管理</h2>
+      <h2 class="view-title"><MsIcon name="group" :size="22" /> 用户管理</h2>
       <el-button type="primary" @click="showCreateDialog = true">
-        <el-icon><Plus /></el-icon>
+        <MsIcon name="add" />
         创建用户
       </el-button>
     </div>
@@ -103,6 +103,7 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { useMainStore } from '@/stores/main'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { userApi } from '@/api'
+import MsIcon from '@/components/MsIcon.vue'
 
 const mainStore = useMainStore()
 const currentUser = computed(() => mainStore.user)

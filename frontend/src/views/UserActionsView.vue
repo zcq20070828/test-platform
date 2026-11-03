@@ -3,8 +3,8 @@
     <!-- 顶部：返回 + 筛选栏 -->
     <el-card shadow="hover">
       <div class="toolbar">
-        <el-button @click="goBack" :icon="ArrowLeft">返回统计概览</el-button>
-        <span class="page-title">👣 用户行为明细</span>
+        <el-button @click="goBack"><MsIcon name="arrow_back" :size="16" /> 返回统计概览</el-button>
+        <span class="page-title"><MsIcon name="directions_walk" :size="20" /> 用户行为明细</span>
         <div class="filters">
           <el-date-picker
             v-model="dateRange"
@@ -22,7 +22,7 @@
           <el-select v-model="userFilter" placeholder="用户" clearable filterable style="width: 160px" @change="onFilterChange">
             <el-option v-for="u in userOptions" :key="u.value" :label="u.label" :value="u.value" />
           </el-select>
-          <el-button type="primary" :icon="Refresh" @click="loadAll">刷新</el-button>
+          <el-button type="primary" @click="loadAll"><MsIcon name="refresh" :size="16" /> 刷新</el-button>
         </div>
       </div>
     </el-card>
@@ -32,7 +32,7 @@
       <el-col :span="14">
         <el-card shadow="hover">
           <template #header>
-            <span>📊 用户行为统计概览</span>
+            <span class="tab-label"><MsIcon name="analytics" :size="18" /> 用户行为统计概览</span>
           </template>
           <el-row :gutter="16" class="stat-numbers">
             <el-col :span="8">
@@ -85,7 +85,7 @@
       <el-col :span="10">
         <el-card shadow="hover">
           <template #header>
-            <span>⏱️ 使用时长 TOP10 用户</span>
+            <span class="tab-label"><MsIcon name="timer" :size="18" /> 使用时长 TOP10 用户</span>
           </template>
           <el-table :data="(statsData.userUsage || []).slice(0, 10)" stripe size="small">
             <el-table-column type="index" label="#" width="45" />
@@ -106,7 +106,7 @@
     <!-- 底部：行为明细列表 -->
     <el-card shadow="hover" style="margin-top: 20px">
       <template #header>
-        <span>📋 行为明细列表</span>
+        <span class="tab-label"><MsIcon name="assignment" :size="18" /> 行为明细列表</span>
       </template>
       <el-table :data="actionList" stripe size="small">
         <el-table-column prop="id" label="ID" width="70" />
@@ -169,8 +169,8 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, Refresh } from '@element-plus/icons-vue'
 import { userActionApi } from '@/api'
+import MsIcon from '@/components/MsIcon.vue'
 
 const router = useRouter()
 const loading = ref(false)
@@ -371,4 +371,8 @@ onMounted(loadAll)
   justify-content: flex-end;
   margin-top: 16px;
 }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title, .page-title, h2, .header-title { min-width: 0; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

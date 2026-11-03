@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Document, Promotion, InfoFilled, CircleClose } from '@element-plus/icons-vue'
 import { useMainStore } from '@/stores/main'
 import { request } from '@/api'
 import DashboardChatPanel from '@/components/DashboardChatPanel.vue'
 import type { AttachmentFile } from '@/types'
+import MsIcon from '@/components/MsIcon.vue'
+import { scopeMsIcon } from '@/utils/stageIcons'
 
 // 📜 测试脚本生成「测试执行」tab —— 两栏格局（左：脚本类型+用户输入；右：实时输出）
 // 结构与「安全/性能测试」的 DomainTestExecutor、「兼容性测试」的 CompatTestExecutor 对齐：
@@ -15,7 +16,7 @@ import type { AttachmentFile } from '@/types'
 
 const AGENT_ID = 'test-script-generator'
 const LABEL = '测试脚本生成'
-const ICON = '📜'
+const ICON = 'description'
 
 // 脚本类型（用于下拉与注入前缀；底层均为 test-script-generator 一个智能体）
 const SCRIPT_TYPES: { key: string; label: string; desc: string }[] = [
@@ -34,7 +35,7 @@ interface Entry {
 const entries = computed<Entry[]>(() => {
   const list: Entry[] = SCRIPT_TYPES.map((t) => ({
     key: `type-${t.key}`,
-    name: `${ICON} ${LABEL}·${t.label}`,
+    name: `${LABEL}·${t.label}`,
     desc: t.desc,
     scriptType: t.label,
     label: t.label,
@@ -42,7 +43,7 @@ const entries = computed<Entry[]>(() => {
   }))
   list.push({
     key: 'full',
-    name: `${ICON} ${LABEL}·完整流程`,
+    name: `${LABEL}·完整流程`,
     desc: '不指定类型，由智能体根据需求自动判断并生成（接口/UI/E2E 等）',
     scriptType: undefined,
     label: '完整流程',
@@ -106,7 +107,7 @@ const currentAgent = computed(() =>
 function onTaskCreated(taskId: string) {
   currentTaskId.value = taskId
   localStorage.setItem(TASK_HISTORY_KEY, taskId)
-  ElMessage.info({ message: '⏳ 已开始执行，实时处理过程（含交付物）显示在下方面板', duration: 6000 })
+  ElMessage.info({ message: '已开始执行，实时处理过程（含交付物）显示在下方面板', duration: 6000 })
 }
 
 function resetOutput() {
@@ -257,7 +258,7 @@ async function run() {
     const task: any = await mainStore.createTask(AGENT_ID, desc, filesToSubmit, { source: 'step', type: AGENT_ID })
     if (task && task.id) {
       onTaskCreated(task.id)
-      ElMessage.success(`${ICON} ${LABEL}任务已提交（${e.isFull ? '完整流程' : e.label}），请等待结果返回...`)
+      ElMessage.success(`${LABEL}任务已提交（${e.isFull ? '完整流程' : e.label}），请等待结果返回...`)
       input.value = ''
       files.value = []
     } else if (task === null) {
@@ -283,9 +284,9 @@ async function run() {
         <el-card class="config-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span class="header-icon">{{ ICON }}</span>
+              <span class="header-icon"><MsIcon :name="ICON" :size="20" color="#007aff" /></span>
               <div class="header-text">
-                <div class="header-title">{{ LABEL }}执行配置</div>
+                <div class="header-title" :title="LABEL + '执行配置'">{{ LABEL }}执行配置</div>
                 <div class="header-sub">选择脚本类型、填写需求，可上传接口文档/用例作为生成输入</div>
               </div>
             </div>
@@ -301,9 +302,10 @@ async function run() {
               >
                 <el-option v-for="e in entries" :key="e.key" :value="e.key" :label="e.name">
                   <div class="de-opt">
-                    <span class="de-opt-name">{{ e.name }}</span>
+                    <span class="de-opt-name"><MsIcon :name="ICON" :size="16" /> {{ e.name }}</span>
                     <span class="de-opt-tag">
-                      {{ e.isFull ? '完整流程' : e.label }}
+                      <MsIcon :name="scopeMsIcon(e.label || e.name, !!e.isFull)" :size="16" />
+                      <span>{{ e.isFull ? '完整流程' : e.label }}</span>
                     </span>
                   </div>
                 </el-option>
@@ -327,14 +329,14 @@ async function run() {
                       class="attachment-image"
                     />
                     <div v-else class="attachment-file">
-                      <el-icon><Document /></el-icon>
+                      <MsIcon name="description" />
                       <div class="file-info">
                         <span class="file-name">{{ file.name }}</span>
                         <span class="file-size">{{ (file.size / 1024).toFixed(1) }}KB</span>
                       </div>
                     </div>
                     <el-button class="remove-attachment" text size="small" @click="removeAttachment(index)">
-                      <el-icon><CircleClose /></el-icon>
+                      <MsIcon name="cancel" />
                     </el-button>
                   </div>
                 </div>
@@ -349,7 +351,7 @@ async function run() {
                 >
                   <div class="input-toolbar">
                     <el-button text title="上传补充材料" @click="handleFileSelect">
-                      <el-icon><Document /></el-icon>
+                      <MsIcon name="description" />
                     </el-button>
                     <input ref="fileInput" type="file" multiple style="display: none" @change="handleFileChange" />
                     <span class="toolbar-note">补充材料（可选，Word 文档将自动解析正文）</span>
@@ -370,21 +372,21 @@ async function run() {
                       :disabled="!input.trim() && files.length === 0"
                       @click="run"
                     >
-                      <el-icon v-if="!submitting"><Promotion /></el-icon>
+                      <MsIcon v-if="!submitting" name="send" />
                       {{ selected.isFull ? `执行${LABEL}完整流程` : `生成${selected.label}` }}
                     </el-button>
                   </div>
                 </div>
 
                 <div class="input-hint">
-                  <el-icon><InfoFilled /></el-icon>
+                  <MsIcon name="info" />
                   <span>支持拖拽文件到输入框上传（docx、md、txt、json、py、js 等，单文件 ≤ 10MB）</span>
                 </div>
               </div>
             </template>
 
             <div v-else class="de-empty-inline">
-              <div class="de-empty-icon">{{ ICON }}</div>
+              <div class="de-empty-icon"><MsIcon :name="ICON" :size="36" color="#a0b4d8" /></div>
               <p>请选择脚本类型，然后在输入框描述测试脚本生成需求</p>
             </div>
           </el-form>
@@ -396,7 +398,7 @@ async function run() {
         <el-card class="output-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span class="header-icon header-icon--live">📡</span>
+              <span class="header-icon header-icon--live"><MsIcon name="sensors" :size="20" color="#67c23a" /></span>
               <div class="header-text">
                 <div class="header-title">处理过程信息</div>
                 <div class="header-sub">
@@ -415,12 +417,12 @@ async function run() {
               :readonly="true"
               :is-loading="submitting"
               :current-agent="currentAgent"
-              empty-text="⏳ 等待阶段开始…"
+              empty-text="等待阶段开始…"
             />
           </div>
           <div v-else class="output-empty">
             <div class="output-empty-glow">
-              <el-icon :size="40" color="#a0b4d8"><Document /></el-icon>
+              <MsIcon name="description" :size="40" color="#a0b4d8" />
             </div>
             <p class="output-empty-title">执行后在此实时显示处理过程与交付物</p>
             <p class="output-empty-sub">支持实时流式输出 · 阶段进度 · 三格式交付物下载</p>
@@ -449,6 +451,10 @@ async function run() {
   padding: 14px 20px;
   border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5);
   background: linear-gradient(180deg, #fafbfd 0%, #ffffff 100%);
+  height: auto;
+  min-height: 44px;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 .config-card {
   display: flex;
@@ -478,6 +484,10 @@ async function run() {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .header-icon {
   flex-shrink: 0;
@@ -498,12 +508,18 @@ async function run() {
 .header-text {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 .header-title {
   font-size: 15px;
   font-weight: 700;
   color: var(--text-primary);
-  line-height: 1.3;
+  line-height: 1.35;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .header-sub {
   margin-top: 2px;
@@ -512,10 +528,16 @@ async function run() {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .reset-btn {
   flex-shrink: 0;
 }
+
 
 /* ── 脚本类型：下拉与提示 ─────────────────── */
 .stage-hint {
@@ -556,12 +578,20 @@ async function run() {
   color: var(--text-primary);
 }
 .de-opt-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 10px;
   background: rgba(0, 122, 255, 0.1);
   color: var(--primary);
   flex-shrink: 0;
+}
+.de-opt-tag .ms-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
 }
 
 /* ── 任务输入区（对齐分步测试 DashboardChatPanel 输入样式）── */

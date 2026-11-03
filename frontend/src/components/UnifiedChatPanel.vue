@@ -8,12 +8,8 @@ import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
 import { Marked } from 'marked'
 import { sanitizeHtml, renderMarkdownSafe, escapeHtml } from '@/utils/safe-html'
-import {
-  CircleClose, User, ChatDotRound,
-  InfoFilled, Loading, SuccessFilled,
-  Monitor, Document, Check, Promotion,
-  EditPen, DataAnalysis, PictureFilled, FolderOpened, View, Download, CopyDocument, ArrowRight
-} from '@element-plus/icons-vue'
+import MsIcon from '@/components/MsIcon.vue'
+import { getAgentIcon } from '@/utils/agentIcons'
 
 // ===== 局部 marked 实例：避免多个组件用 marked.use() 互相覆盖 renderer =====
 const ThinkingIcon = 'Setting'
@@ -226,7 +222,6 @@ function formatTime(iso: string) {
   return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-
 /**
  * 复制文本到剪贴板
  */
@@ -389,34 +384,17 @@ async function handleDecision(msg: any, decision: 'continue' | 'manual' | 'stop'
 
 // 获取智能体emoji
 function getAgentEmoji(agentId: string | undefined): string {
-  const emojiMap: Record<string, string> = {
-    'test-master': '👑',
-    'test-requirement-analyzer': '🔍',
-    'test-scheme-generator': '📋',
-    'test-case-generator': '✅',
-    'test-data-generator': '📊',
-    'api-executor': '🔌',
-    'ui-e2e-executor': '🖥️',
-    'knowledge-manager': '📚',
-    'test-reporter': '📊',
-    'defect-analyzer': '🐛',
-    'data-masking': '🎭',
-    'ai-quality-reviewer-1': '🤖',
-    'ai-quality-reviewer-2': '🤖',
-    'ai-quality-reviewer-3': '🤖',
-    'default': '🤖'
-  }
-  return emojiMap[agentId || ''] || emojiMap['default'] || '🤖'
+  return getAgentIcon(agentId)
 }
 
 // 获取步骤图标
 function getStepIcon(type: string) {
   switch (type) {
-    case 'thinking': return 'Cpu'
-    case 'tool_call': return 'Tools'
-    case 'tool_result': return 'Check'
-    case 'step': return 'Monitor'
-    default: return 'Document'
+    case 'thinking': return 'memory'
+    case 'tool_call': return 'build'
+    case 'tool_result': return 'check'
+    case 'step': return 'desktop_windows'
+    default: return 'description'
   }
 }
 
@@ -443,7 +421,7 @@ onMounted(() => {
     <div v-if="!compact" class="panel-header">
       <div class="agent-info">
         <el-avatar :size="40" class="agent-avatar-icon">
-          {{ currentAgent ? getAgentEmoji(currentAgent.id) : '🤖' }}
+          <MsIcon :name="currentAgent ? getAgentEmoji(currentAgent.id) : 'smart_toy'" :size="20" />
         </el-avatar>
         <div class="agent-details">
           <h3 class="agent-name-label">{{ currentAgent?.name || '测试主控' }}</h3>
@@ -452,7 +430,7 @@ onMounted(() => {
       </div>
       <div class="header-actions">
         <el-button text @click="emit('clear')">
-          <el-icon><CircleClose /></el-icon>
+          <MsIcon name="cancel" />
           清空对话
         </el-button>
       </div>
@@ -462,15 +440,15 @@ onMounted(() => {
     <div class="messages-container" ref="messagesContainer" @click="onMessageAreaClick">
       <div v-if="messages.length === 0" class="empty-state">
         <div class="empty-icon-wrap">
-          <el-icon :size="48"><ChatDotRound /></el-icon>
+          <MsIcon name="chat" :size="48" />
           <span class="live-dot"></span>
         </div>
         <p class="empty-title">{{ compact ? '实时流式对话' : '测试中台 · 流式交互' }}</p>
         <p class="hint">输入需求后，所有智能体的输出将在此实时同步展示：<br/>
           <span class="hint-tags">
-            <el-tag size="small" effect="plain" type="warning">💭 Test-Master 思考过程</el-tag>
-            <el-tag size="small" effect="plain" type="primary">🔧 工具调用</el-tag>
-            <el-tag size="small" effect="plain" type="success">📋 子智能体输出</el-tag>
+            <el-tag size="small" effect="plain" type="warning"><span class="tab-label"><MsIcon name="psychology" :size="14" /> Test-Master 思考过程</span></el-tag>
+            <el-tag size="small" effect="plain" type="primary"><span class="tab-label"><MsIcon name="build" :size="14" /> 工具调用</span></el-tag>
+            <el-tag size="small" effect="plain" type="success"><span class="tab-label"><MsIcon name="assignment" :size="14" /> 子智能体输出</span></el-tag>
           </span>
         </p>
         <div class="empty-divider"></div>
@@ -490,19 +468,19 @@ onMounted(() => {
             <div class="message-time">{{ formatTime(msg.timestamp) }}</div>
           </div>
           <el-avatar :size="32" class="user-avatar">
-            <el-icon><User /></el-icon>
+            <MsIcon name="person" />
           </el-avatar>
         </div>
 
         <!-- 智能体消息 -->
         <div v-else class="message-content agent-content">
           <el-avatar :size="32" class="agent-avatar-icon">
-            {{ msg.agentIcon || '🤖' }}
+            <MsIcon :name="msg.agentIcon || 'smart_toy'" :size="18" />
           </el-avatar>
           <div class="message-bubble agent-bubble">
             <!-- 智能体执行头：显示执行者名称和状态 -->
             <div class="agent-header-badge">
-              <span class="agent-badge-icon">{{ msg.agentIcon || '🤖' }}</span>
+              <span class="agent-badge-icon"><MsIcon :name="msg.agentIcon || 'smart_toy'" :size="18" /></span>
               <span class="agent-badge-name">{{ msg.agentName || '智能体' }}</span>
               <span v-if="msg.isStreaming" class="agent-badge-streaming">
                 <span class="live-dot"></span>执行中
@@ -514,7 +492,7 @@ onMounted(() => {
                 <el-collapse-item name="thinking">
                   <template #title>
                     <span class="thinking-title">
-                      <span>💭 思考过程</span>
+                      <span class="tab-label"><MsIcon name="psychology" :size="14" /> 思考过程</span>
                       <span v-if="msg.isStreaming" class="live-dot" style="margin-left: 6px"></span>
                       <span v-if="!msg.isStreaming" class="thinking-count">({{ msg.thinking.length }}步)</span>
                     </span>
@@ -527,13 +505,13 @@ onMounted(() => {
                       :class="'step-' + step.type"
                     >
                       <div class="step-header">
-                        <el-icon><component :is="getStepIcon(step.type)" /></el-icon>
+                        <MsIcon :name="getStepIcon(step.type)" :size="16" />
                         <span class="step-type">{{ getStepTypeLabel(step.type) }}</span>
                         <span class="step-time">{{ formatTime(step.timestamp) }}</span>
                       </div>
                       <div class="step-content">
                         <div v-if="step.type === 'tool_call'" class="tool-call">
-                          <span class="step-tool-name">🔧 {{ step.toolName }}</span>
+                          <span class="step-tool-name"><MsIcon name="build" :size="14" /> {{ step.toolName }}</span>
                           <pre>{{ step.content }}</pre>
                         </div>
                         <div v-else-if="step.type === 'tool_result'" class="tool-result">
@@ -558,17 +536,17 @@ onMounted(() => {
             <!-- 输出物列表 -->
             <div v-if="msg.artifacts && msg.artifacts.length > 0" class="artifacts-section">
               <div class="artifacts-label">
-                <el-icon><Document /></el-icon>
+                <MsIcon name="description" />
                 输出物（{{ msg.artifacts.length }}个）
               </div>
               <div class="artifacts-list">
                 <div v-for="artifact in msg.artifacts" :key="artifact.id" class="artifact-card">
                   <div class="artifact-icon">
-                    <el-icon v-if="artifact.type === 'text'"><Document /></el-icon>
-                    <el-icon v-else-if="artifact.type === 'code'"><EditPen /></el-icon>
-                    <el-icon v-else-if="artifact.type === 'report'"><DataAnalysis /></el-icon>
-                    <el-icon v-else-if="artifact.type === 'image'"><PictureFilled /></el-icon>
-                    <el-icon v-else><FolderOpened /></el-icon>
+                    <MsIcon v-if="artifact.type === 'text'" name="description" />
+                    <MsIcon v-else-if="artifact.type === 'code'" name="edit" />
+                    <MsIcon v-else-if="artifact.type === 'report'" name="analytics" />
+                    <MsIcon v-else-if="artifact.type === 'image'" name="image" />
+                    <MsIcon v-else name="folder_open" />
                   </div>
                   <div class="artifact-info">
                     <div class="artifact-name">{{ artifact.name }}</div>
@@ -584,33 +562,33 @@ onMounted(() => {
                       text size="small"
                       @click="openPreview(artifact)"
                     >
-                      <el-icon><View /></el-icon> 预览
+                      <MsIcon name="visibility" /> 预览
                     </el-button>
                     <el-button
                       v-if="artifact.content"
                       text size="small" type="success"
                       @click="useArtifactAsInput(artifact)"
                     >
-                      <el-icon><ArrowRight /></el-icon> 用作输入
+                      <MsIcon name="arrow_forward" /> 用作输入
                     </el-button>
                     <el-button
                       text size="small" type="warning"
                       @click="editArtifact(artifact)"
                     >
-                      <el-icon><EditPen /></el-icon> 编辑
+                      <MsIcon name="edit" /> 编辑
                     </el-button>
                     <el-button
                       text size="small" type="primary"
                       @click="downloadArtifact(artifact)"
                     >
-                      <el-icon><Download /></el-icon> 下载
+                      <MsIcon name="download" /> 下载
                     </el-button>
                     <el-button
                       v-if="artifact.content"
                       text size="small"
                       @click="copyToClipboard(artifact.content)"
                     >
-                      <el-icon><CopyDocument /></el-icon> 复制
+                      <MsIcon name="content_copy" /> 复制
                     </el-button>
                   </div>
                 </div>
@@ -620,15 +598,15 @@ onMounted(() => {
             <!-- 用户决策按钮 -->
             <div v-if="msg.type === 'user_decision'" class="decision-buttons">
               <el-button type="primary" size="small" @click="handleDecision(msg, 'continue')">
-                <el-icon><Check /></el-icon>
+                <MsIcon name="check" />
                 继续
               </el-button>
               <el-button type="warning" size="small" @click="handleDecision(msg, 'manual')">
-                <el-icon><Tools /></el-icon>
+                <MsIcon name="build" />
                 人工处理
               </el-button>
               <el-button type="danger" size="small" @click="handleDecision(msg, 'stop')">
-                <el-icon><CircleClose /></el-icon>
+                <MsIcon name="cancel" />
                 停止
               </el-button>
             </div>
@@ -636,7 +614,7 @@ onMounted(() => {
             <!-- 流式输出指示器 -->
             <div v-if="msg.isStreaming && !msg.content && (!msg.thinking || msg.thinking.length === 0)" class="streaming-indicator">
               <span class="pulse-ring"></span>
-              <el-icon class="is-loading"><Loading /></el-icon>
+              <MsIcon name="progress_activity" :loading="true" />
               <span>正在思考...</span>
             </div>
 
@@ -650,7 +628,7 @@ onMounted(() => {
 
       <!-- 加载指示器 -->
       <div v-if="isLoading" class="loading-indicator">
-        <el-icon class="is-loading"><Loading /></el-icon>
+        <MsIcon name="progress_activity" :loading="true" />
         <span>智能体正在思考...</span>
       </div>
     </div>
@@ -666,7 +644,7 @@ onMounted(() => {
         >
           <img v-if="file.dataUrl && file.type?.startsWith('image/')" :src="file.dataUrl" class="attachment-image" />
           <div v-else class="attachment-file">
-            <el-icon><Document /></el-icon>
+            <MsIcon name="description" />
             <span>{{ file.name }}</span>
           </div>
           <el-button
@@ -675,7 +653,7 @@ onMounted(() => {
             size="small"
             @click="removeAttachment(index)"
           >
-            <el-icon><CircleClose /></el-icon>
+            <MsIcon name="cancel" />
           </el-button>
         </div>
       </div>
@@ -690,10 +668,10 @@ onMounted(() => {
       >
         <div class="input-toolbar">
           <el-button text @click="handleFileSelect">
-            <el-icon><Document /></el-icon>
+            <MsIcon name="description" />
           </el-button>
           <el-button text @click="isVoiceActive = !isVoiceActive">
-            <el-icon><ChatDotRound /></el-icon>
+            <MsIcon name="chat" />
           </el-button>
           <input
             ref="fileInput"
@@ -722,7 +700,7 @@ onMounted(() => {
             :disabled="!localInput.trim() && attachments.length === 0"
             @click="handleSend"
           >
-            <el-icon v-if="!isLoading"><Promotion /></el-icon>
+            <MsIcon v-if="!isLoading" name="send" />
             {{ isLoading ? '执行中...' : '发送' }}
           </el-button>
         </div>
@@ -730,7 +708,7 @@ onMounted(() => {
 
       <!-- 文件类型提示 -->
       <div class="input-hint">
-        <el-icon><InfoFilled /></el-icon>
+        <MsIcon name="info" />
         <span>支持拖拽文件、图片到输入框 | Shift+Enter 换行</span>
       </div>
     </div>
@@ -766,13 +744,13 @@ onMounted(() => {
         <span class="preview-size" v-if="previewArtifact.size">{{ formatFileSize(previewArtifact.size) }}</span>
         <div class="preview-actions">
           <el-button size="small" type="success" plain @click="useArtifactAsInput(previewArtifact)">
-            <el-icon><ArrowRight /></el-icon> 用作输入
+            <MsIcon name="arrow_forward" /> 用作输入
           </el-button>
           <el-button size="small" type="primary" plain @click="downloadArtifact(previewArtifact)">
-            <el-icon><Download /></el-icon> 下载
+            <MsIcon name="download" /> 下载
           </el-button>
           <el-button size="small" plain @click="copyToClipboard(previewArtifact.content)">
-            <el-icon><CopyDocument /></el-icon> 复制
+            <MsIcon name="content_copy" /> 复制
           </el-button>
         </div>
       </div>
@@ -780,7 +758,7 @@ onMounted(() => {
       <template #footer>
         <el-button @click="previewVisible = false">关闭</el-button>
         <el-button type="success" @click="useArtifactAsInput(previewArtifact)">
-          <el-icon><ArrowRight /></el-icon> 用作输入
+          <MsIcon name="arrow_forward" /> 用作输入
         </el-button>
       </template>
     </el-dialog>
@@ -1347,4 +1325,7 @@ onMounted(() => {
 .preview-content :deep(hr) { border: none; border-top: 1px solid var(--el-border-color-light); margin: 12px 0; }
 
 .artifact-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

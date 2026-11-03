@@ -6,10 +6,7 @@ import { taskApi, getAuthHeaders } from '@/api'
 import type { Task, TaskStatus, Artifact } from '@/types'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { escapeHtml as escapeHtmlUtil } from '@/utils/safe-html'
-import {
-  Search, Refresh, CopyDocument, RefreshRight,
-  Document, EditPen, DataAnalysis, PictureFilled, FolderOpened, View, Download
-} from '@element-plus/icons-vue'
+import MsIcon from '@/components/MsIcon.vue'
 
 const store = useMainStore()
 const router = useRouter()
@@ -309,7 +306,7 @@ async function downloadFullOutput(task: Task) {
 
 `
       })
-      content += `### 综合结果：${data.reviewPassed ? '✅ 审核通过' : '❌ 审核未通过'}
+      content += `### 综合结果：${data.reviewPassed ? '审核通过' : '审核未通过'}
 
 `
     }
@@ -522,25 +519,55 @@ onMounted(() => {
 
 <template>
   <div class="tasks-view" data-testid="tasks-page">
-    <!-- 统计卡片 -->
+    <!-- 统计卡片（Precision TestOps Throughput 风格） -->
     <div class="stats-row">
       <div class="stat-card" @click="statusFilter = ''">
+        <div class="stat-card-top">
+          <div class="pto-icon-tile pto-icon-tile--sm pto-icon-tile--indigo">
+            <span class="material-symbols-outlined" style="font-size:16px">assignment</span>
+          </div>
+          <span class="pto-badge pto-badge--neutral">ALL</span>
+        </div>
         <span class="stat-num">{{ statusStats.total }}</span>
         <span class="stat-label">全部任务</span>
       </div>
       <div class="stat-card running" @click="statusFilter = 'running'">
+        <div class="stat-card-top">
+          <div class="pto-icon-tile pto-icon-tile--sm pto-icon-tile--indigo">
+            <span class="material-symbols-outlined" style="font-size:16px">play_circle</span>
+          </div>
+          <span class="pto-badge pto-badge--running">RUN</span>
+        </div>
         <span class="stat-num">{{ statusStats.running }}</span>
         <span class="stat-label">执行中</span>
       </div>
       <div class="stat-card completed" @click="statusFilter = 'completed'">
+        <div class="stat-card-top">
+          <div class="pto-icon-tile pto-icon-tile--sm pto-icon-tile--emerald">
+            <span class="material-symbols-outlined" style="font-size:16px">check_circle</span>
+          </div>
+          <span class="pto-badge pto-badge--pass">PASS</span>
+        </div>
         <span class="stat-num">{{ statusStats.completed }}</span>
         <span class="stat-label">已完成</span>
       </div>
       <div class="stat-card failed" @click="statusFilter = 'failed'">
+        <div class="stat-card-top">
+          <div class="pto-icon-tile pto-icon-tile--sm pto-icon-tile--rose">
+            <span class="material-symbols-outlined" style="font-size:16px">error</span>
+          </div>
+          <span class="pto-badge pto-badge--fail">FAIL</span>
+        </div>
         <span class="stat-num">{{ statusStats.failed }}</span>
         <span class="stat-label">失败</span>
       </div>
       <div class="stat-card cancelled" @click="statusFilter = 'cancelled'">
+        <div class="stat-card-top">
+          <div class="pto-icon-tile pto-icon-tile--sm pto-icon-tile--amber">
+            <span class="material-symbols-outlined" style="font-size:16px">block</span>
+          </div>
+          <span class="pto-badge pto-badge--flaky">SKIP</span>
+        </div>
         <span class="stat-num">{{ statusStats.cancelled }}</span>
         <span class="stat-label">已取消</span>
       </div>
@@ -555,7 +582,7 @@ onMounted(() => {
           clearable
           style="width: 240px"
         >
-          <template #prefix><el-icon><Search /></el-icon></template>
+          <template #prefix><MsIcon name="search" /></template>
         </el-input>
 
         <el-select v-model="statusFilter" placeholder="状态筛选" clearable style="width: 130px">
@@ -583,7 +610,7 @@ onMounted(() => {
       <div class="action-group">
         <el-switch v-model="autoRefresh" active-text="自动刷新" />
         <el-button @click="refreshTasks" :loading="store.isLoading">
-          <el-icon><Refresh /></el-icon>
+          <MsIcon name="refresh" />
           刷新
         </el-button>
       </div>
@@ -623,7 +650,7 @@ onMounted(() => {
           <el-tooltip 
             placement="top" 
             :disabled="!row.input || String(row.input).length < 50"
-            effect="dark"
+            effect="light"
             :popper-class="'task-input-tooltip'"
           >
             <template #content>
@@ -636,7 +663,7 @@ onMounted(() => {
 
       <el-table-column prop="status" label="状态" width="100" align="center">
         <template #default="{ row }">
-          <el-tag :type="getStatusType(row.status)" size="small" effect="dark">
+          <el-tag :type="getStatusType(row.status)" size="small" effect="light">
             {{ getStatusText(row.status) }}
           </el-tag>
         </template>
@@ -752,14 +779,14 @@ onMounted(() => {
           <el-descriptions-item label="任务ID">
             <span class="task-id" @click="copyTaskId(selectedTask.id)">
               {{ selectedTask.id }}
-              <el-icon size="12"><CopyDocument /></el-icon>
+              <MsIcon name="content_copy" :size="12" />
             </span>
           </el-descriptions-item>
           <el-descriptions-item label="智能体">
             {{ selectedTask.agentName }}
           </el-descriptions-item>
           <el-descriptions-item label="状态">
-            <el-tag :type="getStatusType(selectedTask.status)" effect="dark">
+            <el-tag :type="getStatusType(selectedTask.status)" effect="light">
               {{ getStatusText(selectedTask.status) }}
             </el-tag>
           </el-descriptions-item>
@@ -779,7 +806,7 @@ onMounted(() => {
 
         <!-- 成本与工作量统计 -->
         <div v-if="hasCostInfo(selectedTask)" class="section cost-section">
-          <h4>💰 成本与工作量</h4>
+          <h4 class="tab-label"><MsIcon name="payments" :size="16" /> 成本与工作量</h4>
           <el-descriptions :column="3" border class="cost-descriptions">
             <el-descriptions-item label="预估工时">
               <span class="cost-value">{{ formatHours(selectedTask.manualHours) }}</span>
@@ -806,25 +833,25 @@ onMounted(() => {
         </div>
 
         <div class="section">
-          <h4>📝 任务输入</h4>
+          <h4 class="tab-label"><MsIcon name="edit_note" :size="16" /> 任务输入</h4>
           <pre class="content-block">{{ selectedTask.input }}</pre>
         </div>
 
         <div v-if="selectedTask.output" class="section">
-          <h4>📋 执行结果</h4>
+          <h4 class="tab-label"><MsIcon name="assignment" :size="16" /> 执行结果</h4>
           <div class="content-block result-block">
             <pre>{{ selectedTask.output }}</pre>
           </div>
           <div class="section-actions" v-if="selectedTask.source !== 'workflow'">
             <el-button type="primary" size="small" @click="downloadFullOutput(selectedTask)">
-              <el-icon><Download /></el-icon> 完整输出物下载
+              <MsIcon name="download" /> 完整输出物下载
             </el-button>
           </div>
         </div>
 
         <!-- AI审核结果 -->
         <div v-if="selectedTask.reviewResults && selectedTask.reviewResults.length > 0" class="section">
-          <h4>🛡️ AI质量审核结果</h4>
+          <h4 class="tab-label"><MsIcon name="shield" :size="16" /> AI质量审核结果</h4>
           <div class="review-results">
             <div 
               v-for="(review, index) in selectedTask.reviewResults" 
@@ -850,26 +877,26 @@ onMounted(() => {
             </div>
           </div>
           <div class="review-summary">
-            <el-tag v-if="selectedTask.reviewPassed" type="success" size="large" effect="dark">
-              ✅ 审核通过
+            <el-tag v-if="selectedTask.reviewPassed" type="success" size="large" effect="light">
+              审核通过
             </el-tag>
-            <el-tag v-else type="danger" size="large" effect="dark">
-              ❌ 审核未通过
+            <el-tag v-else type="danger" size="large" effect="light">
+              审核未通过
             </el-tag>
           </div>
         </div>
 
         <!-- 输出物列表 -->
         <div v-if="selectedTask.artifacts && selectedTask.artifacts.length > 0" class="section">
-          <h4>📦 输出物（{{ selectedTask.artifacts.length }}个）</h4>
+          <h4 class="tab-label"><MsIcon name="inventory_2" :size="16" /> 输出物（{{ selectedTask.artifacts.length }}个）</h4>
           <div class="artifacts-list">
             <div v-for="artifact in selectedTask.artifacts" :key="artifact.id" class="artifact-card">
               <div class="artifact-icon">
-                <el-icon v-if="artifact.type === 'text'"><Document /></el-icon>
-                <el-icon v-else-if="artifact.type === 'code'"><EditPen /></el-icon>
-                <el-icon v-else-if="artifact.type === 'report'"><DataAnalysis /></el-icon>
-                <el-icon v-else-if="artifact.type === 'image'"><PictureFilled /></el-icon>
-                <el-icon v-else><FolderOpened /></el-icon>
+                <MsIcon v-if="artifact.type === 'text'" name="description" />
+                <MsIcon v-else-if="artifact.type === 'code'" name="edit" />
+                <MsIcon v-else-if="artifact.type === 'report'" name="analytics" />
+                <MsIcon v-else-if="artifact.type === 'image'" name="image" />
+                <MsIcon v-else name="folder_open" />
               </div>
               <div class="artifact-info">
                 <div class="artifact-name">{{ artifact.name }}</div>
@@ -886,7 +913,7 @@ onMounted(() => {
                   size="small" 
                   @click="previewArtifact(artifact)"
                 >
-                  <el-icon><View /></el-icon> 预览
+                  <MsIcon name="visibility" /> 预览
                 </el-button>
                 <el-button 
                   text 
@@ -894,7 +921,7 @@ onMounted(() => {
                   type="primary"
                   @click="downloadArtifact(artifact)"
                 >
-                  <el-icon><Download /></el-icon> 下载
+                  <MsIcon name="download" /> 下载
                 </el-button>
               </div>
             </div>
@@ -903,7 +930,7 @@ onMounted(() => {
 
         <div v-if="selectedTask.status === 'failed'" class="section">
           <el-button type="warning" @click="retryTask(selectedTask)">
-            <el-icon><RefreshRight /></el-icon>
+            <MsIcon name="refresh" />
             重新执行
           </el-button>
         </div>
@@ -926,36 +953,53 @@ onMounted(() => {
 
 .stat-card {
   flex: 1;
-  padding: 16px 20px;
-  border-radius: 8px;
-  background: var(--el-fill-color-light);
+  padding: 14px 16px;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  border: 1px solid var(--border);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: border-color var(--transition), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
 }
 
 .stat-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-card-lift);
 }
 
-.stat-card.running { border-left: 3px solid var(--el-color-warning); }
-.stat-card.completed { border-left: 3px solid var(--el-color-success); }
-.stat-card.failed { border-left: 3px solid var(--el-color-danger); }
-.stat-card.cancelled { border-left: 3px solid var(--el-color-warning-light-3); color: var(--el-text-color-secondary); }
+.stat-card-top {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stat-card.running { border-color: var(--running-border); }
+.stat-card.completed { border-color: var(--success-border); }
+.stat-card.failed { border-color: var(--danger-border); }
+.stat-card.cancelled { color: var(--el-text-color-secondary); }
 
 .stat-num {
+  font-family: var(--font-mono);
   font-size: 28px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
   color: var(--el-text-color-primary);
+  line-height: 1.1;
 }
 
 .stat-label {
   font-size: 12px;
+  font-weight: 600;
   color: var(--el-text-color-secondary);
-  margin-top: 4px;
+  margin-top: 0;
 }
 
 /* 工具栏 */
@@ -1108,4 +1152,8 @@ onMounted(() => {
 .text-muted { color: var(--el-text-color-placeholder); }
 .token-info { font-size: 12px; color: var(--el-text-color-regular); }
 .model-tag { font-size: 12px; color: var(--el-color-info); background: var(--el-fill-color-light); padding: 2px 6px; border-radius: 4px; }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title, .page-title, h2, .header-title { min-width: 0; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

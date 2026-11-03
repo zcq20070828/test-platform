@@ -1,4 +1,5 @@
 import './styles/variables.css'
+import 'material-symbols/outlined.css'
 import './assets/main.css'
 
 import { createApp } from 'vue'
@@ -6,6 +7,7 @@ import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import './styles/macos-theme.css'
+import './styles/stitch-cards.css'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 
 import App from './App.vue'

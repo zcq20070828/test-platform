@@ -3,11 +3,12 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useMainStore } from '@/stores/main'
 import { ElMessage } from 'element-plus'
-import { QuestionFilled, Clock, Timer, Promotion } from '@element-plus/icons-vue'
 import WorkflowVisualizer from '@/components/WorkflowVisualizer.vue'
 import UnifiedChatPanel from '@/components/UnifiedChatPanel.vue'
 import type { ChatMessage, ThinkingStep } from '@/types'
 import { getAuthHeaders, request } from '@/api/index'
+import MsIcon from '@/components/MsIcon.vue'
+import { getAgentIcon } from '@/utils/agentIcons'
 
 const workflowStore = useWorkflowStore()
 const mainStore = useMainStore()
@@ -84,24 +85,7 @@ function scrollChatToBottom() {
 
 // 获取智能体emoji
 function getAgentEmoji(agentId: string | undefined): string {
-  const emojiMap: Record<string, string> = {
-    'test-master': '👑',
-    'test-requirement-analyzer': '🔍',
-    'test-scheme-generator': '📋',
-    'test-case-generator': '✅',
-    'test-data-generator': '📊',
-    'api-executor': '🔌',
-    'ui-e2e-executor': '🖥️',
-    'knowledge-manager': '📚',
-    'test-reporter': '📊',
-    'defect-analyzer': '🐛',
-    'data-masking': '🎭',
-    'ai-quality-reviewer-1': '🤖',
-    'ai-quality-reviewer-2': '🤖',
-    'ai-quality-reviewer-3': '🤖',
-    'default': '🤖'
-  }
-  return emojiMap[agentId || ''] || emojiMap['default'] || '🤖'
+  return getAgentIcon(agentId)
 }
 
 // 获取智能体显示名
@@ -199,7 +183,7 @@ async function handleSendTask(_files?: any) {
       id: `sys-${Date.now()}`,
       role: 'system',
       type: 'system',
-      content: '🚀 工作流已启动（全自动模式），Test-Master 正在调度子智能体...\n\n💡 所有智能体的思考过程、工具调用和输出将在此实时展示。',
+      content: '工作流已启动（全自动模式），Test-Master 正在调度子智能体...\n\n所有智能体的思考过程、工具调用和输出将在此实时展示。',
       timestamp: new Date().toISOString()
     })
     scrollChatToBottom()
@@ -210,7 +194,6 @@ async function handleSendTask(_files?: any) {
 
   taskInput.value = ''
 }
-
 
 // 【平台瘦身 2026-10-14】startWorkflow 已随顶部横幅移除；发送任务时 handleSendTask 自动切换到执行视图。
 function backToOverview() {
@@ -348,7 +331,7 @@ onUnmounted(() => {
       <div class="quick-start">
         <div class="section-header">
           <h2>
-            <el-icon><Promotion /></el-icon>
+            <MsIcon name="send" />
             实时流式对话
           </h2>
           <el-tag type="success" effect="plain" size="small" class="live-tag">
@@ -368,7 +351,7 @@ onUnmounted(() => {
               clearable
             />
             <el-button type="primary" size="small" @click="loadHistoryById" :disabled="!historyWorkflowId.trim()">
-              <el-icon><Timer /></el-icon>
+              <MsIcon name="timer" />
               加载历史
             </el-button>
           </div>
@@ -378,9 +361,9 @@ onUnmounted(() => {
         </div>
 
         <div class="mode-switch" style="margin-bottom: 12px; padding: 10px; background: var(--el-fill-color-lighter); border-radius: 8px;">
-            <span style="font-weight: 500;">🤖 全自动模式</span>
+            <span style="font-weight: 500;" class="tab-label"><MsIcon name="smart_toy" :size="16" /> 全自动模式</span>
             <span v-if="lastHeartbeat && workflowStore.isRunning" style="margin-left: 8px; font-size: 12px; color: var(--el-color-primary); font-weight: 500;">
-              💓 {{ heartbeatLabel }} {{ formatElapsed(heartbeatElapsed) }}
+              <span class="tab-label"><MsIcon name="favorite" :size="14" /> {{ heartbeatLabel }} {{ formatElapsed(heartbeatElapsed) }}</span>
             </span>
             <div style="font-size: 12px; color: var(--el-text-color-secondary); margin-top: 4px;">
               工作流将自动执行到底，所有步骤由 Test-Master 统一调度。下方对话区将实时同步 Test-Master 及所有子智能体的思考过程、工具调用和输出内容。
@@ -406,13 +389,13 @@ onUnmounted(() => {
     <div v-else class="task-list-view">
       <div class="exec-header">
         <el-button text @click="backToOverview">
-          <el-icon><ArrowLeft /></el-icon>
+          <MsIcon name="arrow_back" />
           返回概览
         </el-button>
         <span class="exec-title">
           执行详情
           <el-tag v-if="lastHeartbeat && workflowStore.isRunning" type="primary" effect="plain" size="small" style="margin-left: 8px;">
-            💓 {{ heartbeatLabel }} {{ formatElapsed(heartbeatElapsed) }}
+            <span class="tab-label"><MsIcon name="favorite" :size="14" /> {{ heartbeatLabel }} {{ formatElapsed(heartbeatElapsed) }}</span>
           </el-tag>
           <el-tag v-else type="success" effect="plain" size="small" class="live-tag">
             <span class="live-dot" style="margin-right: 4px;"></span>
@@ -426,10 +409,10 @@ onUnmounted(() => {
       <div v-if="workflowStore.isRunning || workflowManualHours" class="workflow-status-card">
         <div class="status-info">
           <el-tag :type="workflowStore.isRunning ? 'warning' : 'success'" effect="dark" size="large">
-            {{ workflowStore.isRunning ? '⏳ 执行中' : '✅ 已完成' }}
+            {{ workflowStore.isRunning ? '执行中' : '已完成' }}
           </el-tag>
           <span v-if="workflowManualHours" class="effort-info">
-            <el-icon><Clock /></el-icon>
+            <MsIcon name="schedule" />
             预估人工工时：<strong>{{ formatHours(workflowManualHours) }}</strong>
           </span>
         </div>
@@ -622,4 +605,7 @@ onUnmounted(() => {
   color: var(--el-color-primary);
   font-weight: 500;
 }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

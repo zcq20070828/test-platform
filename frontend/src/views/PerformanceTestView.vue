@@ -3,11 +3,13 @@
     <!-- 头部 -->
     <div class="view-header">
       <div>
-        <h2 class="view-title">📈 性能测试</h2>
+        <h2 class="view-title"><MsIcon name="monitoring" :size="22" /> 性能测试</h2>
         <p class="view-subtitle">负载测试 · 压力测试 · 瓶颈分析 · SLA 评估</p>
       </div>
       <div class="header-actions">
-        <el-button @click="loadStats" :icon="Refresh" circle />
+        <el-button @click="loadStats" circle>
+          <MsIcon name="refresh" :size="16" />
+        </el-button>
       </div>
     </div>
 
@@ -15,7 +17,7 @@
     <el-row :gutter="12" class="stat-cards">
       <el-col :span="6">
         <div class="stat-card" :class="{ 'stat-card--active': stats.totalReports > 0 }">
-          <div class="stat-icon">📋</div>
+          <div class="stat-icon"><MsIcon name="assignment" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value">{{ stats.totalReports }}</div>
             <div class="stat-label">测试报告</div>
@@ -24,7 +26,7 @@
       </el-col>
       <el-col :span="6">
         <div class="stat-card" :class="{ 'stat-card--danger': stats.openFindings > 0 }">
-          <div class="stat-icon">⚠️</div>
+          <div class="stat-icon"><MsIcon name="warning" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value">{{ stats.openFindings }}</div>
             <div class="stat-label">待处理瓶颈</div>
@@ -33,7 +35,7 @@
       </el-col>
       <el-col :span="6">
         <div class="stat-card">
-          <div class="stat-icon">📊</div>
+          <div class="stat-icon"><MsIcon name="analytics" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value">{{ Number(stats.avgScore || 0).toFixed(1) }}</div>
             <div class="stat-label">平均性能评分</div>
@@ -57,11 +59,13 @@
     <el-card class="main-card">
       <el-tabs v-model="activeTab">
         <!-- 报告列表 -->
-        <el-tab-pane label="🚀 测试执行" name="execute">
+        <el-tab-pane name="execute">
+          <template #label><span class="tab-label"><MsIcon name="rocket_launch" :size="18" /> 测试执行</span></template>
           <PerfTestExecutor />
         </el-tab-pane>
 
-        <el-tab-pane label="📋 测试报告" name="reports">
+        <el-tab-pane name="reports">
+          <template #label><span class="tab-label"><MsIcon name="assignment" :size="18" /> 测试报告</span></template>
           <!-- 工具栏 -->
           <div class="toolbar">
             <div class="toolbar-filters">
@@ -136,7 +140,8 @@
         </el-tab-pane>
 
         <!-- 瓶颈列表 -->
-        <el-tab-pane label="⚠️ 瓶颈分析" name="findings">
+        <el-tab-pane name="findings">
+          <template #label><span class="tab-label"><MsIcon name="warning" :size="18" /> 瓶颈分析</span></template>
           <div class="toolbar">
             <el-select v-model="findingSeverity" placeholder="严重级别" clearable style="width:120px" @change="loadFindings">
               <el-option label="全部" value="" />
@@ -264,9 +269,9 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
 import { performanceTestApi } from '@/api/index'
 import PerfTestExecutor from '@/components/PerfTestExecutor.vue'
+import MsIcon from '@/components/MsIcon.vue'
 
 // 状态
 const activeTab = ref('execute')
@@ -417,7 +422,7 @@ onMounted(() => {
 
 <style scoped>
 .perf-test-view { padding: 20px; }
-.view-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.view-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 12px; min-width: 0; max-width: 100%; }
 .view-title { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
 .view-subtitle { color: #909399; font-size: 13px; margin: 0; }
 .stat-cards { margin-bottom: 16px; }
@@ -467,4 +472,8 @@ onMounted(() => {
 .score-high { color: #67c23a; font-weight: 700; }
 .score-mid { color: #409eff; font-weight: 700; }
 .score-low { color: #f56c6c; font-weight: 700; }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title, .page-title, h2, .header-title { min-width: 0; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

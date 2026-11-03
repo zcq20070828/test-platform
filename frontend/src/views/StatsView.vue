@@ -6,10 +6,10 @@
     <el-card class="overview-card" shadow="hover">
       <template #header>
         <div class="card-header">
-          <span>📊 今日概览</span>
+          <span class="tab-label"><MsIcon name="analytics" :size="18" /> 今日概览</span>
           <div style="display:flex;gap:8px;align-items:center">
             <el-button text @click="refreshStats" :loading="loading">
-              <el-icon><Refresh /></el-icon>
+              <MsIcon name="refresh" />
             </el-button>
             <el-button type="primary" link size="small" @click="router.push('/tasks')">查看任务明细 →</el-button>
           </div>
@@ -65,7 +65,7 @@
     <el-card class="overview-card" shadow="hover" style="margin-top: 20px">
       <template #header>
         <div class="card-header">
-          <span>📈 累计统计</span>
+          <span class="tab-label"><MsIcon name="monitoring" :size="18" /> 累计统计</span>
           <el-button type="primary" link size="small" @click="router.push('/tasks')">查看任务明细 →</el-button>
         </div>
       </template>
@@ -107,7 +107,7 @@
     <el-card class="efficiency-card" shadow="hover" style="margin-top: 20px">
       <template #header>
         <div class="card-header">
-          <span>💰 本月提效统计</span>
+          <span class="tab-label"><MsIcon name="payments" :size="18" /> 本月提效统计</span>
           <el-date-picker
             v-model="dateRange"
             type="daterange"
@@ -125,7 +125,7 @@
         <el-col :span="8">
           <div class="efficiency-section">
             <div class="section-header">
-              <h3>⏱️ 时间节省</h3>
+              <h3 class="tab-label"><MsIcon name="timer" :size="18" /> 时间节省</h3>
               <el-button type="primary" link size="small" @click="goTasksWithFilter({ sortBy: 'duration' })">查看明细 →</el-button>
             </div>
             <div class="efficiency-data">
@@ -152,7 +152,7 @@
         <el-col :span="8">
           <div class="efficiency-section">
             <div class="section-header">
-              <h3>💵 成本节省</h3>
+              <h3 class="tab-label"><MsIcon name="payments" :size="18" /> 成本节省</h3>
               <el-button type="primary" link size="small" @click="goTasksWithFilter({ sortBy: 'cost' })">查看明细 →</el-button>
             </div>
             <div class="efficiency-data">
@@ -175,7 +175,7 @@
         <el-col :span="8">
           <div class="efficiency-section">
             <div class="section-header">
-              <h3>🎯 质量评估</h3>
+              <h3 class="tab-label"><MsIcon name="track_changes" :size="18" /> 质量评估</h3>
               <el-button type="primary" link size="small" @click="router.push('/stats/quality')">查看明细 →</el-button>
             </div>
             <div class="efficiency-data">
@@ -246,7 +246,7 @@
     <el-card shadow="hover" style="margin-top: 20px">
       <template #header>
         <div class="card-header">
-          <span>📉 效率 &amp; 质量趋势</span>
+          <span class="tab-label"><MsIcon name="trending_down" :size="18" /> 效率 &amp; 质量趋势</span>
           <el-radio-group v-model="trendDays" @change="loadTrend">
             <el-radio-button :value="7">近7天</el-radio-button>
             <el-radio-button :value="14">近14天</el-radio-button>
@@ -261,7 +261,7 @@
     <el-card shadow="hover" style="margin-top: 20px">
       <template #header>
         <div class="card-header">
-          <span>🏆 智能体排名（本月）</span>
+          <span class="tab-label"><MsIcon name="emoji_events" :size="18" /> 智能体排名（本月）</span>
         </div>
       </template>
       <el-table :data="agentRanking" stripe>
@@ -321,7 +321,7 @@
     <el-card v-if="isAdminUser" shadow="hover" style="margin-top: 20px">
       <template #header>
         <div class="card-header">
-          <span>👣 用户行为统计</span>
+          <span class="tab-label"><MsIcon name="directions_walk" :size="18" /> 用户行为统计</span>
           <div>
             <el-button size="small" type="primary" @click="router.push('/stats/user-actions')">查看完整行为明细 →</el-button>
           </div>
@@ -377,7 +377,7 @@
     <el-card shadow="hover" style="margin-top: 20px">
       <template #header>
         <div class="card-header">
-          <span>🐛 缺陷统计</span>
+          <span class="tab-label"><MsIcon name="bug_report" :size="18" /> 缺陷统计</span>
           <el-button type="primary" link size="small" @click="router.push('/stats/defects')">查看缺陷明细 →</el-button>
         </div>
       </template>
@@ -421,10 +421,10 @@
 import { ref, onMounted, nextTick, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import { request, userActionApi } from '@/api'
 import { useMainStore } from '@/stores/main'
+import MsIcon from '@/components/MsIcon.vue'
 
 const router = useRouter()
 const mainStore = useMainStore()
@@ -887,4 +887,8 @@ onMounted(() => {
   padding: 2px 6px;
   border-radius: 4px;
 }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title, .page-title, h2, .header-title { min-width: 0; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

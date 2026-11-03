@@ -5,6 +5,7 @@ import { useMainStore } from '@/stores/main'
 import { ElMessage } from 'element-plus'
 import { authApi } from '@/api/index'
 import { ssoApi } from '@/api/sso'
+import MsIcon from '@/components/MsIcon.vue'
 
 const router = useRouter()
 const mainStore = useMainStore()
@@ -128,7 +129,6 @@ function goHome() {
   router.push('/')
 }
 
-
 </script>
 
 <template>
@@ -141,7 +141,7 @@ function goHome() {
     <div class="login-container">
       <!-- Logo 区域 -->
       <div class="login-header">
-        <div class="logo">🧪</div>
+        <div class="logo"><MsIcon name="science" :size="48" color="#6366f1" /></div>
         <h1 class="title">测试中台</h1>
         <p class="subtitle">AI 智能测试平台</p>
       </div>
@@ -158,10 +158,11 @@ function goHome() {
           <el-input
             v-model="loginForm.username"
             placeholder="用户名"
-            :prefix-icon="'User'"
             size="large"
             autocomplete="username"
-          />
+          >
+            <template #prefix><MsIcon name="person" :size="16" /></template>
+          </el-input>
         </el-form-item>
 
         <el-form-item prop="password">
@@ -169,22 +170,13 @@ function goHome() {
             v-model="loginForm.password"
             :type="showPassword ? 'text' : 'password'"
             placeholder="密码"
-            :prefix-icon="'Lock'"
             size="large"
             autocomplete="new-password"
             @keyup.enter="handleLogin"
           >
+            <template #prefix><MsIcon name="lock" :size="16" /></template>
             <template #suffix>
-              <el-icon
-                class="password-toggle"
-                role="button"
-                tabindex="0"
-                aria-label="切换密码可见性"
-                @click="showPassword = !showPassword"
-                @keyup.enter="showPassword = !showPassword"
-              >
-                <component :is="showPassword ? 'View' : 'Hide'" />
-              </el-icon>
+              <span class="password-toggle" @click="showPassword = !showPassword" @keyup.enter="showPassword = !showPassword" role="button" tabindex="0" aria-label="切换密码可见性" style="display:inline-flex;cursor:pointer;align-items:center"><MsIcon :name="showPassword ? 'visibility' : 'visibility_off'" :size="18" /></span>
             </template>
           </el-input>
         </el-form-item>
@@ -211,7 +203,7 @@ function goHome() {
           @click="handleSsoLogin"
           :loading="ssoLoading"
         >
-          <el-icon><Connection /></el-icon>
+          <MsIcon name="hub" />
           统一身份认证登录
         </el-button>
       </div>
@@ -224,7 +216,7 @@ function goHome() {
       <!-- 返回首页 -->
       <div class="login-footer">
         <el-button link @click="goHome">
-          <el-icon><ArrowLeft /></el-icon>
+          <MsIcon name="arrow_back" />
           返回首页
         </el-button>
       </div>
@@ -291,6 +283,9 @@ function goHome() {
 .logo {
   font-size: 48px;
   margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .title {

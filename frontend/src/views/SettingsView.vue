@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useMainStore } from '@/stores/main'
 import { adminApi } from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import MsIcon from '@/components/MsIcon.vue'
 
 // Store
 const mainStore = useMainStore()
@@ -228,14 +229,14 @@ onMounted(async () => {
   <div class="settings-view" v-if="isAdmin">
     <!-- 页面标题 -->
     <div class="page-header">
-      <h2>⚙️ 系统设置</h2>
+      <h2 class="view-title"><MsIcon name="settings" :size="22" /> 系统设置</h2>
     </div>
 
     <!-- 任务超时管理 -->
     <el-card class="settings-card">
       <template #header>
         <div class="card-header">
-          <span>⏱️ 任务超时管理</span>
+          <span class="tab-label"><MsIcon name="timer" :size="18" /> 任务超时管理</span>
         </div>
       </template>
 
@@ -294,7 +295,7 @@ onMounted(async () => {
     <el-card class="settings-card" style="margin-top: 16px">
       <template #header>
         <div class="card-header">
-          <span>🔴 超时任务列表</span>
+          <span class="tab-label"><MsIcon name="error" :size="18" color="#ef4444" /> 超时任务列表</span>
           <span style="font-size: 13px; color: var(--text-secondary); font-weight: normal">
             （超过 {{ taskCleanupThreshold }} 分钟未完成的任务）
           </span>
@@ -309,13 +310,13 @@ onMounted(async () => {
           :disabled="longRunningTasks.length === 0"
           @click="doCleanup"
         >
-          🚨 终止并清除超时任务
+          终止并清除超时任务
         </el-button>
         <span v-if="longRunningTasks.length > 0" style="margin-left: 12px; color: var(--text-secondary)">
           共 {{ longRunningTasks.length }} 个任务待终止清除
         </span>
         <span v-else style="margin-left: 12px; color: #67c23a">
-          ✓ 当前没有超时任务
+          当前没有超时任务
         </span>
       </div>
 
@@ -324,7 +325,7 @@ onMounted(async () => {
         :data="longRunningTasks"
         stripe
         v-loading="loadingTasks"
-        :empty-text="longRunningTasks.length === 0 && !loadingTasks ? '🎉 当前没有超时任务' : '加载中...'"
+        :empty-text="longRunningTasks.length === 0 && !loadingTasks ? '当前没有超时任务' : '加载中...'"
         style="width: 100%"
       >
         <el-table-column label="任务ID" min-width="200">
@@ -374,7 +375,7 @@ onMounted(async () => {
     <el-card class="settings-card" style="margin-top: 16px">
       <template #header>
         <div class="card-header">
-          <span>💰 成本配置（影响提效统计中的预估/实际/节省成本）</span>
+          <span class="tab-label"><MsIcon name="payments" :size="18" /> 成本配置（影响提效统计中的预估/实际/节省成本）</span>
         </div>
       </template>
 
@@ -449,7 +450,7 @@ onMounted(async () => {
   <!-- 无权限提示 -->
   <div v-else class="no-access">
     <div style="text-align: center; padding: 60px">
-      <div style="font-size: 48px; margin-bottom: 16px">🔒</div>
+      <div style="font-size: 48px; margin-bottom: 16px; display:flex; justify-content:center"><MsIcon name="lock" :size="48" color="#64748b" /></div>
       <h3>无权访问</h3>
       <p style="color: var(--text-secondary)">系统设置仅对管理员开放</p>
     </div>
@@ -484,4 +485,8 @@ onMounted(async () => {
 .no-access {
   padding: 40px;
 }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title, .page-title, h2, .header-title { min-width: 0; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

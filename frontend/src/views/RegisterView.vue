@@ -3,7 +3,7 @@
     <el-card class="register-card">
       <template #header>
         <div class="card-header">
-          <span class="title">🧪 测试中台 - 用户注册</span>
+          <span class="title"><MsIcon name="science" :size="22" /> 测试中台 - 用户注册</span>
         </div>
       </template>
       
@@ -17,9 +17,9 @@
         <el-form-item label="用户名" prop="username">
           <el-input
             v-model="registerForm.username"
-            placeholder="请输入用户名"
-            prefix-icon="User"
-          />
+            placeholder="请输入用户名">
+            <template #prefix><MsIcon name="person" :size="16" /></template>
+          </el-input>
         </el-form-item>
         
         <el-form-item label="密码" prop="password">
@@ -29,13 +29,7 @@
               :type="showPassword ? 'text' : 'password'"
               placeholder="8-16位，须包含大小写字母、数字和特殊字符"
             />
-            <el-icon
-              class="password-toggle"
-              :class="{ 'is-active': registerForm.password }"
-              @click="showPassword = !showPassword"
-            >
-              <component :is="showPassword ? 'View' : 'Hide'" />
-            </el-icon>
+            <span class="password-toggle" @click="showPassword = !showPassword" :class="{ 'is-active': registerForm.password }" style="display:inline-flex;cursor:pointer;align-items:center"><MsIcon :name="showPassword ? 'visibility' : 'visibility_off'" :size="18" /></span>
           </div>
         </el-form-item>
 
@@ -47,22 +41,16 @@
               placeholder="请再次输入密码"
               @keyup.enter="handleRegister"
             />
-            <el-icon
-              class="password-toggle"
-              :class="{ 'is-active': registerForm.confirmPassword }"
-              @click="showConfirmPassword = !showConfirmPassword"
-            >
-              <component :is="showConfirmPassword ? 'View' : 'Hide'" />
-            </el-icon>
+            <span class="password-toggle" @click="showConfirmPassword = !showConfirmPassword" :class="{ 'is-active': registerForm.confirmPassword }" style="display:inline-flex;cursor:pointer;align-items:center"><MsIcon :name="showConfirmPassword ? 'visibility' : 'visibility_off'" :size="18" /></span>
           </div>
         </el-form-item>
         
         <el-form-item label="姓名" prop="name" required>
           <el-input
             v-model="registerForm.name"
-            placeholder="请输入姓名"
-            prefix-icon="Edit"
-          />
+            placeholder="请输入姓名">
+            <template #prefix><MsIcon name="edit" :size="16" /></template>
+          </el-input>
         </el-form-item>
         
         <el-form-item>
@@ -88,8 +76,8 @@
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { View, Hide } from '@element-plus/icons-vue'
 import { authApi } from '@/api/index'
+import MsIcon from '@/components/MsIcon.vue'
 
 const router = useRouter()
 const registerFormRef = ref<FormInstance>()

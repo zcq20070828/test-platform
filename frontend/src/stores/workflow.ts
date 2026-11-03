@@ -65,20 +65,20 @@ export const useWorkflowStore = defineStore('workflow', () => {
     'ai-quality-reviewer-3': 'AI审核-3'
   }
 
-  // 智能体详细信息（使用Emoji图标保持与后端一致）
+  // 智能体详细信息（Material Symbols 图标名）
   const agentInfo: Record<string, { name: string; desc: string; icon: string }> = {
-    'test-requirement-analyzer': { name: '需求分析', desc: '解析需求文档，提取功能点与测试条件', icon: '🔍' },
-    'test-scheme-generator': { name: '测试方案', desc: '制定测试策略、范围与资源配置', icon: '📋' },
-    'test-case-generator': { name: '用例生成', desc: '基于需求和方案编写测试用例', icon: '✅' },
-    'test-data-generator': { name: '数据生成', desc: '根据用例需求批量生成测试数据', icon: '📊' },
-    'data-masking': { name: '数据脱敏', desc: '识别敏感数据并生成脱敏规则', icon: '🔒' },
-    'api-executor': { name: '接口测试', desc: '执行API接口测试并记录结果', icon: '🔌' },
-    'ui-e2e-executor': { name: 'UI/E2E测试', desc: '自动化UI功能测试与回归', icon: '🖥️' },
-    'defect-analyzer': { name: '缺陷分析', desc: '分析测试缺陷并分类定级', icon: '🐛' },
-    'test-reporter': { name: '报告生成', desc: '汇总结果生成测试报告', icon: '📝' },
-    'ai-quality-reviewer-1': { name: 'AI审核-事实逻辑', desc: '评估事实准确性(25%)+逻辑一致性(25%)', icon: '🔍' },
-    'ai-quality-reviewer-2': { name: 'AI审核-安全合规', desc: '评估安全性与合规性，含否决项(25%)', icon: '🛡️' },
-    'ai-quality-reviewer-3': { name: 'AI审核-格式结构', desc: '评估格式规范与结构完整性(25%)', icon: '📐' }
+    'test-requirement-analyzer': { name: '需求分析', desc: '解析需求文档，提取功能点与测试条件', icon: 'search' },
+    'test-scheme-generator': { name: '测试方案', desc: '制定测试策略、范围与资源配置', icon: 'assignment' },
+    'test-case-generator': { name: '用例生成', desc: '基于需求和方案编写测试用例', icon: 'checklist' },
+    'test-data-generator': { name: '数据生成', desc: '根据用例需求批量生成测试数据', icon: 'analytics' },
+    'data-masking': { name: '数据脱敏', desc: '识别敏感数据并生成脱敏规则', icon: 'privacy_tip' },
+    'api-executor': { name: '接口测试', desc: '执行API接口测试并记录结果', icon: 'cable' },
+    'ui-e2e-executor': { name: 'UI/E2E测试', desc: '自动化UI功能测试与回归', icon: 'desktop_windows' },
+    'defect-analyzer': { name: '缺陷分析', desc: '分析测试缺陷并分类定级', icon: 'bug_report' },
+    'test-reporter': { name: '报告生成', desc: '汇总结果生成测试报告', icon: 'edit_note' },
+    'ai-quality-reviewer-1': { name: 'AI审核-事实逻辑', desc: '评估事实准确性(25%)+逻辑一致性(25%)', icon: 'search' },
+    'ai-quality-reviewer-2': { name: 'AI审核-安全合规', desc: '评估安全性与合规性，含否决项(25%)', icon: 'shield' },
+    'ai-quality-reviewer-3': { name: 'AI审核-格式结构', desc: '评估格式规范与结构完整性(25%)', icon: 'architecture' }
   }
 
   // 工作流可视化用的阶段定义（分组结构）
@@ -142,7 +142,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     // 初始化步骤 - 9个执行+每个后面3个审核 = 9 + 9*3 = 36步
     initSteps()
 
-    addLog('🚀 工作流启动')
+    addLog('工作流启动')
     addLog(`任务: ${input.slice(0, 100)}...`)
     addLog(`执行流程: ${EXECUTOR_ORDER.length}步执行，每步后3审核`)
 
@@ -156,7 +156,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       }
     } catch (err) {
       error.value = String(err)
-      addLog(`❌ 错误: ${err}`)
+      addLog(`错误: ${err}`)
       isRunning.value = false
     }
   }
@@ -195,7 +195,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   // 获取智能体完整信息
   function getAgentDetail(agentId: string) {
-    return agentInfo[agentId] || { name: agentId, desc: '', icon: 'Operation' }
+    return agentInfo[agentId] || { name: agentId, desc: '', icon: 'smart_toy' }
   }
 
   // 添加日志
@@ -217,48 +217,48 @@ export const useWorkflowStore = defineStore('workflow', () => {
   function handleSSEEvent(event: SSEEvent) {
     switch (event.type) {
       case 'workflow_started':
-        addLog('📋 工作流开始执行')
+        addLog('工作流开始执行')
         break
       case 'workflow_step_complete':
-        addLog(`✅ 步骤完成: ${event.message}`)
+        addLog(`步骤完成: ${event.message}`)
         currentStepIndex.value++
         break
       case 'workflow_phase':
         if (event.phase === 'executor') {
-          addLog(`🚀 进入执行阶段: ${event.message}`)
+          addLog(`进入执行阶段: ${event.message}`)
         } else if (event.phase === 'review') {
-          addLog(`🛡️ 进入审核阶段: ${event.message}`)
+          addLog(`进入审核阶段: ${event.message}`)
         }
         break
       case 'task_progress':
         addLog(`⏳ ${event.message}`)
         break
       case 'executor_completed':
-        addLog(`✅ 执行完成: ${event.agentName}`)
+        addLog(`执行完成: ${event.agentName}`)
         break
       case 'reviewer_started':
-        addLog(`🛡️ ${event.reviewerName || event.reviewerId} 开始审核（第${event.reviewerIndex}/${event.totalReviewers}个）`)
+        addLog(`${event.reviewerName || event.reviewerId} 开始审核（第${event.reviewerIndex}/${event.totalReviewers}个）`)
         break
       case 'reviewer_completed':
-        addLog(`🛡️ ${event.reviewerName || event.reviewerId} 审核完成（${event.score}分 ${event.veto ? '❌否决' : '✅' }）`)
+        addLog(`${event.reviewerName || event.reviewerId} 审核完成（${event.score}分 ${event.veto ? '否决' : '通过' }）`)
         break
       case 'parallel_review_completed':
-        addLog(`🛡️ 审核完成: ${event.agentName}`)
+        addLog(`审核完成: ${event.agentName}`)
         if (event.scores) {
           addLog(`   评分: ${event.scores.join(', ')}`)
         }
         break
       case 'workflow_complete':
-        addLog('🎉 工作流完成')
+        addLog('工作流完成')
         isRunning.value = false
         break
       case 'workflow_error':
-        addLog(`❌ 错误: ${event.message}`)
+        addLog(`错误: ${event.message}`)
         error.value = event.message
         isRunning.value = false
         break
       case 'workflow_failed':
-        addLog(`❌ 工作流失败: ${event.message}`)
+        addLog(`工作流失败: ${event.message}`)
         error.value = event.message
         isRunning.value = false
         break

@@ -1,134 +1,186 @@
-/* 测试中台 - CSS 变量定义（macOS 浅色规范） */
+/* 测试中台 - CSS 变量（Stitch / Precision TestOps 工具感） */
 
 :root {
   /* ===== 品牌与交互色 ===== */
-  --primary: #007AFF;
-  --primary-dark: #0062CC;
-  --primary-light: #4DA2FF;
-  --secondary: #5856D6;
-  --accent: #FF9500;
+  --primary: #5b5bd6;
+  --primary-dark: #4241bc;
+  --primary-light: #7a7ae0;
+  --primary-border: #4f46e5;
+  --secondary: #565e74;
+  --accent: #d97706;
 
-  /* ===== 语义色 ===== */
-  --success: #34C759;
-  --warning: #FF9500;
-  --danger: #FF3B30;
-  --error: #FF3B30;
-  --info: #86868B;
+  /* ===== 语义色 / 遥测判定色 ===== */
+  --success: #059669;
+  --success-strong: #10b981;
+  --success-tint: #ecfdf5;
+  --success-border: #a7f3d0;
+  --success-text: #047857;
+
+  --warning: #d97706;
+  --warning-strong: #f59e0b;
+  --warning-tint: #fffbeb;
+  --warning-border: #fde68a;
+  --warning-text: #b45309;
+
+  --danger: #e11d48;
+  --danger-strong: #f43f5e;
+  --danger-tint: #fff1f2;
+  --danger-border: #fecdd3;
+  --danger-text: #be123c;
+  --error: #e11d48;
+
+  --running: #5b5bd6;
+  --running-strong: #6366f1;
+  --running-tint: #eef2ff;
+  --running-border: #c7d2fe;
+  --running-text: #4338ca;
+
+  --info: #64748b;
+  --neutral-tint: #f1f5f9;
 
   /* ===== 背景与表面 ===== */
-  --bg: #F5F5F7;
-  --bg-page: #F5F5F7;
-  --surface: #FFFFFF;
-  --surface-translucent: rgba(255, 255, 255, 0.84);
-  --surface-hover: #FAFAFC;
-  --sidebar-bg: rgba(246, 246, 248, 0.72);
+  --bg: #f8f9ff;
+  --bg-page: #f8f9ff;
+  --bg-canvas: #f8fafc;
+  --surface: #ffffff;
+  --surface-translucent: #ffffff;
+  --surface-hover: #eff4ff;
+  --surface-recessed: #f1f5f9;
+  --sidebar-bg: #f3f6fc;
 
   /* ===== 文字 ===== */
-  --text: #1D1D1F;
-  --text-secondary: #6E6E73;
-  --text-muted: #86868B;
-  --text-inverse: #FFFFFF;
+  --text: #0b1c30;
+  --text-secondary: #464553;
+  --text-muted: #64748b;
+  --text-inverse: #ffffff;
 
   /* ===== 边框与分隔线 ===== */
-  --border: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.12);
-  --divider: rgba(0, 0, 0, 0.06);
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --divider: #f1f5f9;
 
-  /* ===== 阴影（极轻） ===== */
-  --shadow-card: 0 10px 32px rgba(0, 0, 0, 0.04);
-  --shadow-card-hover: 0 14px 40px rgba(0, 0, 0, 0.07);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
-  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.12);
+  /* ===== 阴影（Level 1 / 2 / 3） ===== */
+  --shadow-card: none;
+  --shadow-card-hover: 0 1px 3px 0 rgba(15, 23, 42, 0.05), 0 1px 2px -1px rgba(15, 23, 42, 0.05);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-level-2: 0 1px 3px 0 rgba(15, 23, 42, 0.05), 0 1px 2px -1px rgba(15, 23, 42, 0.05);
+  --shadow-pop: 0 10px 15px -3px rgba(15, 23, 42, 0.08), 0 4px 6px -4px rgba(15, 23, 42, 0.03);
+  --shadow-card-lift: 0 10px 25px -5px rgba(30, 41, 59, 0.08), 0 8px 10px -6px rgba(30, 41, 59, 0.04);
 
   /* ===== 圆角 ===== */
-  --radius-card: 16px;
-  --radius-md: 11px;
-  --radius-sm: 8px;
-  --radius-xs: 6px;
+  --radius-card: 8px;
+  --radius-xl: 12px;
+  --radius-md: 6px;
+  --radius-sm: 4px;
+  --radius-xs: 3px;
+  --radius-pill: 9999px;
 
-  /* ===== 局部光晕（极淡） ===== */
-  --glow-blue: radial-gradient(120% 80% at 0% 0%, rgba(0, 122, 255, 0.06), transparent 60%);
-  --glow-green: radial-gradient(120% 80% at 100% 0%, rgba(52, 199, 89, 0.05), transparent 60%);
-  /* 登录页光斑（兼容旧引用） */
-  --glow-primary: radial-gradient(circle at 50% 50%, rgba(0, 122, 255, 0.16), transparent 70%);
-  --glow-secondary: radial-gradient(circle at 50% 50%, rgba(52, 199, 89, 0.12), transparent 70%);
+  /* ===== 图标色块（domain tiles） ===== */
+  --tile-blue-bg: #eff6ff;
+  --tile-blue-border: #dbeafe;
+  --tile-blue: #2563eb;
+  --tile-indigo-bg: #eef2ff;
+  --tile-indigo-border: #e0e7ff;
+  --tile-indigo: #4f46e5;
+  --tile-cyan-bg: #ecfeff;
+  --tile-cyan-border: #cffafe;
+  --tile-cyan: #0891b2;
+  --tile-rose-bg: #fff1f2;
+  --tile-rose-border: #ffe4e6;
+  --tile-rose: #e11d48;
+  --tile-emerald-bg: #ecfdf5;
+  --tile-emerald-border: #d1fae5;
+  --tile-emerald: #059669;
+  --tile-amber-bg: #fffbeb;
+  --tile-amber-border: #fef3c7;
+  --tile-amber: #d97706;
+  --tile-teal-bg: #f0fdfa;
+  --tile-teal-border: #ccfbf1;
+  --tile-teal: #0d9488;
+  --tile-violet-bg: #f5f3ff;
+  --tile-violet-border: #ede9fe;
+  --tile-violet: #7c3aed;
+
+  /* ===== 字体 ===== */
+  --font-ui: 'Geist', 'IBM Plex Sans', 'PingFang SC', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* ===== 局部光晕（兼容旧引用，弱化） ===== */
+  --glow-blue: radial-gradient(120% 80% at 0% 0%, rgba(91, 91, 214, 0.05), transparent 60%);
+  --glow-green: radial-gradient(120% 80% at 100% 0%, rgba(5, 150, 105, 0.04), transparent 60%);
+  --glow-primary: radial-gradient(circle at 50% 50%, rgba(91, 91, 214, 0.12), transparent 70%);
+  --glow-secondary: radial-gradient(circle at 50% 50%, rgba(5, 150, 105, 0.08), transparent 70%);
 
   /* ===== 过渡 ===== */
-  --transition: 160ms cubic-bezier(0.32, 0.72, 0, 1);
+  --transition: 140ms ease;
 
   /* ============================================================
-     Element Plus 主题覆盖（浅色 macOS）
+     Element Plus 主题覆盖（工具感）
      ============================================================ */
-  --el-color-primary: #007AFF;
-  --el-color-primary-light-3: #4DA2FF;
-  --el-color-primary-light-5: #80BDFF;
-  --el-color-primary-light-7: #B3D8FF;
-  --el-color-primary-light-8: #CCE5FF;
-  --el-color-primary-light-9: #E6F2FF;
-  --el-color-primary-dark-2: #0062CC;
+  --el-color-primary: #5b5bd6;
+  --el-color-primary-light-3: #7a7ae0;
+  --el-color-primary-light-5: #9a9ae8;
+  --el-color-primary-light-7: #c7d2fe;
+  --el-color-primary-light-8: #e0e7ff;
+  --el-color-primary-light-9: #eef2ff;
+  --el-color-primary-dark-2: #4241bc;
 
-  --el-color-success: #34C759;
-  --el-color-success-light-9: #EAF9EF;
-  --el-color-success-light-3: #6FD98C;
-  --el-color-success-dark-2: #29A049;
+  --el-color-success: #059669;
+  --el-color-success-light-9: #ecfdf5;
+  --el-color-success-light-3: #34d399;
+  --el-color-success-dark-2: #047857;
 
-  --el-color-warning: #FF9500;
-  --el-color-warning-light-9: #FFF4E5;
-  --el-color-warning-light-3: #FFB84D;
-  --el-color-warning-dark-2: #CC7700;
+  --el-color-warning: #d97706;
+  --el-color-warning-light-9: #fffbeb;
+  --el-color-warning-light-3: #fbbf24;
+  --el-color-warning-dark-2: #b45309;
 
-  --el-color-danger: #FF3B30;
-  --el-color-error: #FF3B30;
-  --el-color-danger-light-9: #FFE9E7;
-  --el-color-danger-light-3: #FF7A72;
-  --el-color-danger-dark-2: #CC2F26;
+  --el-color-danger: #e11d48;
+  --el-color-error: #e11d48;
+  --el-color-danger-light-9: #fff1f2;
+  --el-color-danger-light-3: #fb7185;
+  --el-color-danger-dark-2: #be123c;
 
-  --el-color-info: #86868B;
-  --el-color-info-light-9: #F2F2F4;
-  --el-color-info-light-3: #A9A9AE;
-  --el-color-info-dark-2: #6B6B70;
+  --el-color-info: #64748b;
+  --el-color-info-light-9: #f1f5f9;
+  --el-color-info-light-3: #94a3b8;
+  --el-color-info-dark-2: #475569;
 
-  /* 背景 */
-  --el-bg-color: #FFFFFF;
-  --el-bg-color-page: #F5F5F7;
-  --el-bg-color-overlay: #FFFFFF;
+  --el-bg-color: #ffffff;
+  --el-bg-color-page: #f8f9ff;
+  --el-bg-color-overlay: #ffffff;
 
-  /* 填充（hover/active 等） */
-  --el-fill-color: #F2F2F4;
-  --el-fill-color-light: #F7F7F9;
-  --el-fill-color-lighter: #FAFAFC;
-  --el-fill-color-blank: #FFFFFF;
-  --el-fill-color-dark: #E8E8ED;
-  --el-fill-color-darker: #D9D9DE;
+  --el-fill-color: #e5eeff;
+  --el-fill-color-light: #eff4ff;
+  --el-fill-color-lighter: #f8f9ff;
+  --el-fill-color-blank: #ffffff;
+  --el-fill-color-dark: #dce9ff;
+  --el-fill-color-darker: #d3e4fe;
 
-  /* 文字 */
-  --el-text-color-primary: #1D1D1F;
-  --el-text-color-regular: #1D1D1F;
-  --el-text-color-secondary: #6E6E73;
-  --el-text-color-placeholder: #86868B;
-  --el-text-color-disabled: #C7C7CC;
+  --el-text-color-primary: #0b1c30;
+  --el-text-color-regular: #0b1c30;
+  --el-text-color-secondary: #464553;
+  --el-text-color-placeholder: #64748b;
+  --el-text-color-disabled: #94a3b8;
 
-  /* 边框 */
-  --el-border-color: rgba(0, 0, 0, 0.08);
-  --el-border-color-light: rgba(0, 0, 0, 0.06);
-  --el-border-color-lighter: rgba(0, 0, 0, 0.04);
-  --el-border-color-extra-light: rgba(0, 0, 0, 0.03);
-  --el-border-color-dark: rgba(0, 0, 0, 0.12);
-  --el-border-color-darker: rgba(0, 0, 0, 0.2);
+  --el-border-color: #e2e8f0;
+  --el-border-color-light: #f1f5f9;
+  --el-border-color-lighter: #f8fafc;
+  --el-border-color-extra-light: #fafbfc;
+  --el-border-color-dark: #cbd5e1;
+  --el-border-color-darker: #94a3b8;
 
-  /* 菜单（侧边栏） */
+  /* menu 色在 macos-theme.css 的 .sidebar 内覆盖；此处会被 EP index.css 重置 */
   --el-menu-bg-color: transparent;
   --el-menu-text-color: var(--text-secondary);
-  --el-menu-active-color: var(--primary);
+  --el-menu-active-color: var(--primary-dark);
   --el-menu-hover-bg-color: var(--el-fill-color-light);
   --el-menu-border-color: transparent;
 
-  /* 圆角 */
-  --el-border-radius-base: 8px;
-  --el-border-radius-small: 6px;
-  --el-border-radius-round: 16px;
+  --el-border-radius-base: 4px;
+  --el-border-radius-small: 3px;
+  --el-border-radius-round: 8px;
 
-  /* 字号 */
   --el-font-size-extra-large: 20px;
   --el-font-size-large: 16px;
   --el-font-size-medium: 14px;
@@ -136,32 +188,33 @@
   --el-font-size-small: 12px;
   --el-font-size-extra-small: 11px;
 
-  /* 字体族 */
-  --el-font-family: -apple-system, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --el-font-family: var(--font-ui);
 
-  /* 阴影 */
-  --el-box-shadow: 0 10px 32px rgba(0, 0, 0, 0.04);
-  --el-box-shadow-light: 0 1px 3px rgba(0, 0, 0, 0.05);
-  --el-box-shadow-lighter: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --el-box-shadow-dark: 0 12px 32px rgba(0, 0, 0, 0.12);
+  --el-box-shadow: var(--shadow-level-2);
+  --el-box-shadow-light: var(--shadow-sm);
+  --el-box-shadow-lighter: none;
+  --el-box-shadow-dark: var(--shadow-pop);
 }
 
-/* 字体族全局默认 */
 html, body, #app {
-  font-family: -apple-system, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-family: var(--font-ui);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   color: var(--text);
   background: var(--bg);
 }
 
-/* 全局过渡（悬停/聚焦，约 160ms） */
+.font-mono,
+.pto-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 * {
   transition: background-color var(--transition), border-color var(--transition),
     box-shadow var(--transition), color var(--transition);
 }
 
-/* 滚动条（浅色细腻） */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -171,12 +224,12 @@ html, body, #app {
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.16);
+  background: rgba(15, 23, 42, 0.16);
   border-radius: 4px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.28);
+  background: rgba(15, 23, 42, 0.28);
   background-clip: content-box;
 }

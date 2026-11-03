@@ -7,6 +7,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import DashboardChatPanel from '@/components/DashboardChatPanel.vue'
 import type { AttachmentFile, ChatMessage } from '@/types'
 import { getAuthHeaders, request, taskApi } from '@/api'
+import MsIcon from '@/components/MsIcon.vue'
+import { getAgentIcon } from '@/utils/agentIcons'
 
 const store = useMainStore()
 const router = useRouter()
@@ -197,7 +199,7 @@ async function enterChatMode(task: any, autoEnter = false) {
         id: msgId,
         role: 'assistant',
         type: 'agent',
-        content: `✅ 任务 ${taskId} 完成\n\n${taskOutput}`,
+        content: `任务 ${taskId} 完成\n\n${taskOutput}`,
         timestamp: task.completedAt || task.updatedAt || task.createdAt || new Date().toISOString(),
         agentId,
         agentName: task.agentName || agentId,
@@ -642,8 +644,11 @@ onUnmounted(() => {
          恢复方法：见 git 历史 494ef6b 之前的 DashboardView.vue（stats-grid 模板 + stats computed + StatCard）。 -->
 
     <!-- 智能体选择器 -->
-    <div class="agent-selector" :class="{ 'has-running-task': hasRunningTask }">
-      <span class="selector-label">智能体:</span>
+    <div class="agent-selector pto-card pto-card--dense" :class="{ 'has-running-task': hasRunningTask }">
+      <div class="pto-icon-tile pto-icon-tile--sm pto-icon-tile--indigo">
+        <span class="material-symbols-outlined" style="font-size:16px">smart_toy</span>
+      </div>
+      <span class="selector-label">智能体</span>
       <el-select
         v-model="selectedAgentId"
         placeholder="请选择"
@@ -658,7 +663,7 @@ onUnmounted(() => {
           :value="agent.id"
         >
           <div class="agent-option">
-            <span class="agent-icon">{{ agent.icon || '🤖' }}</span>
+            <span class="agent-icon"><MsIcon :name="getAgentIcon(agent.id) || 'smart_toy'" :size="18" /></span>
             <span class="agent-name">{{ getAgentChineseName(agent) }}</span>
             <span class="agent-desc">{{ agent.description || agent.desc || '' }}</span>
           </div>
@@ -666,9 +671,7 @@ onUnmounted(() => {
       </el-select>
       <!-- 任务执行时显示提示 -->
       <span v-if="hasRunningTask" class="running-hint">
-        <el-tag type="warning" effect="plain" size="small">
-          ⚡ 任务执行中,请等待完成后切换
-        </el-tag>
+        <span class="pto-badge pto-badge--running">任务执行中</span>
       </span>
     </div>
 
@@ -738,10 +741,16 @@ onUnmounted(() => {
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: none;
   position: relative;
+}
+.agent-selector:hover {
+  transform: none;
+  box-shadow: var(--shadow-level-2);
+  border-color: var(--border-strong);
 }
 
 /* 任务执行时禁用智能体选择器 */
