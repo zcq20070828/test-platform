@@ -13,8 +13,7 @@ const STAGE_ICONS = [
 
 export function stageMsIcon(stageIdx: number | undefined | null): string {
   if (stageIdx == null || stageIdx < 0) return 'account_tree'
-  if (stageIdx < STAGE_ICONS.length) return STAGE_ICONS[stageIdx]
-  return 'filter_9_plus'
+  return STAGE_ICONS[stageIdx] ?? 'filter_9_plus'
 }
 
 export function workflowMsIcon(): string {
