@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | test-requirement-analyzer | `requirement_parser` | 确定性解析模块/功能点/验收标准/优先级/边界条件，LLM 基于解析结果写报告 |
 | test-scheme-generator | `test_strategy_designer` | 确定性生成测试模式、层级、里程碑、工具链、风险缓解 |
-| test-case-generator | `9dem_executor` | 九维穷举模型生成覆盖组合，LLM 组织成用例表 |
+| test-case-generator | `9dem_executor` | 九维穷举确定维度 + 黑盒 9 法确定性生成用例（跨方法去重），LLM 组织成用例表并把「维度/方法」标注进「维度」列 |
 | test-data-generator | `test_data_generator_skill` | 真实生成随机/边界值/组合数据（不是只写“数据清单”） |
 | data-masking | `data_masking_invoker` | 文本正则脱敏；服务器内 docx/图片调用 `mask_wrapper.py` |
 | api-executor | `api_direct_invoker` / `api_test_tool_invoker` | 真实 HTTP 请求 + 断言；不可达会如实失败 |
