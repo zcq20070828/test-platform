@@ -12,6 +12,8 @@ const {
   generatePairwiseCombinations
 } = require('../executor');
 
+const { executeDesignMethods, METHODS: DESIGN_METHODS, METHOD_KEYS: DESIGN_METHOD_KEYS } = require('./design-methods');
+
 /**
  * 从 task 文本构建 inputSpec（宽松推断）
  * @param {string} task - 需求或场景描述文本
@@ -87,6 +89,10 @@ function buildInputSpecFromFields(fields) {
  * @param {Object} [params.inputSpec] - 已结构化的输入规范（优先）
  * @param {Array<{name,type,min,max,minLength,maxLength,values}>} [params.fields] - 字段列表（三选一）
  * @param {Array<string>} [params.dimensions] - 维度列表，默认 ['data']
+ * @param {Array<string>} [params.methods] - 黑盒设计方法，默认全部 9 种
+ * @param {Object} [params.designInput] - 设计方法的结构化输入（causes/effects/rules/factors/scenarios/states/transitions/functions）
+ * @param {boolean} [params.includeDesignCases=true] - 是否输出黑盒方法生成的具体用例
+ * @param {boolean} [params.dedupe=true] - 是否跨方法去重
  * @param {Object} [params.options] - 扩展选项
  * @returns {Object} 执行结果
  */
@@ -96,6 +102,10 @@ async function invoke(params) {
     inputSpec,
     fields,
     dimensions = ['data'],
+    methods,
+    designInput = {},
+    includeDesignCases = true,
+    dedupe = true,
     options = {}
   } = params || {};
 
@@ -107,31 +117,56 @@ async function invoke(params) {
   if (!spec && task) {
     spec = buildInputSpecFromTask(task);
   }
-  if (!spec) {
+
+  const hasDesignInput = designInput && typeof designInput === 'object' && Object.keys(designInput).length > 0;
+  if (!spec && !hasDesignInput) {
     // 兜底：返回方法论提示
     return {
       skill: '9dem-executor',
       success: false,
-      error: '请提供 task（需求文本）、inputSpec（结构化规范）或 fields（字段列表）参数之一',
-      hint: '九维穷举模型需要定义输入字段（字段名、类型、边界值等）才能生成等价类/边界值测试设计。'
+      error: '请提供 task（需求文本）、inputSpec（结构化规范）、fields（字段列表）或 designInput（设计方法输入）参数之一',
+      hint: '九维穷举模型需要输入字段才能生成等价类/边界值；因果图/判定表/场景法/状态迁移/功能图需要 designInput 中对应的 causes/rules/scenarios/transitions/functions。'
     };
   }
 
   try {
-    const result = execute9DEM({ inputSpec: spec, dimensions });
+    const result = spec ? execute9DEM({ inputSpec: spec, dimensions }) : {};
 
-    // 附加上下文，帮助 LLM 理解结果
+    // 黑盒 9 种设计方法：与九维维度正交，输出可直接落表的用例
+    let design = null;
+    if (includeDesignCases) {
+      const merged = { ...designInput };
+      if (!merged.inputSpec && !merged.spec && spec) merged.inputSpec = spec;
+      design = executeDesignMethods({ input: merged, methods, dedupe });
+    }
+
+    const designStats = design ? design.stats : null;
+
     return {
       skill: '9dem-executor',
       success: true,
       dimensions,
       inputSpec: spec,
+      methods: design ? design.methods.map((m) => ({
+        method: m.method,
+        methodKey: m.methodKey,
+        methodLabel: m.methodLabel,
+        caseCount: m.caseCount,
+        skipped: m.skipped,
+        reason: m.reason,
+        guidance: m.guidance,
+        mode: m.mode,
+      })) : undefined,
       summary: {
         requestedDimensions: dimensions,
         dataEquivalenceClassesCount: result.data?.equivalenceClasses?.validClasses?.length || 0,
         dataBoundaryValuesCount: result.data?.boundaryValues?.length || 0,
-        dataPairwiseCount: result.data?.pairwise?.length || 0
+        dataPairwiseCount: result.data?.pairwise?.length || 0,
+        designMethodCoverage: designStats ? designStats.methodCoverage : 0,
+        designUniqueCases: designStats ? designStats.uniqueCases : 0,
+        designDuplicatesRemoved: designStats ? designStats.duplicatesRemoved : 0,
       },
+      design,
       dimensionsResult: result,
       ...result
     };

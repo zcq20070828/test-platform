@@ -1,7 +1,7 @@
 {
   "name": "通用测试智能体技能包",
   "version": "1.0.0",
-  "generatedAt": "2026-10-22T12:23:10.988Z",
+  "generatedAt": "2026-11-04T04:29:59.125Z",
   "description": "从测试中台抽取的 18 个智能体提示词与核心 Skill（含可执行后端与 SKILL.md），用于迁移到其他 Agent 运行时。",
   "source": "test-platform / qclaw-skills",
   "counts": {
@@ -68,12 +68,15 @@
       "id": "test-case-generator",
       "name": "测试用例生成",
       "type": "executor",
-      "description": "基于需求分析结果,运用九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性)生成高质量测试用例。支持等价类划分、边界值分析、状态迁移、决策表等多种测试设计技术,输出含九维覆盖矩阵的标准格式测试用例文档。",
+      "description": "基于需求分析结果,采用「维度 × 方法」二维模型生成高质量测试用例:九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性)确定覆盖维度,黑盒9种设计方法(等价类划分/边界值分析/因果图/判定表/正交试验/错误推测/场景法/状态迁移/功能图)确定设计方法,跨方法自动去重,输出含维度覆盖矩阵与方法覆盖矩阵的标准格式测试用例文档。",
       "capabilities": [
         "用例设计",
         "九维穷举",
+        "黑盒9法",
         "边界分析",
-        "状态迁移"
+        "状态迁移",
+        "正交组合",
+        "用例去重"
       ],
       "knowledgeBases": [
         "general",
@@ -1104,7 +1107,7 @@
       "directory": "skills/9dem-executor",
       "entry": "skills/9dem-executor/backend/9dem-invoker.js",
       "exportName": "invoke",
-      "description": "九维穷举模型执行器:基于用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性九维,生成等价类划分、边界值分析、Pairwise 组合等专业测试设计。",
+      "description": "九维穷举 + 黑盒9法执行器:九维(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性)确定覆盖维度,黑盒9法(等价类划分/边界值分析/因果图/判定表/正交试验/错误推测/场景法/状态迁移/功能图)确定性生成用例,跨方法去重后返回可直接落表的用例清单。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1137,6 +1140,70 @@
                 "compatibility"
               ]
             }
+          },
+          "methods": {
+            "type": "array",
+            "description": "黑盒设计方法,默认全部9种:equivalence/boundary/causeEffect/decisionTable/orthogonal/errorGuessing/scenario/stateTransition/functionGraph",
+            "items": {
+              "type": "string",
+              "enum": [
+                "equivalence",
+                "boundary",
+                "causeEffect",
+                "decisionTable",
+                "orthogonal",
+                "errorGuessing",
+                "scenario",
+                "stateTransition",
+                "functionGraph"
+              ]
+            }
+          },
+          "designInput": {
+            "type": "object",
+            "description": "设计方法的结构化输入。rules(causes/effects/rules)→因果图+判定表;factors→正交试验;scenarios→场景法;states(states/transitions)→状态迁移;functions(前后置条件/依赖)→功能图;inputSpec 缺省时自动复用顶层 inputSpec。",
+            "properties": {
+              "inputSpec": {
+                "type": "object",
+                "description": "字段规格(可选,缺省复用顶层 inputSpec)"
+              },
+              "causes": {
+                "type": "array",
+                "description": "原因列表(因果图)"
+              },
+              "effects": {
+                "type": "array",
+                "description": "结果列表(因果图)"
+              },
+              "rules": {
+                "type": "array",
+                "description": "规则数组,每项 {id,conditions:{C1:true},actions:{结果:true}}(因果图/判定表)"
+              },
+              "factors": {
+                "type": "object",
+                "description": "因子→水平数组,如 {平台:[\"iOS\",\"Android\"],网络:[\"4G\",\"弱网\"]}(正交试验)"
+              },
+              "scenarios": {
+                "type": "array",
+                "description": "场景数组 {name,type:basic|alternative|exception,steps,expected}(场景法)"
+              },
+              "states": {
+                "type": "object",
+                "description": "{states:[...],transitions:[{from,to,event,valid}]}(状态迁移)"
+              },
+              "functions": {
+                "type": "array",
+                "description": "功能节点 {id,name,preconditions,postconditions,dependsOn}(功能图)"
+              }
+            }
+          },
+          "includeDesignCases": {
+            "type": "boolean",
+            "description": "是否输出黑盒方法生成的具体用例,默认 true"
+          },
+          "dedupe": {
+            "type": "boolean",
+            "description": "是否跨方法去重(输入+步骤+预期),默认 true"
           }
         }
       }
