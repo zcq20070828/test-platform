@@ -4,6 +4,7 @@ import { useKnowledgeStore } from '@/stores/knowledge'
 import { ElMessage } from 'element-plus'
 import type { KnowledgeDoc } from '@/types'
 import { highlightSafe } from '@/utils/safe-html'
+import MsIcon from '@/components/MsIcon.vue'
 
 const emit = defineEmits<{
   (e: 'view-document', doc: KnowledgeDoc): void
@@ -129,7 +130,7 @@ function highlightText(text: string, keyword: string): string {
           @focus="showHistory = true"
         >
           <template #prefix>
-            <el-icon><Search /></el-icon>
+            <MsIcon name="search" />
           </template>
           <template #append>
             <el-button type="primary" @click="handleSearch">搜索</el-button>
@@ -216,7 +217,7 @@ function highlightText(text: string, keyword: string): string {
         >
           <div class="result-header">
             <div class="result-title">
-              <el-icon><Document /></el-icon>
+              <MsIcon name="description" />
               <span>{{ result.name }}</span>
               <el-tag size="small" type="info">{{ result.kbType }}</el-tag>
             </div>

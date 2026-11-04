@@ -39,10 +39,10 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   // 知识库类型
   const kbTypes = [
-    { value: 'all', label: '全部', icon: 'Folder' },
-    { value: 'general', label: '通用测试', icon: 'Document' },
-    { value: 'project-test', label: '项目测试', icon: 'Files' },
-    { value: 'project-biz', label: '项目业务', icon: 'Briefcase' }
+    { value: 'all', label: '全部', icon: 'folder' },
+    { value: 'general', label: '通用测试', icon: 'description' },
+    { value: 'project-test', label: '项目测试', icon: 'folder' },
+    { value: 'project-biz', label: '项目业务', icon: 'work' }
   ]
 
   // 计算属性：按类型过滤

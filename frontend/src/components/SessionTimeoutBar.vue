@@ -1,7 +1,7 @@
 <template>
   <transition name="fade">
     <div v-if="isActive" class="session-bar" :class="{ warning: isWarning }">
-      <el-icon class="session-icon"><Timer /></el-icon>
+      <MsIcon name="timer" cls="session-icon" />
       <span>会话剩余时间：</span>
       <span class="session-time">{{ remainingText }}</span>
       <span v-if="isWarning" class="session-hint">请操作以保持登录</span>
@@ -10,8 +10,9 @@
 </template>
 
 <script setup lang="ts">
-import { Timer } from '@element-plus/icons-vue'
 import { remainingText, isWarning, isActive } from '@/composables/useSessionTimeout'
+import MsIcon from '@/components/MsIcon.vue'
+
 </script>
 
 <style scoped>

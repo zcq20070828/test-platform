@@ -8,12 +8,8 @@ import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
 import { Marked } from 'marked'
 import { sanitizeHtml, renderMarkdownSafe, escapeHtml } from '@/utils/safe-html'
-import {
-  CircleClose, User, ChatDotRound,
-  InfoFilled, Loading, SuccessFilled,
-  Monitor, Document, Check, Promotion, Refresh,
-  EditPen, DataAnalysis, PictureFilled, FolderOpened, View, Download, CopyDocument, ArrowRight, Upload
-} from '@element-plus/icons-vue'
+import MsIcon from '@/components/MsIcon.vue'
+import { getAgentIcon } from '@/utils/agentIcons'
 
 const props = defineProps<{
   modelValue: string
@@ -138,7 +134,7 @@ async function openPreview(artifact: any) {
   const otherBin = ['.pdf', '.zip', '.doc', '.xls', '.ppt', '.pptx']
   if (otherBin.some(ext => fname.endsWith(ext))) {
     previewRenderedContent.value = `<div style="text-align:center;padding:40px 20px;color:#909399;">
-      <el-icon size="48" style="margin-bottom:16px;"><Document /></el-icon>
+      <MsIcon name="description" :size="48" style="margin-bottom:16px;" />
       <p style="font-size:16px;margin-bottom:8px;">该文件格式不支持在线预览</p>
       <p style="font-size:13px;color:#C0C4CC;margin-bottom:20px;">${escapeHtml(artifact.name || '')}</p>
       <p style="font-size:13px;">请点击「下载」按钮，用对应软件打开查看</p>
@@ -559,26 +555,21 @@ function getPhaseStatusType(status: string) {
 
 function getPhaseStatusText(status: string) {
   switch (status) {
-    case 'passed': return '✅ 已通过'
-    case 'rejected': return '❌ 未通过'
-    case 'running': return '⏳ 执行中'
-    case 'pending': return '⏸ 等待中'
-    case 'retry': return '🔄 重试中'
+    case 'passed': return '已通过'
+    case 'rejected': return '未通过'
+    case 'running': return '执行中'
+    case 'pending': return '等待中'
+    case 'retry': return '重试中'
     default: return status
   }
 }
 
 function getAgentEmoji(agentId: string | undefined): string {
-  const emojiMap: Record<string, string> = {
-    'test-master': '👑', 'test-requirement-analyzer': '🔍', 'test-scheme-generator': '📋',
-    'test-case-generator': '✅', 'test-data-generator': '📊', 'api-executor': '🔌',
-    'ui-e2e-executor': '🖥️', 'knowledge-manager': '📚', 'test-reporter': '📊', 'defect-analyzer': '🐛', 'data-masking': '🎭', 'ai-quality-reviewer-1': '🤖', 'ai-quality-reviewer-2': '🤖', 'ai-quality-reviewer-3': '🤖', 'default': '🤖'
-  }
-  return emojiMap[agentId || ''] || '🤖'
+  return getAgentIcon(agentId)
 }
 
 function getStepIcon(type: string) {
-  switch (type) { case 'thinking': return 'Cpu'; case 'tool_call': return 'Tools'; case 'tool_result': return 'Check'; case 'step': return 'Monitor'; default: return 'Document' }
+  switch (type) { case 'thinking': return 'memory'; case 'tool_call': return 'build'; case 'tool_result': return 'check'; case 'step': return 'desktop_windows'; default: return 'description' }
 }
 
 function getStepTypeLabel(type: string) {
@@ -593,17 +584,17 @@ onMounted(() => { scrollToBottom() })
     <!-- 头部：智能体信息（紧凑单行布局） -->
     <div class="panel-header">
       <div class="agent-info-compact">
-        <span class="agent-emoji">{{ currentAgent ? getAgentEmoji(currentAgent.id) : '🤖' }}</span>
+        <span class="agent-emoji"><MsIcon :name="currentAgent ? getAgentEmoji(currentAgent.id) : 'smart_toy'" :size="20" /></span>
         <span class="agent-name-compact">{{ currentAgent?.name || '测试主控' }}</span>
         <span class="agent-desc-compact">{{ currentAgent?.description || currentAgent?.desc || '测试主控Agent,调度中枢' }}</span>
       </div>
       <div class="header-actions" v-if="!readonly">
         <el-button link @click="openChatDialog">
-          <el-icon><ChatDotRound /></el-icon>
+          <MsIcon name="chat" />
           继续对话
         </el-button>
         <el-button link @click="emit('clear')">
-          <el-icon><CircleClose /></el-icon>
+          <MsIcon name="cancel" />
           清空
         </el-button>
       </div>
@@ -611,8 +602,8 @@ onMounted(() => { scrollToBottom() })
 
     <!-- 对话模式标签 -->
     <div v-if="isChatMode && !readonly" class="chat-mode-banner">
-      <span>💬 对话中：{{ props.chatMode?.taskName }}</span>
-      <el-button text size="small" @click="emit('exitChat')"><el-icon><CircleClose /></el-icon> 退出</el-button>
+      <span class="tab-label"><MsIcon name="chat" :size="16" /> 对话中：{{ props.chatMode?.taskName }}</span>
+      <el-button text size="small" @click="emit('exitChat')"><MsIcon name="cancel" /> 退出</el-button>
     </div>
 
     <!-- 消息区域 -->
@@ -620,23 +611,23 @@ onMounted(() => { scrollToBottom() })
       <div v-if="messages.length === 0" class="empty-state">
         <template v-if="!readonly">
         <div class="empty-icon-wrap">
-          <el-icon :size="48"><ChatDotRound /></el-icon>
+          <MsIcon name="chat" :size="48" />
           <span class="live-dot"></span>
         </div>
         <p class="empty-title">测试中台 · 流式交互</p>
         <p class="hint">输入需求后，所有智能体的输出将在此实时同步展示：<br/>
           <span class="hint-tags">
-            <el-tag size="small" effect="plain" type="warning">💭 Test-Master 思考过程</el-tag>
-            <el-tag size="small" effect="plain" type="primary">🔧 工具调用</el-tag>
-            <el-tag size="small" effect="plain" type="success">📋 子智能体输出</el-tag>
+            <el-tag size="small" effect="plain" type="warning"><span class="tab-label"><MsIcon name="psychology" :size="14" /> Test-Master 思考过程</span></el-tag>
+            <el-tag size="small" effect="plain" type="primary"><span class="tab-label"><MsIcon name="build" :size="14" /> 工具调用</span></el-tag>
+            <el-tag size="small" effect="plain" type="success"><span class="tab-label"><MsIcon name="assignment" :size="14" /> 子智能体输出</span></el-tag>
           </span>
         </p>
         <div class="empty-divider"></div>
         <p class="hint-secondary">支持全自动和人机交互两种工作模式，按时间先后顺序实时同步所有智能体的完整工作过程</p>
         </template>
         <template v-else>
-          <el-icon :size="48"><ChatDotRound /></el-icon>
-          <p class="empty-title">{{ emptyText || '⏳ 等待阶段开始…' }}</p>
+          <MsIcon name="chat" :size="48" />
+          <p class="empty-title">{{ emptyText || '等待阶段开始…' }}</p>
         </template>
       </div>
 
@@ -653,7 +644,7 @@ onMounted(() => { scrollToBottom() })
             <div class="message-time">{{ formatTime(msg.timestamp) }}<span v-if="msg.versionLabel" style="background:#fff7e6;color:#d46b08;border:1px solid #ffd591;border-radius:4px;padding:0 6px;font-size:11px;margin-left:6px;">{{ msg.versionLabel }}</span></div>
           </div>
           <el-avatar :size="32" class="user-avatar">
-            <el-icon><User /></el-icon>
+            <MsIcon name="person" />
           </el-avatar>
         </div>
 
@@ -668,12 +659,12 @@ onMounted(() => { scrollToBottom() })
         <!-- 智能体消息 -->
         <div v-else class="message-content agent-content">
           <el-avatar :size="32" class="agent-avatar-icon">
-            {{ msg.agentIcon || '🤖' }}
+            <MsIcon :name="msg.agentIcon || 'smart_toy'" :size="18" />
           </el-avatar>
           <div class="message-bubble agent-bubble">
             <!-- 智能体执行头：显示执行者名称和状态 -->
             <div class="agent-header-badge">
-              <span class="agent-badge-icon">{{ msg.agentIcon || '🤖' }}</span>
+              <span class="agent-badge-icon"><MsIcon :name="msg.agentIcon || 'smart_toy'" :size="18" /></span>
               <span class="agent-badge-name">{{ msg.agentName || '智能体' }}</span>
               <span v-if="msg.isStreaming" class="agent-badge-streaming">
                 <span class="live-dot"></span>执行中
@@ -685,7 +676,7 @@ onMounted(() => { scrollToBottom() })
                 <el-collapse-item name="thinking">
                   <template #title>
                     <span class="thinking-title">
-                      <span>💭 思考过程</span>
+                      <span class="tab-label"><MsIcon name="psychology" :size="14" /> 思考过程</span>
                       <span v-if="msg.isStreaming" class="live-dot" style="margin-left: 6px"></span>
                       <span v-if="!msg.isStreaming" class="thinking-count">({{ msg.thinking.length }}步)</span>
                     </span>
@@ -693,13 +684,13 @@ onMounted(() => { scrollToBottom() })
                   <div class="thinking-steps">
                     <div v-for="step in msg.thinking" :key="step.id" class="thinking-step" :class="'step-' + step.type">
                       <div class="step-header">
-                        <el-icon><component :is="getStepIcon(step.type)" /></el-icon>
+                        <MsIcon :name="getStepIcon(step.type)" :size="16" />
                         <span class="step-type">{{ getStepTypeLabel(step.type) }}</span>
                         <span class="step-time">{{ formatTime(step.timestamp) }}</span>
                       </div>
                       <div class="step-content">
                         <div v-if="step.type === 'tool_call'" class="tool-call">
-                          <span class="step-tool-name">🔧 {{ step.toolName }}</span>
+                          <span class="step-tool-name"><MsIcon name="build" :size="14" /> {{ step.toolName }}</span>
                           <pre>{{ step.content }}</pre>
                         </div>
                         <div v-else-if="step.type === 'tool_result'" class="tool-result">
@@ -715,7 +706,7 @@ onMounted(() => { scrollToBottom() })
 
             <!-- 工作流阶段信息 -->
             <div v-if="msg.metadata?.workflowPhase" class="workflow-phase-info">
-              <el-icon><InfoFilled /></el-icon>
+              <MsIcon name="info" />
               <span>当前阶段：{{ getPhaseName(msg.metadata.workflowPhase) }}</span>
             </div>
 
@@ -727,17 +718,17 @@ onMounted(() => { scrollToBottom() })
             <!-- 输出物列表 -->
             <div v-if="userFacingArtifacts(msg.artifacts).length > 0" class="artifacts-section">
               <div class="artifacts-label">
-                <el-icon><Document /></el-icon>
+                <MsIcon name="description" />
                 输出物（{{ userFacingArtifacts(msg.artifacts).length }}个）
               </div>
               <div class="artifacts-list">
                 <div v-for="artifact in userFacingArtifacts(msg.artifacts)" :key="artifact.id" class="artifact-card">
                   <div class="artifact-icon">
-                    <el-icon v-if="artifact.type === 'text'"><Document /></el-icon>
-                    <el-icon v-else-if="artifact.type === 'code'"><EditPen /></el-icon>
-                    <el-icon v-else-if="artifact.type === 'report'"><DataAnalysis /></el-icon>
-                    <el-icon v-else-if="artifact.type === 'image'"><PictureFilled /></el-icon>
-                    <el-icon v-else><FolderOpened /></el-icon>
+                    <MsIcon v-if="artifact.type === 'text'" name="description" />
+                    <MsIcon v-else-if="artifact.type === 'code'" name="edit" />
+                    <MsIcon v-else-if="artifact.type === 'report'" name="analytics" />
+                    <MsIcon v-else-if="artifact.type === 'image'" name="image" />
+                    <MsIcon v-else name="folder_open" />
                   </div>
                   <div class="artifact-info">
                     <div class="artifact-name">{{ artifact.name }}</div>
@@ -753,26 +744,26 @@ onMounted(() => { scrollToBottom() })
                       text size="small"
                       @click="openPreview(artifact)"
                     >
-                      <el-icon><View /></el-icon> 预览
+                      <MsIcon name="visibility" /> 预览
                     </el-button>
                     <el-button
                       text size="small" type="info"
                       @click="copyArtifactContent(artifact)"
                     >
-                      <el-icon><CopyDocument /></el-icon> 复制
+                      <MsIcon name="content_copy" /> 复制
                     </el-button>
                     <el-button
                       v-if="artifact.content || artifact.downloadUrl"
                       text size="small" type="success"
                       @click="useArtifactAsInput(artifact)"
                     >
-                      <el-icon><ArrowRight /></el-icon> 用作输入
+                      <MsIcon name="arrow_forward" /> 用作输入
                     </el-button>
                     <el-button
                       text size="small" type="primary"
                       @click="downloadArtifact(artifact)"
                     >
-                      <el-icon><Download /></el-icon> 下载
+                      <MsIcon name="download" /> 下载
                     </el-button>
                   </div>
                 </div>
@@ -780,15 +771,15 @@ onMounted(() => { scrollToBottom() })
             </div>
 
             <div v-if="msg.type === 'user_decision' || msg.metadata?.requireDecision" class="decision-buttons">
-              <el-button type="primary" size="small" @click="handleDecision(msg, 'continue')"><el-icon><Check /></el-icon> 继续下一阶段</el-button>
-              <el-button type="warning" size="small" @click="handleDecision(msg, 'manual_edit')">✏️ 人工修改</el-button>
-              <el-button type="info" size="small" @click="handleDecision(msg, 'retry')"><el-icon><Refresh /></el-icon> 重新执行本阶段</el-button>
-              <el-button type="danger" size="small" @click="handleDecision(msg, 'stop')"><el-icon><CircleClose /></el-icon> 停止工作流</el-button>
+              <el-button type="primary" size="small" @click="handleDecision(msg, 'continue')"><MsIcon name="check" /> 继续下一阶段</el-button>
+              <el-button type="warning" size="small" @click="handleDecision(msg, 'manual_edit')"><MsIcon name="edit" :size="14" /> 人工修改</el-button>
+              <el-button type="info" size="small" @click="handleDecision(msg, 'retry')"><MsIcon name="refresh" /> 重新执行本阶段</el-button>
+              <el-button type="danger" size="small" @click="handleDecision(msg, 'stop')"><MsIcon name="cancel" /> 停止工作流</el-button>
             </div>
 
             <div v-if="msg.isStreaming && !msg.content && (!msg.thinking || msg.thinking.length === 0)" class="streaming-indicator">
               <span class="pulse-ring"></span>
-              <el-icon class="is-loading"><Loading /></el-icon>
+              <MsIcon name="progress_activity" :loading="true" />
               <span>正在思考...</span>
             </div>
 
@@ -801,7 +792,7 @@ onMounted(() => { scrollToBottom() })
       </div>
 
       <div v-if="isLoading" class="loading-indicator">
-        <el-icon class="is-loading"><Loading /></el-icon>
+        <MsIcon name="progress_activity" :loading="true" />
         <span>智能体正在思考...</span>
       </div>
     </div>
@@ -812,36 +803,36 @@ onMounted(() => { scrollToBottom() })
         <div v-for="(file, index) in attachments" :key="index" class="attachment-item">
           <img v-if="file.type?.startsWith('image/') && file.dataUrl" :src="file.dataUrl" class="attachment-image" />
           <div v-else class="attachment-file">
-            <el-icon><Document /></el-icon>
+            <MsIcon name="description" />
             <div class="file-info">
               <span class="file-name">{{ file.name }}</span>
               <span class="file-size">{{ (file.size / 1024).toFixed(1) }}KB</span>
             </div>
           </div>
           <el-button class="remove-attachment" text size="small" @click="removeAttachment(index)">
-            <el-icon><CircleClose /></el-icon>
+            <MsIcon name="cancel" />
           </el-button>
         </div>
       </div>
 
       <div class="input-box" :class="{ 'drag-over': isDragOver }" @dragover.prevent="handleDragOver" @dragleave.prevent="handleDragLeave" @drop="handleDrop">
         <div class="input-toolbar">
-          <el-button text @click="handleFileSelect"><el-icon><Document /></el-icon></el-button>
-          <el-button text @click="isVoiceActive = !isVoiceActive"><el-icon><ChatDotRound /></el-icon></el-button>
+          <el-button text @click="handleFileSelect"><MsIcon name="description" /></el-button>
+          <el-button text @click="isVoiceActive = !isVoiceActive"><MsIcon name="chat" /></el-button>
           <input ref="fileInput" type="file" multiple style="display: none" @change="handleFileChange" />
         </div>
         <el-input v-model="localInput" type="textarea" :rows="3" :placeholder="isChatMode ? '继续对话，补充需求或修改交付物…（Enter 发送）' : '输入您的需求...（Shift+Enter 换行，Enter 发送）'" resize="none" @keydown.enter.exact.prevent="handleSend" @keydown.shift.enter.prevent="localInput += '\n'" />
         <div class="input-actions">
           <VoiceInput v-if="isVoiceActive" @result="handleVoiceResult" />
           <el-button type="primary" :loading="isLoading" :disabled="!localInput.trim() && attachments.length === 0" @click="handleSend">
-            <el-icon v-if="!isLoading"><Promotion /></el-icon>
+            <MsIcon v-if="!isLoading" name="send" />
             {{ isLoading ? '执行中...' : (isChatMode ? '发送对话' : '发送') }}
           </el-button>
         </div>
       </div>
 
       <div class="input-hint">
-        <el-icon><InfoFilled /></el-icon>
+        <MsIcon name="info" />
         <span>支持拖拽文件、图片到输入框 | Shift+Enter 换行</span>
       </div>
     </div>
@@ -861,13 +852,13 @@ onMounted(() => { scrollToBottom() })
       <span class="preview-size" v-if="previewArtifact.size">{{ formatFileSize(previewArtifact.size) }}</span>
       <div class="preview-actions">
         <el-button size="small" type="success" plain @click="useArtifactAsInput(previewArtifact)">
-          <el-icon><ArrowRight /></el-icon> 用作输入
+          <MsIcon name="arrow_forward" /> 用作输入
         </el-button>
         <el-button size="small" type="primary" plain @click="downloadArtifact(previewArtifact)">
-          <el-icon><Download /></el-icon> 下载
+          <MsIcon name="download" /> 下载
         </el-button>
         <el-button size="small" plain @click="copyToClipboard(previewArtifact.content)">
-          <el-icon><CopyDocument /></el-icon> 复制
+          <MsIcon name="content_copy" /> 复制
         </el-button>
       </div>
     </div>
@@ -875,7 +866,7 @@ onMounted(() => { scrollToBottom() })
     <template #footer>
       <el-button @click="previewVisible = false">关闭</el-button>
       <el-button type="success" @click="useArtifactAsInput(previewArtifact)">
-        <el-icon><ArrowRight /></el-icon> 用作输入
+        <MsIcon name="arrow_forward" /> 用作输入
       </el-button>
     </template>
   </el-dialog>
@@ -897,7 +888,7 @@ onMounted(() => { scrollToBottom() })
         <template #default="{ row }">{{ row.type || row.agent || '任务' }}</template>
       </el-table-column>
       <el-table-column label="Agent" min-width="180">
-        <template #default="{ row }">{{ getAgentEmoji(row.agent) }} {{ row.agent }}</template>
+        <template #default="{ row }"><span class="tab-label"><MsIcon :name="getAgentEmoji(row.agent)" :size="14" /> {{ row.agent }}</span></template>
       </el-table-column>
       <el-table-column label="状态" width="100">
         <template #default="{ row }">
@@ -1249,4 +1240,7 @@ onMounted(() => { scrollToBottom() })
 .history-task-card .ht-status.st-completed { color: #52c41a; }
 .history-task-card .ht-status.st-failed { color: #f5222d; }
 .history-task-card .ht-status.st-running { color: #1677ff; }
-.history-task-card .ht-status.st-pending { color: #faad14; }</style>
+.history-task-card .ht-status.st-pending { color: #faad14; }
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>

@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useMainStore } from '@/stores/main'
 import { ssoApi } from '@/api/sso'
 import { ElMessage } from 'element-plus'
+import MsIcon from '@/components/MsIcon.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -56,11 +57,11 @@ onMounted(async () => {
 <template>
   <div class="auth-callback-page">
     <div v-if="!error" class="loading">
-      <el-icon class="is-loading" :size="48"><Loading /></el-icon>
+      <MsIcon name="progress_activity" :size="48" :loading="true" />
       <p>正在完成统一认证...</p>
     </div>
     <div v-else class="error">
-      <el-icon :size="48" color="var(--el-color-danger)"><CircleCloseFilled /></el-icon>
+      <MsIcon name="cancel" :size="48" color="var(--el-color-danger)" />
       <p class="error-text">{{ error }}</p>
       <el-button type="primary" @click="$router.push('/login')">返回登录</el-button>
     </div>

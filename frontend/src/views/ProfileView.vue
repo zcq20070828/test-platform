@@ -3,7 +3,7 @@
     <el-card class="profile-card">
       <template #header>
         <div class="card-header">
-          <span class="title">👤 个人信息</span>
+          <span class="title"><MsIcon name="person" :size="20" /> 个人信息</span>
         </div>
       </template>
 
@@ -17,17 +17,17 @@
         <el-form-item label="用户名">
           <el-input
             :model-value="form.username"
-            disabled
-            prefix-icon="User"
-          />
+            disabled>
+            <template #prefix><MsIcon name="person" :size="16" /></template>
+          </el-input>
         </el-form-item>
 
         <el-form-item label="姓名" prop="name" required>
           <el-input
             v-model="form.name"
-            placeholder="请输入姓名"
-            prefix-icon="Edit"
-          />
+            placeholder="请输入姓名">
+            <template #prefix><MsIcon name="edit" :size="16" /></template>
+          </el-input>
         </el-form-item>
 
         <el-form-item label="当前角色">
@@ -44,13 +44,7 @@
               :type="showPassword ? 'text' : 'password'"
               placeholder="留空则不修改密码"
             />
-            <el-icon
-              class="password-toggle"
-              :class="{ 'is-active': form.password }"
-              @click="showPassword = !showPassword"
-            >
-              <component :is="showPassword ? 'View' : 'Hide'" />
-            </el-icon>
+            <span class="password-toggle" @click="showPassword = !showPassword" :class="{ 'is-active': form.password }" style="display:inline-flex;cursor:pointer;align-items:center"><MsIcon :name="showPassword ? 'visibility' : 'visibility_off'" :size="18" /></span>
           </div>
         </el-form-item>
 
@@ -62,13 +56,7 @@
               placeholder="再次输入新密码"
               @keyup.enter="handleSave"
             />
-            <el-icon
-              class="password-toggle"
-              :class="{ 'is-active': form.passwordConfirm }"
-              @click="showConfirmPassword = !showConfirmPassword"
-            >
-              <component :is="showConfirmPassword ? 'View' : 'Hide'" />
-            </el-icon>
+            <span class="password-toggle" @click="showConfirmPassword = !showConfirmPassword" :class="{ 'is-active': form.passwordConfirm }" style="display:inline-flex;cursor:pointer;align-items:center"><MsIcon :name="showConfirmPassword ? 'visibility' : 'visibility_off'" :size="18" /></span>
           </div>
         </el-form-item>
 
@@ -89,10 +77,10 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { View, Hide } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import { useMainStore } from '@/stores/main'
 import { userApi } from '@/api'
+import MsIcon from '@/components/MsIcon.vue'
 
 const router = useRouter()
 const mainStore = useMainStore()

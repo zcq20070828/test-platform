@@ -3,12 +3,12 @@
     <!-- 头部 -->
     <div class="view-header">
       <div>
-        <h2 class="view-title">📊 智能评估</h2>
+        <h2 class="view-title"><MsIcon name="analytics" :size="22" /> 智能评估</h2>
         <p class="view-subtitle">三层五级评估 · 能力层 / 质量层 / 业务价值层</p>
       </div>
       <div class="header-actions">
         <el-button @click="loadAgents">
-          <el-icon><Refresh /></el-icon> 刷新智能体
+          <MsIcon name="refresh" /> 刷新智能体
         </el-button>
       </div>
     </div>
@@ -22,7 +22,7 @@
         <el-card class="config-card">
           <template #header>
             <div class="card-header">
-              <span><el-icon><Cpu /></el-icon> 评估对象</span>
+              <span><MsIcon name="memory" /> 评估对象</span>
             </div>
           </template>
 
@@ -44,7 +44,7 @@
                     :label="a.name"
                     :value="a.id"
                   >
-                    <span>{{ a.icon || '🤖' }} {{ a.name }}</span>
+                    <span class="tab-label"><MsIcon :name="normalizeAgentIcon(a)" :size="16" /> {{ a.name }}</span>
                   </el-option>
                 </el-option-group>
                 <el-option-group label="执行类">
@@ -54,7 +54,7 @@
                     :label="a.name"
                     :value="a.id"
                   >
-                    <span>{{ a.icon || '🤖' }} {{ a.name }}</span>
+                    <span class="tab-label"><MsIcon :name="normalizeAgentIcon(a)" :size="16" /> {{ a.name }}</span>
                   </el-option>
                 </el-option-group>
                 <el-option-group label="报告类">
@@ -64,7 +64,7 @@
                     :label="a.name"
                     :value="a.id"
                   >
-                    <span>{{ a.icon || '🤖' }} {{ a.name }}</span>
+                    <span class="tab-label"><MsIcon :name="normalizeAgentIcon(a)" :size="16" /> {{ a.name }}</span>
                   </el-option>
                 </el-option-group>
                 <el-option-group label="审核与评估类">
@@ -74,7 +74,7 @@
                     :label="a.name"
                     :value="a.id"
                   >
-                    <span>{{ a.icon || '🤖' }} {{ a.name }}</span>
+                    <span class="tab-label"><MsIcon :name="normalizeAgentIcon(a)" :size="16" /> {{ a.name }}</span>
                   </el-option>
                 </el-option-group>
               </el-select>
@@ -117,7 +117,7 @@
                 clearable
               />
               <div class="form-tip">
-                <el-icon style="vertical-align: middle; margin-right: 2px;"><InfoFilled /></el-icon>
+                <MsIcon name="info" style="vertical-align: middle; margin-right: 2px;" />
                 三种场景：①智能体+任务ID→多智能体 × 同任务横评；②仅智能体→各智能体近期输出综合评估；③仅任务ID→横评所有执行过该任务的智能体
               </div>
             </el-form-item>
@@ -130,7 +130,7 @@
               :disabled="(config.agentIds.length === 0 && !config.taskId) || config.scope.length === 0"
               @click="startEvaluation"
             >
-              <el-icon v-if="!evaluating"><VideoPlay /></el-icon>
+              <MsIcon v-if="!evaluating" name="play_circle" />
               {{ evaluating ? '评估中...' : '开始评估' }}
             </el-button>
             <el-button
@@ -138,7 +138,7 @@
               type="default"
               @click="setupCron"
             >
-              <el-icon><Clock /></el-icon> 设置定时评估
+              <MsIcon name="schedule" /> 设置定时评估
             </el-button>
           </div>
         </el-card>
@@ -187,7 +187,7 @@
         <el-card v-if="evaluating || (progress.total ?? 0) > 0" class="progress-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span><el-icon><Loading /></el-icon> 评估进度</span>
+              <span><MsIcon name="progress_activity" /> 评估进度</span>
             </div>
           </template>
           <el-progress
@@ -215,7 +215,7 @@
         <el-card v-if="latestReports.length > 0" class="stats-card">
           <template #header>
             <div class="card-header">
-              <span><el-icon><DataLine /></el-icon> 本次评估概览</span>
+              <span><MsIcon name="show_chart" /> 本次评估概览</span>
             </div>
           </template>
           <div class="stats-grid">
@@ -252,13 +252,14 @@
         <el-card class="results-card">
           <el-tabs v-model="activeTab" class="results-tabs">
             <!-- Tab1: 最新评估 -->
-            <el-tab-pane label="📈 最新评估" name="latest">
+            <el-tab-pane name="latest">
+          <template #label><span class="tab-label"><MsIcon name="monitoring" :size="18" /> 最新评估</span></template>
               <div v-if="currentReport" class="report-detail">
                 <!-- 报告操作栏 -->
                 <div class="report-actions">
-                  <el-button type="primary" :icon="Download" @click="downloadCurrentReport"
-                    :disabled="!currentReportMd && !currentEvalTaskId">
-                    📥 下载完整报告
+                  <el-button type="primary" @click="downloadCurrentReport"
+                    :disabled="!currentReportMd && !currentEvalTaskId"><MsIcon name="download" :size="16" /> 
+                    下载完整报告
                   </el-button>
                   <span class="report-actions-hint">含全部智能体的综合评估文档(.md)</span>
                 </div>
@@ -342,9 +343,9 @@
                       </el-table-column>
                       <el-table-column label="趋势" width="80" align="center">
                         <template #default="{ row }">
-                          <span v-if="getTrend(row.key)" :class="`trend-${getTrend(row.key)}`">
-                            {{ trendIcon(getTrend(row.key)) }}
-                            {{ getTrend(row.key) === 'up' ? '↑' : getTrend(row.key) === 'down' ? '↓' : '→' }}
+                          <span v-if="getTrend(row.key)" :class="`trend-${getTrend(row.key)}`" class="tab-label">
+                            <MsIcon :name="trendIcon(getTrend(row.key))" :size="14" />
+                            {{ getTrend(row.key) === 'up' ? '上升' : getTrend(row.key) === 'down' ? '下降' : '持平' }}
                           </span>
                           <span v-else>—</span>
                         </template>
@@ -361,7 +362,7 @@
                 <!-- 改进建议 -->
                 <div v-if="currentReport.recommendations?.length > 0" class="recommendations">
                   <div class="section-title">
-                    <el-icon><WarnTriangleFilled /></el-icon> 改进建议
+                    <MsIcon name="warning" /> 改进建议
                   </div>
                   <ul class="recommendation-list">
                     <li v-for="(rec, i) in currentReport.recommendations" :key="i">
@@ -375,7 +376,8 @@
             </el-tab-pane>
 
             <!-- Tab2: 历史趋势 -->
-            <el-tab-pane label="📉 历史趋势" name="trend">
+            <el-tab-pane name="trend">
+          <template #label><span class="tab-label"><MsIcon name="trending_down" :size="18" /> 历史趋势</span></template>
               <div v-if="trendData.length > 0" class="trend-chart">
                 <div class="trend-agent-select">
                   <el-select
@@ -387,7 +389,7 @@
                     <el-option
                       v-for="a in availableAgents"
                       :key="a.id"
-                      :label="`${a.icon || '🤖'} ${a.name}`"
+                      :label="a.name"
                       :value="a.id"
                     />
                   </el-select>
@@ -484,7 +486,8 @@
             </el-tab-pane>
 
             <!-- Tab3: 评估报告 -->
-            <el-tab-pane label="📋 评估报告" name="reports">
+            <el-tab-pane name="reports">
+          <template #label><span class="tab-label"><MsIcon name="assignment" :size="18" /> 评估报告</span></template>
               <div class="reports-toolbar">
                 <el-select
                   v-model="reportAgentFilter"
@@ -496,12 +499,12 @@
                   <el-option
                     v-for="a in availableAgents"
                     :key="a.id"
-                    :label="`${a.icon || '🤖'} ${a.name}`"
+                    :label="a.name"
                     :value="a.id"
                   />
                 </el-select>
                 <el-button size="small" @click="loadReports">
-                  <el-icon><Refresh /></el-icon> 刷新
+                  <MsIcon name="refresh" /> 刷新
                 </el-button>
               </div>
 
@@ -570,7 +573,7 @@
         <el-card v-if="latestReports.length > 1" class="all-reports-card">
           <template #header>
             <div class="card-header">
-              <span><el-icon><Document /></el-icon> 本次评估结果 ({{ latestReports.length }} 个智能体)</span>
+              <span><MsIcon name="description" /> 本次评估结果 ({{ latestReports.length }} 个智能体)</span>
             </div>
           </template>
           <el-table :data="latestReports" size="small" border stripe>
@@ -689,11 +692,9 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import {
-  Cpu, VideoPlay, Refresh, Clock, Loading,
-  DataLine, WarnTriangleFilled, Document, Setting, Download
-} from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import MsIcon from '@/components/MsIcon.vue'
+import { getAgentIcon, normalizeAgentIcon } from '@/utils/agentIcons'
 
 // ─── 状态 ───────────────────────────────────────────────────────
 const agents = ref<any[]>([])
@@ -814,9 +815,9 @@ const layerDetailItems = computed(() => {
   if (!currentReport.value?.layers) return []
   const layers = currentReport.value.layers
   return [
-    { key: 'capability', title: '🧠 能力层', metrics: layers.capability?.metrics || [] },
-    { key: 'quality', title: '✅ 质量层', metrics: layers.quality?.metrics || [] },
-    { key: 'business', title: '💼 业务价值层', metrics: layers.business?.metrics || [] },
+    { key: 'capability', title: '能力层', metrics: layers.capability?.metrics || [], icon: 'psychology' },
+    { key: 'quality', title: '质量层', metrics: layers.quality?.metrics || [], icon: 'check_circle' },
+    { key: 'business', title: '业务价值层', metrics: layers.business?.metrics || [], icon: 'payments' },
   ]
 })
 
@@ -829,8 +830,8 @@ const trendStats = computed(() => {
   const first = scores[0]
   const last = scores[scores.length - 1]
   let trendText = '稳定'
-  if (last > first + 5) trendText = '📈 上升'
-  else if (last < first - 5) trendText = '📉 下降'
+  if (last > first + 5) trendText = '上升'
+  else if (last < first - 5) trendText = '下降'
   return { avg, max, min, trendText }
 })
 
@@ -889,7 +890,7 @@ async function loadAgents() {
     }
     const data = await res.json()
     const list: any[] = Array.isArray(data) ? data : (data.agents || [])
-    agents.value = list
+    agents.value = list.map((a: any) => ({ ...a, icon: normalizeAgentIcon(a) }))
 
     const map: Record<string, string> = {}
     list.forEach((a: any) => { map[a.id] = a.name || a.id })
@@ -1295,9 +1296,9 @@ function getTrend(key: string) {
 }
 
 function trendIcon(trend: string | null) {
-  if (trend === 'up') return '📈'
-  if (trend === 'down') return '📉'
-  return '➡️'
+  if (trend === 'up') return 'trending_up'
+  if (trend === 'down') return 'trending_down'
+  return 'trending_flat'
 }
 
 function formatTime(iso: string) {
@@ -1417,6 +1418,9 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 20px;
+  gap: 12px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .view-title {
@@ -1691,4 +1695,7 @@ onUnmounted(() => {
 .report-table {
   cursor: pointer;
 }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

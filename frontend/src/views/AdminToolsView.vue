@@ -3,11 +3,13 @@
     <!-- 头部 -->
     <div class="view-header">
       <div>
-        <h2 class="view-title">🔧 工具管理</h2>
+        <h2 class="view-title"><MsIcon name="build" :size="22" /> 工具管理</h2>
         <p class="view-subtitle">自动化测试 · 安全测试 · 一键预装</p>
       </div>
       <div class="header-actions">
-        <el-button @click="loadStatus" :icon="Refresh" circle :loading="loading" />
+        <el-button @click="loadStatus" circle :loading="loading">
+          <MsIcon name="refresh" :size="16" />
+        </el-button>
       </div>
     </div>
 
@@ -15,7 +17,7 @@
     <el-row :gutter="12" class="stat-cards">
       <el-col :span="6">
         <div class="stat-card">
-          <div class="stat-icon">🛡️</div>
+          <div class="stat-icon"><MsIcon name="shield" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value">{{ securityTools.length }}</div>
             <div class="stat-label">安全工具</div>
@@ -24,7 +26,7 @@
       </el-col>
       <el-col :span="6">
         <div class="stat-card">
-          <div class="stat-icon">⚡</div>
+          <div class="stat-icon"><MsIcon name="bolt" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value">{{ automationTools.length }}</div>
             <div class="stat-label">自动化工具</div>
@@ -33,7 +35,7 @@
       </el-col>
       <el-col :span="6">
         <div class="stat-card stat-card--success">
-          <div class="stat-icon">✅</div>
+          <div class="stat-icon"><MsIcon name="check_circle" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value">{{ installedCount }}</div>
             <div class="stat-label">已安装</div>
@@ -42,7 +44,7 @@
       </el-col>
       <el-col :span="6">
         <div class="stat-card" :class="{ 'stat-card--danger': notInstalledCount > 0 }">
-          <div class="stat-icon">⬇️</div>
+          <div class="stat-icon"><MsIcon name="download" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value">{{ notInstalledCount }}</div>
             <div class="stat-label">待安装</div>
@@ -55,7 +57,7 @@
     <div class="install-all-section">
       <div class="install-all-card">
         <div class="install-all-info">
-          <div class="install-all-icon">🚀</div>
+          <div class="install-all-icon"><MsIcon name="rocket_launch" :size="40" color="#6366f1" /></div>
           <div class="install-all-text">
             <h3>一键预装全部工具</h3>
             <p>自动安装 {{ notInstalledCount }} 个未安装工具，已安装的自动跳过</p>
@@ -69,13 +71,13 @@
             :disabled="notInstalledCount === 0"
             @click="handleInstallAll"
           >
-            {{ installing ? '安装中...' : `🚀 一键安装 (${notInstalledCount})` }}
+            {{ installing ? '安装中...' : `一键安装 (${notInstalledCount})` }}
           </el-button>
           <el-button size="large" @click="handleInstallSecurity" :disabled="installing">
-            🛡️ 仅安全工具
+            仅安全工具
           </el-button>
           <el-button size="large" @click="handleInstallAutomation" :disabled="installing">
-            ⚡ 仅自动化工具
+            仅自动化工具
           </el-button>
         </div>
       </div>
@@ -84,7 +86,7 @@
     <!-- 安装进度弹窗 -->
     <el-dialog
       v-model="progressDialogVisible"
-      title="📦 工具安装进度"
+      title="工具安装进度"
       width="680px"
       :close-on-click-modal="false"
       :show-close="!installing"
@@ -103,7 +105,7 @@
 
         <!-- 当前安装中 -->
         <div v-if="currentTool" class="current-tool">
-          <el-icon class="is-loading"><Loading /></el-icon>
+          <MsIcon name="progress_activity" :loading="true" />
           <span>正在安装: <strong>{{ currentTool }}</strong></span>
         </div>
 
@@ -133,7 +135,7 @@
 
     <!-- 安全测试工具 -->
     <div class="tools-section">
-      <h3 class="section-title">🛡️ 安全测试工具</h3>
+      <h3 class="section-title tab-label"><MsIcon name="shield" :size="18" /> 安全测试工具</h3>
       <div class="tools-grid">
         <div
           v-for="tool in securityTools"
@@ -141,15 +143,15 @@
           class="tool-card"
           :class="{ 'tool-card--installed': tool.installed }"
         >
-          <div class="tool-icon">{{ getToolEmoji(tool.id) }}</div>
+          <div class="tool-icon"><MsIcon :name="getToolEmoji(tool.id)" :size="28" /></div>
           <div class="tool-info">
             <div class="tool-name">{{ tool.name || tool.id }}</div>
             <div class="tool-desc">{{ tool.desc }}</div>
             <div v-if="tool.version" class="tool-version">v{{ tool.version }}</div>
           </div>
           <div class="tool-status">
-            <el-tag v-if="tool.installed" type="success" size="small">✅ 已安装</el-tag>
-            <el-tag v-else type="info" size="small">⬇️ 未安装</el-tag>
+            <el-tag v-if="tool.installed" type="success" size="small">已安装</el-tag>
+            <el-tag v-else type="info" size="small">未安装</el-tag>
           </div>
           <div class="tool-action">
             <el-button
@@ -177,7 +179,7 @@
 
     <!-- 自动化测试工具 -->
     <div class="tools-section">
-      <h3 class="section-title">⚡ 自动化测试工具</h3>
+      <h3 class="section-title tab-label"><MsIcon name="bolt" :size="18" /> 自动化测试工具</h3>
       <div class="tools-grid">
         <div
           v-for="tool in automationTools"
@@ -185,15 +187,15 @@
           class="tool-card"
           :class="{ 'tool-card--installed': tool.installed }"
         >
-          <div class="tool-icon">{{ getToolEmoji(tool.id) }}</div>
+          <div class="tool-icon"><MsIcon :name="getToolEmoji(tool.id)" :size="28" /></div>
           <div class="tool-info">
             <div class="tool-name">{{ tool.name || tool.id }}</div>
             <div class="tool-desc">{{ tool.desc }}</div>
             <div v-if="tool.version" class="tool-version">v{{ tool.version }}</div>
           </div>
           <div class="tool-status">
-            <el-tag v-if="tool.installed" type="success" size="small">✅ 已安装</el-tag>
-            <el-tag v-else type="info" size="small">⬇️ 未安装</el-tag>
+            <el-tag v-if="tool.installed" type="success" size="small">已安装</el-tag>
+            <el-tag v-else type="info" size="small">未安装</el-tag>
           </div>
           <div class="tool-action">
             <el-button
@@ -224,8 +226,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, Loading } from '@element-plus/icons-vue'
 import { toolsApi } from '@/api'
+import MsIcon from '@/components/MsIcon.vue'
 
 // 状态
 const loading = ref(false)
@@ -252,13 +254,13 @@ const notInstalledCount = computed(() => allTools.value.filter((t: any) => !t.in
 
 // 工具 emoji
 const toolEmojis: Record<string, string> = {
-  nmap: '🗺️', sqlmap: '💉', nikto: '🔍', wpscan: '🌐', subfinder: '🔎',
-  amass: '🌍', gobuster: '📂', dirb: '🕵️', whois: '📋', dig: '🌐',
-  nslookup: '🔤', host: '🖥️', curl: '📡',
-  playwright: '🎭', jest: '🃏', pytest: '🐍', k6: '⚡', jmeter: '⚙️', postmancli: '📮',
+  nmap: 'map', sqlmap: 'database', nikto: 'search', wpscan: 'language', subfinder: 'travel_explore',
+  amass: 'public', gobuster: 'folder_open', dirb: 'folder_open', whois: 'assignment', dig: 'dns',
+  nslookup: 'abc', host: 'dns', curl: 'sensors',
+  playwright: 'theater_comedy', jest: 'science', pytest: 'science', k6: 'bolt', jmeter: 'settings', postmancli: 'mail',
 }
 function getToolEmoji(id: string): string {
-  return toolEmojis[id] || '🔧'
+  return toolEmojis[id] || 'build'
 }
 
 // 时间格式化
@@ -296,8 +298,8 @@ function connectSSE(installId?: string) {
         currentTool.value = ''
 
         const msg = success
-          ? (skipped ? `✅ ${toolName || tool} 已安装${version ? ` (v${version})` : ''}，跳过` : `✅ ${toolName || tool} 安装成功${version ? ` (v${version})` : ''}`)
-          : `❌ ${toolName || tool} 安装失败: ${error}`
+          ? (skipped ? `${toolName || tool} 已安装${version ? ` (v${version})` : ''}，跳过` : `${toolName || tool} 安装成功${version ? ` (v${version})` : ''}`)
+          : `${toolName || tool} 安装失败: ${error}`
         installLogs.value.push({ time: Date.now(), level: success ? 'success' : 'error', message: msg, success })
       }
 
@@ -305,7 +307,7 @@ function connectSSE(installId?: string) {
         installing.value = false
         installingTool.value = null
         installProgress.value = 100
-        installLogs.value.push({ time: Date.now(), level: 'success', message: `🎉 全部安装完成！共 ${ev.data.total} 个工具` })
+        installLogs.value.push({ time: Date.now(), level: 'success', message: `全部安装完成！共 ${ev.data.total} 个工具` })
         ElMessage.success('工具安装全部完成！')
         loadStatus()
       }
@@ -382,7 +384,7 @@ async function doInstallAll(category: string) {
     totalCount.value = j.data.total
     completedCount.value = 0
     installProgress.value = 0
-    installLogs.value = [{ time: Date.now(), level: 'info', message: `🚀 开始安装 ${totalCount.value} 个工具...` }]
+    installLogs.value = [{ time: Date.now(), level: 'info', message: `开始安装 ${totalCount.value} 个工具...` }]
     installing.value = true
     progressDialogVisible.value = true
     connectSSE(currentInstallId)
@@ -399,7 +401,7 @@ async function handleInstallOne(tool: any) {
   try {
     const data = await toolsApi.install(tool.id, 'install')
     if (data) {
-      ElMessage.success(`✅ ${tool.name} 安装已启动`)
+      ElMessage.success(`${tool.name} 安装已启动`)
       await loadStatus()
     }
   } catch (e: any) {
@@ -416,7 +418,7 @@ async function handleUpgradeOne(tool: any) {
   try {
     const data = await toolsApi.install(tool.id, 'upgrade')
     if (data) {
-      ElMessage.success(`✅ ${tool.name} 升级已启动`)
+      ElMessage.success(`${tool.name} 升级已启动`)
       await loadStatus()
     }
   } catch (e: any) {
@@ -446,7 +448,10 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   margin-bottom: 20px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .view-title {
@@ -507,7 +512,7 @@ onUnmounted(() => {
   box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
 }
 
-.install-all-icon { font-size: 40px; margin-right: 16px; }
+.install-all-icon { font-size: 40px; margin-right: 16px; display:flex; align-items:center; }
 
 .install-all-text h3 {
   margin: 0 0 4px;
@@ -670,4 +675,7 @@ onUnmounted(() => {
 .log-success .log-message { color: #67c23a; }
 .log-error .log-message { color: #f56c6c; }
 .log-info .log-message { color: #666; }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

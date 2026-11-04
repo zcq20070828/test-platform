@@ -20,33 +20,6 @@ export interface RealtimeEvent {
   status?: 'info' | 'success' | 'warning' | 'error'
 }
 
-// 获取智能体Emoji图标（前端版本）
-function getAgentEmoji(agentId: string): string {
-  const emojiMap: Record<string, string> = {
-    'test-master': '👑',
-    'test-requirement-analyzer': '🔍',
-    'test-scheme-generator': '📋',
-    'test-case-generator': '✅',
-    'test-data-generator': '📊',
-    'api-executor': '🔌',
-    'ui-e2e-executor': '🖥️',
-    'knowledge-manager': '📚',
-    'requirement-optimizer': '✨',
-    'scheme-optimizer': '🎯',
-    'case-optimizer': '💎',
-    'data-optimizer': '💡',
-    'executor-optimizer': '⚡',
-    'performance-analyzer': '📈',
-    'test-reporter': '📊',
-    'defect-analyzer': '🐛',
-    'data-masking': '🎭',
-    'ai-quality-reviewer-1': '🤖',
-    'ai-quality-reviewer-2': '🤖',
-    'ai-quality-reviewer-3': '🤖',
-    'default': '🤖'
-  }
-  return emojiMap[agentId] ?? emojiMap['default']!
-}
 
 // 统计接口
 export interface Stats {
@@ -153,6 +126,12 @@ import { ssoApi } from '@/api/sso'
 import type { SsoConfig } from '@/api/sso'
 import { useKnowledgeStore } from './knowledge'
 import { startSession, stopSession, checkSession } from '@/composables/useSessionTimeout'
+import { getAgentIcon, normalizeAgentIcon } from '@/utils/agentIcons'
+
+// 获取智能体 Material Symbols 图标名（前端版本）
+function getAgentEmoji(agentId: string): string {
+  return getAgentIcon(agentId)
+}
 
 export const useMainStore = defineStore('main', () => {
   // 用户状态
@@ -552,7 +531,7 @@ export const useMainStore = defineStore('main', () => {
   async function loadAgents() {
     isLoading.value = true
     try {
-      agents.value = await agentApi.getAll()
+      agents.value = (await agentApi.getAll()).map((a: any) => ({ ...a, icon: normalizeAgentIcon(a) }))
       console.log('[Store] 加载智能体成功:', agents.value.length)
     } catch (error: any) {
       console.error('[Store] 加载智能体失败:', error)
@@ -649,12 +628,12 @@ export const useMainStore = defineStore('main', () => {
         const taskArtifacts: any[] = baseArtifacts.length > 0 ? baseArtifacts : reportArtifacts
         const artifactMsgs =
           taskArtifacts.length > 0
-            ? `\n\n📦 输出物（${taskArtifacts.length}个）: ${taskArtifacts
+            ? `\n\n输出物（${taskArtifacts.length}个）: ${taskArtifacts
                 .map((a: any) => a.name || a.title || 'unnamed')
                 .join(', ')}`
             : ''
         const failed = task.status === 'failed' || task.status === 'error'
-        const header = failed ? `❌ 任务 ${taskId} 执行失败` : `✅ 任务 ${taskId} 完成`
+        const header = failed ? `任务 ${taskId} 执行失败` : `任务 ${taskId} 完成`
         const content = `${header}\n\n${taskOutput}${artifactMsgs}`
         const existing = messages.value.find((m) => m.id === `task-output-${taskId}`)
         if (existing) {
@@ -727,7 +706,7 @@ export const useMainStore = defineStore('main', () => {
         if (existing) {
           if (taskArtifacts.length > 0) {
             existing.artifacts = taskArtifacts
-            const artifactMsgs = `\n\n📦 输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+            const artifactMsgs = `\n\n输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
             existing.content = `任务 ${taskId} 完成\n\n${taskOutput}${artifactMsgs}`
           }
           continue
@@ -737,7 +716,7 @@ export const useMainStore = defineStore('main', () => {
           id: `loaded-task-${taskId}`,
           role: 'assistant',
           type: 'agent',
-          content: `✅ 任务 ${taskId} 完成\n\n${taskOutput}`,
+          content: `任务 ${taskId} 完成\n\n${taskOutput}`,
           timestamp: task.completedAt || task.updatedAt || task.createdAt || new Date().toISOString(),
           agentId,
           agentName: task.agentName || agentId,
@@ -956,15 +935,15 @@ export const useMainStore = defineStore('main', () => {
       let artifacts = undefined
       
       if (data.type === 'workflow_stage_started') {
-        content = `⚡ 性能测试阶段开始: ${data.stage || '执行阶段'}`
+        content = `性能测试阶段开始: ${data.stage || '执行阶段'}`
       } else if (data.type === 'workflow_stage_completed') {
-        const statusText = data.success === false ? '⚠️ 阶段失败' : '✅ 阶段完成'
+        const statusText = data.success === false ? '阶段失败' : '阶段完成'
         content = `${statusText}: ${data.stage || '执行阶段'}`
 
         // 【修复】优先使用后端落盘的三格式文件交付物(md/docx/xlsx,带真实 downloadUrl)
         if (data.artifacts && data.artifacts.length > 0) {
           artifacts = data.artifacts
-          content += `\n\n📦 交付物（${data.artifacts.length}个,含 md/docx/xlsx）: ${data.artifacts.map((a: any) => a.name).join(', ')}`
+          content += `\n\n交付物（${data.artifacts.length}个,含 md/docx/xlsx）: ${data.artifacts.map((a: any) => a.name).join(', ')}`
         } else {
           // 兜底：从流式文本里抽取 code/report 交付物(纯文本,无文件下载)
           const output = data.result?.text || data.result?.content || ''
@@ -993,7 +972,7 @@ export const useMainStore = defineStore('main', () => {
               })),
             ]
             artifacts = renamedArtifacts
-            content += `\n\n📦 交付物（${renamedArtifacts.length}个）: ${renamedArtifacts.map((a: any) => a.name).join(', ')}`
+            content += `\n\n交付物（${renamedArtifacts.length}个）: ${renamedArtifacts.map((a: any) => a.name).join(', ')}`
           } else if (output && output.length > 50) {
             // 无结构化交付物但有输出内容，包装为 markdown 报告交付物
             const reportName = `${stagePrefix}报告.md`
@@ -1005,17 +984,17 @@ export const useMainStore = defineStore('main', () => {
               content: output,
               createdAt: new Date().toISOString(),
             }]
-            content += `\n\n📦 交付物（1个）: ${reportName}`
+            content += `\n\n交付物（1个）: ${reportName}`
           }
         }
       } else if (data.type === 'workflow_error' || data.type === 'workflow_failed') {
-        content = `❌ 性能测试工作流失败: ${data.error || data.stage || '未知错误'}`
+        content = `性能测试工作流失败: ${data.error || data.stage || '未知错误'}`
       } else {
-        content = `🎉 性能测试工作流执行完毕`
+        content = `性能测试工作流执行完毕`
         // 【修复】完整工作流完成时携带后端落盘的三格式交付物(md/docx/xlsx)
         if (data.artifacts && data.artifacts.length > 0) {
           artifacts = data.artifacts
-          content += `\n\n📦 交付物（${data.artifacts.length}个,含 md/docx/xlsx）: ${data.artifacts.map((a: any) => a.name).join(', ')}`
+          content += `\n\n交付物（${data.artifacts.length}个,含 md/docx/xlsx）: ${data.artifacts.map((a: any) => a.name).join(', ')}`
         }
       }
       
@@ -1041,15 +1020,15 @@ export const useMainStore = defineStore('main', () => {
       let artifacts = undefined
       
       if (data.type === 'workflow_stage_started') {
-        content = `🔍 安全测试阶段开始: ${data.stage || '执行阶段'}`
+        content = `安全测试阶段开始: ${data.stage || '执行阶段'}`
       } else if (data.type === 'workflow_stage_completed') {
-        const statusText = data.success === false ? '⚠️ 阶段失败' : '✅ 阶段完成'
+        const statusText = data.success === false ? '阶段失败' : '阶段完成'
         content = `${statusText}: ${data.stage || '执行阶段'}`
 
         // 【修复】优先使用后端落盘的三格式文件交付物(md/docx/xlsx,带真实 downloadUrl)
         if (data.artifacts && data.artifacts.length > 0) {
           artifacts = data.artifacts
-          content += `\n\n📦 交付物（${data.artifacts.length}个,含 md/docx/xlsx）: ${data.artifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+          content += `\n\n交付物（${data.artifacts.length}个,含 md/docx/xlsx）: ${data.artifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
         } else {
           // 兜底：从流式文本里抽取 code/report 交付物
           const output = data.result?.text || data.result?.content || ''
@@ -1058,17 +1037,17 @@ export const useMainStore = defineStore('main', () => {
           const reportArtifacts = allArtifacts.filter((a: any) => a.type === 'report')
           if (codeArtifacts.length > 0 || reportArtifacts.length > 0) {
             artifacts = [...codeArtifacts, ...reportArtifacts]
-            content += `\n\n📦 交付物（${artifacts.length}个）: ${artifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+            content += `\n\n交付物（${artifacts.length}个）: ${artifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
           }
         }
       } else if (data.type === 'workflow_error' || data.type === 'workflow_failed') {
-        content = `❌ 安全测试工作流失败: ${data.error || data.stage || '未知错误'}`
+        content = `安全测试工作流失败: ${data.error || data.stage || '未知错误'}`
       } else {
-        content = `🎉 安全测试工作流执行完毕`
+        content = `安全测试工作流执行完毕`
         // 【修复】完整工作流完成时携带后端落盘的三格式交付物(md/docx/xlsx)
         if (data.artifacts && data.artifacts.length > 0) {
           artifacts = data.artifacts
-          content += `\n\n📦 交付物（${data.artifacts.length}个,含 md/docx/xlsx）: ${data.artifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+          content += `\n\n交付物（${data.artifacts.length}个,含 md/docx/xlsx）: ${data.artifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
         }
       }
       
@@ -1141,7 +1120,7 @@ export const useMainStore = defineStore('main', () => {
           id: `agent-rejected-${data.taskId}`,
           role: 'system',
           type: 'system',
-          content: `❌ 智能体 [${data.agentId || '未知'}] 拒绝执行：${data.reason || data.message || '输入物不足'}\n${data.description ? `\n补充建议：${data.description}` : ''}\n\n请在下方输入补充信息后重新提交。`,
+          content: `智能体 [${data.agentId || '未知'}] 拒绝执行：${data.reason || data.message || '输入物不足'}\n${data.description ? `\n补充建议：${data.description}` : ''}\n\n请在下方输入补充信息后重新提交。`,
           timestamp: new Date().toISOString(),
         })
         break
@@ -1172,14 +1151,14 @@ export const useMainStore = defineStore('main', () => {
       case 'reviewer_started':
         // 与流水线页一致：🛡️ AI质量审核-X 开始审核（第X/3个）
         // 同时给实时日志面板留一条摘要（原重复 case 的 message/status 语义合并至此）
-        message = `🛡️ ${data.reviewerName || data.reviewerId} 开始审核（第${data.reviewerIndex}/${data.totalReviewers}个）`
+        message = `${data.reviewerName || data.reviewerId} 开始审核（第${data.reviewerIndex}/${data.totalReviewers}个）`
         status = 'info'
         writeMsg({
           id: `reviewer-started-${data.taskId || Date.now()}-${data.reviewerIndex}`,
           role: 'assistant',
           type: 'agent',
           agentName: data.reviewerName || data.reviewerId,
-          content: `🛡️ ${data.reviewerName || data.reviewerId} 开始审核（第${data.reviewerIndex}/${data.totalReviewers}个）`,
+          content: `${data.reviewerName || data.reviewerId} 开始审核（第${data.reviewerIndex}/${data.totalReviewers}个）`,
           timestamp: new Date().toISOString(),
         })
         break
@@ -1187,20 +1166,20 @@ export const useMainStore = defineStore('main', () => {
       case 'reviewer_completed':
         // 与流水线页一致：🛡️ AI质量审核-X 审核完成（XX分 ✅）+ 产出物预览代码块
         {
-          const vetoMark = data.veto ? '❌否决' : '✅'
+          const vetoMark = data.veto ? '否决' : '通过'
           const now = new Date().toISOString()
           // 产出物预览：把审核输出用 markdown 代码块包裹（黑色背景区域）
           // 注意：data.output 可能是空字符串，要用 != null 判断
           const rawOutput = data.output != null ? data.output : (data.reason || '')
           const outputPreview = rawOutput && String(rawOutput).trim()
-            ? `\n\n📄 **产出物预览：**\n\`\`\`\n${typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput, null, 2)}\n\`\`\``
+            ? `\n\n**产出物预览：**\n\`\`\`\n${typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput, null, 2)}\n\`\`\``
             : ''
           writeMsg({
             id: `reviewer-completed-${data.taskId || Date.now()}-${data.reviewerIndex}`,
             role: 'assistant',
             type: 'agent',
             agentName: data.reviewerName || data.reviewerId,
-            content: `🛡️ ${data.reviewerName || data.reviewerId} 审核完成（${data.score}分 ${vetoMark}）${outputPreview}`,
+            content: `${data.reviewerName || data.reviewerId} 审核完成（${data.score}分 ${vetoMark}）${outputPreview}`,
             timestamp: now,
             // 审核结果同时作为可下载的输出物
             artifacts: rawOutput && String(rawOutput).trim() ? [{
@@ -1216,7 +1195,7 @@ export const useMainStore = defineStore('main', () => {
         break
 
       case 'task_completed':
-        message = `✅ 任务完成: ${data.task?.id || data.taskId}`
+ message = ` 任务完成: ${data.task?.id || data.taskId}`
         status = 'success'
         // 【修复】兼容平铺结构：安全测试工作流的 task_completed 无 data.task（只有 taskId/status/result/userId），
         // 由后端同时下发 task 对象；这里再做一次平铺兜底，确保任何结构都能渲染到聊天面板
@@ -1259,8 +1238,8 @@ export const useMainStore = defineStore('main', () => {
           const taskArtifacts = baseArtifacts.length > 0 ? baseArtifacts : reportArtifacts
           const taskFailed = taskData.status === 'failed' || taskData.status === 'error' || !!taskData.error
           const completionHeader = taskFailed
-            ? `❌ 任务 ${taskData.id} 执行失败`
-            : `✅ 任务 ${taskData.id} 完成`
+            ? `任务 ${taskData.id} 执行失败`
+            : `任务 ${taskData.id} 完成`
 
           // 【Bug修复】覆盖已有的 agent 流式消息（agent_stream_start 创建的，content 只是流式累积的片段）：
           // 当流式中断、部分 chunk 丢失或 agent 未输出实际内容时，agent 消息只显示片段
@@ -1293,11 +1272,11 @@ export const useMainStore = defineStore('main', () => {
           if (alreadyExists) {
             // 已由轮询兜底插入，仅更新 artifacts 和 content（确保内容最新）
             const existingMsg = messages.value.find(m => m.id === existingMsgId)!
-            existingMsg.content = `${completionHeader}\n\n${taskOutput}${taskArtifacts.length > 0 ? `\n\n📦 输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}` : ''}`
+            existingMsg.content = `${completionHeader}\n\n${taskOutput}${taskArtifacts.length > 0 ? `\n\n输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}` : ''}`
             existingMsg.artifacts = taskArtifacts.length > 0 ? taskArtifacts : undefined
           } else if (taskOutput || taskArtifacts.length > 0) {
             const artifactMsgs = taskArtifacts.length > 0
-              ? `\n\n📦 输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+              ? `\n\n输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
               : '';
             writeMsg({
               id: existingMsgId,
@@ -1316,13 +1295,13 @@ export const useMainStore = defineStore('main', () => {
       case 'task_review_exhausted':
         // 审核未通过，推送消息到聊天面板供用户看到原因
         const exhaustedReason = data.reason || data.message || '达到最大重试次数'
-        message = `❌ AI审核未通过：${exhaustedReason}`
+ message = ` AI审核未通过：${exhaustedReason}`
         status = 'error'
         writeMsg({
           id: `review-exhausted-${data.taskId}`,
           role: 'system',
           type: 'system',
-          content: `❌ 任务 ${data.taskId} 审核未通过：${exhaustedReason}\n\n请检查输入内容是否充分或调整需求后重新提交。`,
+          content: `任务 ${data.taskId} 审核未通过：${exhaustedReason}\n\n请检查输入内容是否充分或调整需求后重新提交。`,
           timestamp: new Date().toISOString(),
         })
         if (data.taskId) {
@@ -1342,15 +1321,15 @@ export const useMainStore = defineStore('main', () => {
           const existing = messages.value.find(m => m.id === outId)
           if (existing) {
             existing.artifacts = exhaustedArtifacts
-            if (!existing.content.includes('📦')) {
-              existing.content += `\n\n📦 已保留生成的脚本交付物(${exhaustedArtifacts.length}个): ${exhaustedArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+ if (!existing.content.includes('')) {
+ existing.content += `\n\n 已保留生成的脚本交付物(${exhaustedArtifacts.length}个): ${exhaustedArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
             }
           } else {
             writeMsg({
               id: outId,
               role: 'assistant',
               type: 'agent',
-              content: `📦 AI 审核未通过,但已保留生成的脚本交付物(${exhaustedArtifacts.length}个): ${exhaustedArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`,
+ content: ` AI 审核未通过,但已保留生成的脚本交付物(${exhaustedArtifacts.length}个): ${exhaustedArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`,
               timestamp: new Date().toISOString(),
               artifacts: exhaustedArtifacts,
             })
@@ -1359,13 +1338,13 @@ export const useMainStore = defineStore('main', () => {
         break
       case 'task_review_failed':
         // 本轮审核未通过，提示用户
-        message = `⚠️ 本轮审核未通过，将自动重试`
+ message = ` 本轮审核未通过，将自动重试`
         status = 'warning'
         writeMsg({
           id: `review-failed-${data.taskId}`,
           role: 'system',
           type: 'system',
-          content: `⚠️ 任务 ${data.taskId} 本轮审核未通过，系统将自动重试。`,
+ content: ` 任务 ${data.taskId} 本轮审核未通过，系统将自动重试。`,
           timestamp: new Date().toISOString(),
         })
         if (data.taskId) {
@@ -1379,7 +1358,7 @@ export const useMainStore = defineStore('main', () => {
         break
 
       case 'task_review_started':
-        message = `🛡️ ${data.agentName} 任务执行完成，开始 AI 质量审核（共 ${data.reviewerCount} 个审核智能体）`
+        message = `${data.agentName} 任务执行完成，开始 AI 质量审核（共 ${data.reviewerCount} 个审核智能体）`
         status = 'info'
         if (data.taskId) {
           const idx = tasks.value.findIndex(t => t.id === data.taskId)
@@ -1391,7 +1370,7 @@ export const useMainStore = defineStore('main', () => {
         break
 
       case 'task_review_passed':
-        message = `✅ AI审核通过！评分：${data.reviewResults?.map((r: any) => r.score).join(', ') || ''}`
+ message = ` AI审核通过！评分：${data.reviewResults?.map((r: any) => r.score).join(', ') || ''}`
         status = 'success'
         if (data.taskId) {
           const idx = tasks.value.findIndex(t => t.id === data.taskId)
@@ -1410,12 +1389,12 @@ export const useMainStore = defineStore('main', () => {
           // task-review-output / task-output 两份相同交付件在面板里重复出现。
           const taskArtifacts = userFacingArtifacts(data.artifacts)
           if (taskArtifacts.length > 0) {
-            const artifactMsgs = `\n\n📦 输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
+            const artifactMsgs = `\n\n输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
             const outId = `task-output-${data.taskId}`
             const existingOut = messages.value.find(m => m.id === outId)
             if (existingOut) {
               existingOut.artifacts = taskArtifacts
-              if (!existingOut.content.includes('📦')) existingOut.content += artifactMsgs
+ if (!existingOut.content.includes('')) existingOut.content += artifactMsgs
             } else {
               writeMsg({
                 id: outId,
@@ -1432,12 +1411,12 @@ export const useMainStore = defineStore('main', () => {
         break
 
       case 'task_review_retry':
-        message = `🔄 正在重新执行任务（第 ${data.retry} 次重试）...`
+ message = ` 正在重新执行任务（第 ${data.retry} 次重试）...`
         status = 'warning'
         break
 
       case 'task_error':
-        message = `❌ 任务错误: ${data.taskId} - ${data.error}`
+ message = ` 任务错误: ${data.taskId} - ${data.error}`
         status = 'error'
         if (data.task) {
           const idx = tasks.value.findIndex(t => t.id === data.task.id)
@@ -1451,23 +1430,23 @@ export const useMainStore = defineStore('main', () => {
         break
 
       case 'workflow_started':
-        message = `🚀 工作流启动: ${data.workflowId}`
+ message = ` 工作流启动: ${data.workflowId}`
         status = 'info'
         break
 
       case 'workflow_phase':
-        message = `📋 工作流阶段: ${data.phase || data.phaseName}`
+ message = ` 工作流阶段: ${data.phase || data.phaseName}`
         status = 'info'
         break
 
       case 'workflow_step':
-        message = `🔄 工作流步骤: ${data.stepName || data.step}`
+ message = ` 工作流步骤: ${data.stepName || data.step}`
         status = 'info'
         break
 
       case 'workflow_completed':
         {
-          message = `🎉 工作流完成: ${data.workflowId}`
+ message = ` 工作流完成: ${data.workflowId}`
           status = 'success'
           // 更新任务状态为 completed
           const wfIdx = tasks.value.findIndex(t => t.id === data.workflowId)
@@ -1516,7 +1495,7 @@ export const useMainStore = defineStore('main', () => {
             id: `wf-completed-${data.workflowId}-${Date.now()}`,
             role: 'assistant',
             type: 'system',
-            content: `🎉 工作流执行完成\n\n**任务ID**: ${data.workflowId}\n**状态**: 已完成\n**完成时间**: ${new Date().toLocaleString()}`,
+ content: ` 工作流执行完成\n\n**任务ID**: ${data.workflowId}\n**状态**: 已完成\n**完成时间**: ${new Date().toLocaleString()}`,
             timestamp: new Date().toISOString(),
             workflowId: data.workflowId
           })
@@ -1526,7 +1505,7 @@ export const useMainStore = defineStore('main', () => {
       case 'workflow_failed':
       case 'workflow_error':
         {
-          message = `💥 工作流失败: ${data.workflowId} - ${data.error}`
+ message = ` 工作流失败: ${data.workflowId} - ${data.error}`
           status = 'error'
           // 更新任务状态为 failed
           const wfIdx = tasks.value.findIndex(t => t.id === data.workflowId)
@@ -1545,7 +1524,7 @@ export const useMainStore = defineStore('main', () => {
             id: `wf-failed-${data.workflowId}-${Date.now()}`,
             role: 'assistant',
             type: 'system',
-            content: `💥 工作流执行失败\n\n**任务ID**: ${data.workflowId}\n**错误**: ${data.error || '未知错误'}`,
+ content: ` 工作流执行失败\n\n**任务ID**: ${data.workflowId}\n**错误**: ${data.error || '未知错误'}`,
             timestamp: new Date().toISOString(),
             workflowId: data.workflowId
           })
@@ -1570,7 +1549,7 @@ export const useMainStore = defineStore('main', () => {
         }
 
       case 'executor_completed':
-        message = `⚡ 执行器完成: ${data.executorId}`
+ message = ` 执行器完成: ${data.executorId}`
         status = 'success'
         break
 
@@ -1581,7 +1560,7 @@ export const useMainStore = defineStore('main', () => {
             id: `${data.workflowId}-${data.agentId}-${Date.now()}`,
             role: 'assistant',
             type: 'agent',
-            content: data.message || `🤖 ${data.agentId} 开始执行...`,
+ content: data.message || ` ${data.agentId} 开始执行...`,
             timestamp: data.timestamp || new Date().toISOString(),
             agentName: data.agentId ? (data.agentId.replace('test-', '').replace(/-/g, ' ')) : '智能体',
             agentIcon: getAgentEmoji(data.agentId || 'unknown'),
@@ -1635,14 +1614,14 @@ export const useMainStore = defineStore('main', () => {
             }
             writeMsg(agentMessage)
           } else {
-            message = `✅ ${data.agentId || '智能体'} 执行完成`
+ message = ` ${data.agentId || '智能体'} 执行完成`
             status = 'success'
           }
         }
         break
 
       case 'parallel_review_completed':
-        message = `🛡️ 并行审核完成: ${data.taskId}`
+ message = ` 并行审核完成: ${data.taskId}`
         status = 'success'
         break
 
@@ -1651,25 +1630,25 @@ export const useMainStore = defineStore('main', () => {
       //   break
 
       case 'workflow_manual_processing':
-        message = `🔧 工作流进入人工处理模式: ${data.workflowId}`
+ message = ` 工作流进入人工处理模式: ${data.workflowId}`
         status = 'info'
         break
 
       case 'workflow_stopped':
-        message = `⏹️ 工作流已停止: ${data.workflowId}`
+ message = `⏹ 工作流已停止: ${data.workflowId}`
         status = 'info'
         break
 
       // ==================== 人机交互模式自动重试事件 ====================
       
       case 'workflow_review_failed':
-        message = `⚠️ AI审核未通过，将自动重新执行\n原因：${data.reason || '审核不通过'}\n${data.reviewResults ? `审核结果：${data.reviewResults.map((r: any) => r.reviewerName + ': ' + r.score + '分').join(', ')}` : ''}`
+ message = ` AI审核未通过，将自动重新执行\n原因：${data.reason || '审核不通过'}\n${data.reviewResults ? `审核结果：${data.reviewResults.map((r: any) => r.reviewerName + ': ' + r.score + '分').join(', ')}` : ''}`
         status = 'warning'
         console.log(`[SSE] Workflow ${data.workflowId} review failed, auto retry triggered`);
         break
 
       case 'workflow_auto_retry':
-        message = `🔄 自动重新执行当前阶段（第 ${data.retryCount}/${data.maxRetries} 次尝试）...`
+ message = ` 自动重新执行当前阶段（第 ${data.retryCount}/${data.maxRetries} 次尝试）...`
         status = 'warning'
         console.log(`[SSE] Workflow ${data.workflowId} auto retry ${data.retryCount}/${data.maxRetries}`);
         // 可以通过自定义事件通知前端显示重试进度
@@ -1678,22 +1657,22 @@ export const useMainStore = defineStore('main', () => {
 
 
       case 'workflow_consensus_passed':
-        message = `✅ 共识通过: ${data.workflowId}`
+ message = ` 共识通过: ${data.workflowId}`
         status = 'success'
         break
 
       case 'kb_updated':
-        message = `📚 知识库更新: ${data.doc?.name || '文档'} 已${data.action === 'upload' ? '上传' : '更新'}`
+ message = ` 知识库更新: ${data.doc?.name || '文档'} 已${data.action === 'upload' ? '上传' : '更新'}`
         status = 'success'
         break
 
       case 'kb_vectorized':
-        message = `📊 文档已向量化: ${data.docId}`
+ message = ` 文档已向量化: ${data.docId}`
         status = 'success'
         break
 
       case 'debug_test':
-        message = `🔔 测试广播: ${data.message}`
+ message = ` 测试广播: ${data.message}`
         status = 'info'
         break
 
@@ -1852,7 +1831,7 @@ export const useMainStore = defineStore('main', () => {
         {
           const kb = useKnowledgeStore()
           kb.finishLearn(data)
-          message = `📚 知识学习完成：共 ${data.total} 篇文档，覆盖 ${data.learnedAgents} 个智能体`
+ message = ` 知识学习完成：共 ${data.total} 篇文档，覆盖 ${data.learnedAgents} 个智能体`
           status = 'success'
         }
         break

@@ -3,11 +3,13 @@
     <!-- 头部 -->
     <div class="view-header">
       <div>
-        <h2 class="view-title">🛡️ 安全测试</h2>
+        <h2 class="view-title"><MsIcon name="shield" :size="22" /> 安全测试</h2>
         <p class="view-subtitle">7 大测试域 · 漏洞扫描 · 手工渗透 · CVSS+业务风险双评分 · 合规映射</p>
       </div>
       <div class="header-actions">
-        <el-button @click="loadStats" :icon="Refresh" circle />
+        <el-button @click="loadStats" circle>
+          <MsIcon name="refresh" :size="16" />
+        </el-button>
       </div>
     </div>
 
@@ -15,7 +17,7 @@
     <el-row :gutter="12" class="stat-cards">
       <el-col :span="6">
         <div class="stat-card" :class="{ 'stat-card--active': stats.totalReports > 0 }">
-          <div class="stat-icon">📋</div>
+          <div class="stat-icon"><MsIcon name="assignment" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value">{{ stats.totalReports }}</div>
             <div class="stat-label">扫描报告</div>
@@ -24,7 +26,7 @@
       </el-col>
       <el-col :span="6">
         <div class="stat-card" :class="{ 'stat-card--danger': stats.openVulns > 0 }">
-          <div class="stat-icon">⚠️</div>
+          <div class="stat-icon"><MsIcon name="warning" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value">{{ stats.openVulns }}</div>
             <div class="stat-label">待处理漏洞</div>
@@ -33,7 +35,7 @@
       </el-col>
       <el-col :span="6">
         <div class="stat-card">
-          <div class="stat-icon">📊</div>
+          <div class="stat-icon"><MsIcon name="analytics" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value">{{ Number(stats.avgScore || 0).toFixed(1) }}</div>
             <div class="stat-label">平均安全评分</div>
@@ -57,15 +59,18 @@
     <el-card class="main-card">
       <el-tabs v-model="activeTab">
         <!-- 报告列表 -->
-        <el-tab-pane label="🔬 深度扫描" name="realscan">
+        <el-tab-pane name="realscan">
+          <template #label><span class="tab-label"><MsIcon name="biotech" :size="18" /> 深度扫描</span></template>
           <SecurityRealScanPanel />
         </el-tab-pane>
 
-        <el-tab-pane label="🚀 测试执行" name="execute">
+        <el-tab-pane name="execute">
+          <template #label><span class="tab-label"><MsIcon name="rocket_launch" :size="18" /> 测试执行</span></template>
           <DomainTestExecutor domain="security" />
         </el-tab-pane>
 
-        <el-tab-pane label="📋 扫描报告" name="reports">
+        <el-tab-pane name="reports">
+          <template #label><span class="tab-label"><MsIcon name="assignment" :size="18" /> 扫描报告</span></template>
           <div class="tab-toolbar">
             <el-select v-model="reportStatusFilter" placeholder="状态筛选" clearable size="small" style="width:120px" @change="loadReports">
               <el-option value="running" label="进行中" />
@@ -106,13 +111,13 @@
                 <el-button size="small" link type="primary" @click="viewReport(row)">详情</el-button>
                 <el-dropdown trigger="click" @command="(cmd: string) => exportReport(row, cmd as 'md' | 'docx' | 'xlsx')">
                   <el-button size="small" link type="success">
-                    导出交付物<el-icon><ArrowDown /></el-icon>
+                    导出交付物<MsIcon name="arrow_downward" />
                   </el-button>
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item command="md">📄 Markdown（通用模板）</el-dropdown-item>
-                      <el-dropdown-item command="docx">📝 Word（docx）</el-dropdown-item>
-                      <el-dropdown-item command="xlsx">📊 Excel（xlsx）</el-dropdown-item>
+                      <el-dropdown-item command="md">Markdown（通用模板）</el-dropdown-item>
+                      <el-dropdown-item command="docx">Word（docx）</el-dropdown-item>
+                      <el-dropdown-item command="xlsx">Excel（xlsx）</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
@@ -133,7 +138,8 @@
         </el-tab-pane>
 
         <!-- 漏洞列表 -->
-        <el-tab-pane label="🐛 漏洞列表" name="vulns">
+        <el-tab-pane name="vulns">
+          <template #label><span class="tab-label"><MsIcon name="bug_report" :size="18" /> 漏洞列表</span></template>
           <div class="tab-toolbar">
             <el-select v-model="vulnSeverityFilter" placeholder="严重程度" clearable size="small" style="width:110px" @change="loadVulns">
               <el-option value="critical" label="严重" />
@@ -194,12 +200,13 @@
         </el-tab-pane>
 
         <!-- 安全测试知识库（覆盖 7 大测试域 + 合规基线） -->
-        <el-tab-pane label="📚 安全测试知识库" name="owasp">
+        <el-tab-pane name="owasp">
+          <template #label><span class="tab-label"><MsIcon name="menu_book" :size="18" /> 安全测试知识库</span></template>
           <div class="owasp-intro">
             <p>覆盖 <strong>7 大安全测试域</strong> 的检测能力与合规基线：OWASP Top 10 / API Security Top 10 / CIS / 等保2.0 / OWASP MASVS / 个保法 / 数安法。</p>
             <div class="owasp-actions">
-              <el-button type="primary" :icon="Refresh" :loading="owaspUpdating" @click="updateOwaspKb" size="small">
-                🔄 一键更新
+              <el-button type="primary" :loading="owaspUpdating" @click="updateOwaspKb" size="small"><MsIcon name="refresh" :size="16" /> 
+                一键更新
               </el-button>
               <span v-if="owaspMeta" class="owasp-meta">
                 最后更新：{{ owaspMeta.lastUpdated }} ·
@@ -216,7 +223,7 @@
             <el-table-column prop="examples" label="典型漏洞" min-width="180" show-overflow-tooltip />
           </el-table>
 
-          <h4 class="detail-section-title" style="margin-top: 16px">📌 Web 应用 · OWASP Top 10 (2021) 检测细则</h4>
+          <h4 class="detail-section-title" style="margin-top: 16px"><MsIcon name="push_pin" :size="16" /> Web 应用 · OWASP Top 10 (2021) 检测细则</h4>
           <el-collapse v-model="owaspActive" accordion>
             <el-collapse-item name="A01">
               <template #title>
@@ -408,18 +415,19 @@
         </el-tab-pane>
 
         <!-- 手工渗透测试 -->
-        <el-tab-pane label="🛠 手工渗透" name="pentest">
+        <el-tab-pane name="pentest">
+          <template #label><span class="tab-label"><MsIcon name="handyman" :size="18" /> 手工渗透</span></template>
           <div class="pentest-layout">
             <!-- 左栏：AI 辅助生成 + 工具箱 -->
             <div class="pentest-left">
               <!-- AI 辅助生成命令 -->
               <div class="pentest-ai-section">
-                <div class="pentest-ai-header">🤖 AI 辅助生成命令</div>
+                <div class="pentest-ai-header"><MsIcon name="smart_toy" :size="18" /> AI 辅助生成命令</div>
                 <div class="pentest-ai-inputs">
                   <el-input v-model="pentestTargetInput" placeholder="目标（如 https://example.com 或 192.168.1.10）" size="small" />
                   <el-input v-model="pentestGoalInput" placeholder="测试目标/场景（可选，如 信息收集、SQL 注入验证）" size="small" style="margin-top:8px" />
                   <el-button :loading="pentestAiLoading" type="primary" size="small" @click="generatePentestCommands" style="margin-top:8px">
-                    ⚡ 生成渗透命令
+                    生成渗透命令
                   </el-button>
                 </div>
                 <div v-if="aiGeneratedCommands.length" class="ai-commands-list">
@@ -556,9 +564,9 @@
         </div>
 
         <!-- 漏洞列表 -->
-        <h4 class="detail-section-title">🐛 发现的漏洞 ({{ (detailReport.vulnerabilities || []).length }})</h4>
+        <h4 class="detail-section-title"><MsIcon name="bug_report" :size="16" /> 发现的漏洞 ({{ (detailReport.vulnerabilities || []).length }})</h4>
         <div v-if="(detailReport.vulnerabilities || []).length === 0" class="empty-vulns">
-          未发现漏洞 ✓
+          未发现漏洞
         </div>
         <div v-else class="vuln-list">
           <div v-for="v in detailReport.vulnerabilities" :key="v.id" class="vuln-item" :class="`vuln-item--${v.severity}`">
@@ -578,7 +586,7 @@
               </span>
             </div>
             <div v-if="v.description" class="vuln-desc">{{ v.description }}</div>
-            <div v-if="v.location" class="vuln-location">📍 {{ v.location }}</div>
+            <div v-if="v.location" class="vuln-location"><MsIcon name="location_on" :size="14" /> {{ v.location }}</div>
             <div v-if="v.evidence" class="vuln-evidence">
               <div class="evidence-label">证据:</div>
               <pre class="evidence-pre">{{ v.evidence }}</pre>
@@ -611,7 +619,7 @@
 
         <!-- 深度：攻击链 -->
         <div v-if="detailReport.report_json && detailReport.report_json.attackChains && detailReport.report_json.attackChains.length" class="detail-attack-chains">
-          <h4 class="detail-section-title">🎯 攻击链</h4>
+          <h4 class="detail-section-title"><MsIcon name="ads_click" :size="16" /> 攻击链</h4>
           <div v-for="(ac, i) in detailReport.report_json.attackChains" :key="i" class="attack-chain-item">
             <div class="attack-chain-name">{{ Number(i) + 1 }}. {{ ac.name }}</div>
             <ol class="attack-chain-steps">
@@ -623,12 +631,12 @@
 
         <!-- 深度：威胁建模 -->
         <div v-if="detailReport.report_json && detailReport.report_json.threatModel" class="detail-threat-model">
-          <h4 class="detail-section-title">🛡 威胁建模</h4>
+          <h4 class="detail-section-title"><MsIcon name="shield" :size="16" /> 威胁建模</h4>
           <div class="threat-model-content">{{ detailReport.report_json.threatModel }}</div>
         </div>
 
         <div v-if="detailReport.recommendations" class="detail-recommendations">
-          <h4 class="detail-section-title">💡 整体建议</h4>
+          <h4 class="detail-section-title"><MsIcon name="lightbulb" :size="16" /> 整体建议</h4>
           <div>{{ detailReport.recommendations }}</div>
         </div>
       </template>
@@ -639,7 +647,7 @@
   <!-- 安装进度 Dialog -->
   <el-dialog
     v-model="installProgressDialogVisible"
-    :title="`📥 ${installProgressAction === 'upgrade' ? '升级' : '安装'} ${installProgressTool}`"
+    :title="`${installProgressAction === 'upgrade' ? '升级' : '安装'} ${installProgressTool}`"
     width="600"
     :close-on-click-modal="false"
     @closed="closeInstallProgressDialog"
@@ -678,10 +686,10 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, reactive, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
 import SecurityRealScanPanel from '@/components/SecurityRealScanPanel.vue'
 import { securityApi, toolsApi } from '@/api'
 import DomainTestExecutor from '@/components/DomainTestExecutor.vue'
+import MsIcon from '@/components/MsIcon.vue'
 
 // 状态
 const stats = ref<Record<string, any>>({ totalReports: 0, openVulns: 0, avgScore: 0, severityDist: {} })
@@ -768,7 +776,7 @@ async function updateOwaspKb() {
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
     const j = await r.json()
     if (j.success) {
-      ElMessage.success(`✅ ${j.data.message}`)
+      ElMessage.success(`${j.data.message}`)
       await loadOwaspMeta()
     } else {
       ElMessage.error('更新失败: ' + (j.error || '未知错误'))
@@ -926,7 +934,6 @@ async function updateVulnStatus(id: number, status: string) {
 // ─── SSE 实时更新 ──────────────────────────────────────────────
 let eventSource: EventSource | null = null
 
-
 // ============== 手工渗透测试 ==============
 const pentestTargetInput = ref('')
 const pentestGoalInput = ref('')
@@ -1037,9 +1044,9 @@ async function installWithProgress(tool: string, action: 'install' | 'upgrade') 
           const { success, version, error } = ev.data
           installProgressPct.value = 100
           if (success) {
-            addLog('success', `✅ 安装完成: ${version || installProgressTool.value}`)
+            addLog('success', `安装完成: ${version || installProgressTool.value}`)
           } else {
-            addLog('error', `❌ 安装失败: ${error}`)
+            addLog('error', `安装失败: ${error}`)
           }
           setTimeout(() => {
             closeInstallProgressDialog()
@@ -1093,7 +1100,7 @@ async function installPentestTool(tool: string, action: 'install' | 'upgrade') {
     const data = await toolsApi.install(tool, action)
     loading.close()
     if (data) {
-      ElMessage.success(`✅ ${tool} ${verb}已启动: ${data.taskId}`)
+      ElMessage.success(`${tool} ${verb}已启动: ${data.taskId}`)
       await loadToolInstallStatus()
     } else {
       ElMessage.error(`${verb}启动失败`)
@@ -1331,7 +1338,7 @@ function copyInstallScript() {
 
 <style scoped>
 .security-view { padding: 16px; }
-.view-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+.view-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; gap: 12px; min-width: 0; max-width: 100%; }
 .view-title { font-size: 20px; margin: 0; }
 .view-subtitle { color: #888; font-size: 13px; margin: 2px 0 0; }
 .header-actions { display: flex; gap: 8px; }
@@ -1694,7 +1701,6 @@ function copyInstallScript() {
 .script-result .script-preview pre { margin: 0; font-family: 'SF Mono', Monaco, monospace; font-size: 12px; color: #303133; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
 .script-result .script-actions { display: flex; gap: 12px; }
 
-
 /* 安装进度弹窗 */
 .install-progress-dialog {
   min-height: 200px;
@@ -1740,4 +1746,8 @@ function copyInstallScript() {
 .log-error .log-msg { color: #f56c6c; }
 .log-warning .log-msg { color: #e6a23c; }
 
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title, .page-title, h2, .header-title { min-width: 0; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

@@ -3,9 +3,9 @@
     <!-- 顶部：返回 + 标题 -->
     <el-card shadow="never" class="header-card">
       <div class="toolbar">
-        <el-button @click="goBack" :icon="ArrowLeft">返回统计概览</el-button>
-        <span class="page-title">🎯 质量评估明细</span>
-        <el-button type="primary" :icon="Refresh" @click="loadAll">刷新</el-button>
+        <el-button @click="goBack"><MsIcon name="arrow_back" :size="16" /> 返回统计概览</el-button>
+        <span class="page-title"><MsIcon name="track_changes" :size="20" /> 质量评估明细</span>
+        <el-button type="primary" @click="loadAll"><MsIcon name="refresh" :size="16" /> 刷新</el-button>
       </div>
     </el-card>
 
@@ -51,7 +51,8 @@
     <el-card shadow="never" style="margin-top: 20px">
       <el-tabs v-model="activeTab" @tab-change="onTabChange">
         <!-- Tab1: 任务维度 -->
-        <el-tab-pane label="📊 任务维度" name="task">
+        <el-tab-pane name="task">
+          <template #label><span class="tab-label"><MsIcon name="analytics" :size="18" /> 任务维度</span></template>
           <!-- 筛选栏 -->
           <el-form inline style="margin-bottom: 12px">
             <el-form-item label="智能体">
@@ -109,7 +110,8 @@
         </el-tab-pane>
 
         <!-- Tab2: 交付物维度 -->
-        <el-tab-pane label="📦 交付物维度" name="deliverable">
+        <el-tab-pane name="deliverable">
+          <template #label><span class="tab-label"><MsIcon name="inventory_2" :size="18" /> 交付物维度</span></template>
           <!-- 筛选栏 -->
           <el-form inline style="margin-bottom: 12px">
             <el-form-item label="智能体">
@@ -206,7 +208,7 @@
           <el-descriptions-item label="等级">Lv.{{ selectedReport.overall?.level ?? '-' }}</el-descriptions-item>
         </el-descriptions>
 
-        <h4 style="margin-top: 20px">📊 三层评分</h4>
+        <h4 style="margin-top: 20px" class="tab-label"><MsIcon name="analytics" :size="16" /> 三层评分</h4>
         <el-table :data="layerRows" border size="small">
           <el-table-column prop="layer" label="层级" width="100" />
           <el-table-column prop="score" label="分数" width="120">
@@ -217,8 +219,8 @@
           <el-table-column prop="trend" label="趋势" width="100">
             <template #default="{ row }">
               <span v-if="row.delta !== null && row.delta !== undefined">
-                <el-icon v-if="row.delta > 0" color="#67C23A"><Top /></el-icon>
-                <el-icon v-else-if="row.delta < 0" color="#F56C6C"><Bottom /></el-icon>
+                <MsIcon v-if="row.delta > 0" name="arrow_upward" color="#67C23A" :size="16" />
+                <MsIcon v-else-if="row.delta < 0" name="arrow_downward" color="#F56C6C" :size="16" />
                 {{ row.delta > 0 ? '+' : '' }}{{ Number(row.delta).toFixed(2) }}
               </span>
               <span v-else>-</span>
@@ -234,7 +236,7 @@
         </el-table>
 
         <div v-if="selectedReport.recommendations?.length" style="margin-top: 20px">
-          <h4>💡 改进建议</h4>
+          <h4 class="tab-label"><MsIcon name="lightbulb" :size="16" /> 改进建议</h4>
           <ul>
             <li v-for="(r, i) in selectedReport.recommendations" :key="i">{{ r }}</li>
           </ul>
@@ -258,7 +260,7 @@
           <el-descriptions-item label="创建时间">{{ selectedDeliverable.deliverable.createdAt }}</el-descriptions-item>
         </el-descriptions>
 
-        <h4 style="margin-top: 20px">📦 质量评分</h4>
+        <h4 style="margin-top: 20px" class="tab-label"><MsIcon name="inventory_2" :size="16" /> 质量评分</h4>
         <el-descriptions :column="2" border>
           <el-descriptions-item label="交付物评分">
             <span :class="scoreClass(selectedDeliverable.deliverableScore)" style="font-size: 18px; font-weight: 600">
@@ -270,7 +272,7 @@
           </el-descriptions-item>
         </el-descriptions>
 
-        <h4 style="margin-top: 20px">🔍 审核结果</h4>
+        <h4 style="margin-top: 20px" class="tab-label"><MsIcon name="search" :size="16" /> 审核结果</h4>
         <el-table v-if="selectedDeliverable.reviewDetails?.length" :data="selectedDeliverable.reviewDetails" border size="small">
           <el-table-column prop="reviewerName" label="审核智能体" width="160" />
           <el-table-column label="评分" width="80">
@@ -289,7 +291,7 @@
         </el-table>
         <el-empty v-else description="暂无审核记录" :image-size="60" />
 
-        <h4 style="margin-top: 20px">💰 成本数据</h4>
+        <h4 style="margin-top: 20px" class="tab-label"><MsIcon name="payments" :size="16" /> 成本数据</h4>
         <el-descriptions :column="2" border>
           <el-descriptions-item label="预估工时">{{ selectedDeliverable.deliverable.manualHours != null ? formatNum(selectedDeliverable.deliverable.manualHours, 1) + 'h' : '-' }}</el-descriptions-item>
           <el-descriptions-item label="人工成本">¥{{ selectedDeliverable.deliverable.laborCost != null ? formatMoney(selectedDeliverable.deliverable.laborCost) : '-' }}</el-descriptions-item>
@@ -306,9 +308,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft, Refresh, Top, Bottom } from '@element-plus/icons-vue'
 import { request } from '@/api'
 import { ElMessage } from 'element-plus'
+import MsIcon from '@/components/MsIcon.vue'
 
 const router = useRouter()
 
@@ -511,4 +513,8 @@ onMounted(() => {
 .danger { color: #F56C6C; }
 .metric-row { padding: 2px 0; font-size: 13px; }
 .report-detail { font-size: 14px; }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title, .page-title, h2, .header-title { min-width: 0; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

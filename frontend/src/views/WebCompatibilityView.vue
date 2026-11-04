@@ -3,44 +3,58 @@
     <!-- 头部 -->
     <div class="view-header">
       <div>
-        <h2 class="view-title">🌐 兼容性测试</h2>
+        <h2 class="view-title"><MsIcon name="devices" :size="22" /> 兼容性测试</h2>
         <p class="view-subtitle">多浏览器 × 多分辨率 × 控制台监控</p>
       </div>
       <div class="header-actions">
-        <el-button @click="loadStats" :icon="Refresh" circle />
+        <el-button @click="loadStats" circle>
+          <MsIcon name="refresh" :size="16" />
+        </el-button>
       </div>
     </div>
 
     <el-tabs v-model="activeTab">
-      <el-tab-pane label="🚀 测试执行-Web" name="execute">
-        <CompatTestExecutor storage-key="web" />
+      <el-tab-pane name="execute">
+        <template #label>
+          <span class="tab-label"><MsIcon name="language" :size="18" /> 测试执行-Web</span>
+        </template>
+        <CompatTestExecutor storage-key="web" icon="language" />
       </el-tab-pane>
-      <el-tab-pane label="📱 测试执行-移动APP" name="execute-mobile" lazy>
+      <el-tab-pane name="execute-mobile" lazy>
+        <template #label>
+          <span class="tab-label"><MsIcon name="smartphone" :size="18" /> 测试执行-移动APP</span>
+        </template>
         <CompatTestExecutor
           storage-key="mobile"
-          icon="📱"
+          icon="smartphone"
           :platforms="['Android', 'iOS', 'HarmonyOS']"
           full-label="全平台完整流程"
           full-desc="自动串联 Android/iOS/鸿蒙 三大移动平台兼容测试（原生 App 包出设计，网页/H5 URL 设备仿真实测）"
           full-scope="移动APP全平台(android,ios,harmony)"
         />
       </el-tab-pane>
-      <el-tab-pane label="💻 测试执行-PC客户端" name="execute-pc" lazy>
+      <el-tab-pane name="execute-pc" lazy>
+        <template #label>
+          <span class="tab-label"><MsIcon name="desktop_windows" :size="18" /> 测试执行-PC客户端</span>
+        </template>
         <CompatTestExecutor
           storage-key="pc"
-          icon="💻"
+          icon="desktop_windows"
           :platforms="['Windows', 'macOS']"
           full-label="全平台完整流程"
           full-desc="自动串联 Windows/macOS 两大桌面平台兼容测试（客户端出设计，网页 URL 设备仿真实测）"
           full-scope="PC全平台(windows,mac)"
         />
       </el-tab-pane>
-      <el-tab-pane label="📋 兼容性报告" name="reports">
+      <el-tab-pane name="reports">
+        <template #label>
+          <span class="tab-label"><MsIcon name="assignment" :size="18" /> 兼容性报告</span>
+        </template>
     <!-- 统计卡片 -->
     <el-row :gutter="12" class="stat-cards">
       <el-col :span="8">
         <div class="stat-card">
-          <div class="stat-icon">📋</div>
+          <div class="stat-icon"><MsIcon name="assignment" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value">{{ stats.totalReports }}</div>
             <div class="stat-label">测试报告</div>
@@ -49,7 +63,7 @@
       </el-col>
       <el-col :span="8">
         <div class="stat-card" :class="{ 'stat-card--warn': stats.avgScore < 80 }">
-          <div class="stat-icon">📊</div>
+          <div class="stat-icon"><MsIcon name="analytics" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value" :class="scoreClass(stats.avgScore)">{{ stats.avgScore }}<span class="stat-unit">分</span></div>
             <div class="stat-label">平均兼容评分</div>
@@ -58,7 +72,7 @@
       </el-col>
       <el-col :span="8">
         <div class="stat-card">
-          <div class="stat-icon">🌐</div>
+          <div class="stat-icon"><MsIcon name="grid_view" :size="24" color="#64748b" /></div>
           <div class="stat-info">
             <div class="stat-value">3×5</div>
             <div class="stat-label">默认矩阵规模</div>
@@ -73,7 +87,7 @@
       <el-col :span="8">
         <el-card class="new-test-card">
           <template #header>
-            <div class="card-header">🚀 新建测试</div>
+            <div class="card-header"><MsIcon name="rocket_launch" :size="18" /> 新建测试</div>
           </template>
 
           <el-form label-position="top" @submit.prevent="submitTest">
@@ -107,14 +121,15 @@
 
             <div class="submit-row">
               <el-button type="primary" native-type="submit" :loading="submitting" @click="submitTest" style="width:100%">
-                {{ submitting ? `执行中 (报告ID: ${submittingReportId})` : '▶ 开始测试' }}
+                <template v-if="!submitting"><MsIcon name="play_arrow" :size="18" /> 开始测试</template>
+                <template v-else>执行中 (报告ID: {{ submittingReportId }})</template>
               </el-button>
             </div>
           </el-form>
 
           <!-- SSE 进度提示 -->
           <div v-if="submitting" class="sse-hint">
-            <el-icon class="is-loading"><Loading /></el-icon>
+            <MsIcon name="progress_activity" :loading="true" />
             测试进行中，结果将自动更新...
           </div>
         </el-card>
@@ -124,7 +139,7 @@
       <el-col :span="16">
         <el-card class="reports-card">
           <template #header>
-            <div class="card-header">📋 测试报告</div>
+            <div class="card-header"><MsIcon name="assignment" :size="18" /> 测试报告</div>
           </template>
 
           <el-table :data="reports" v-loading="loadingReports" stripe>
@@ -227,7 +242,7 @@
 
         <!-- 兼容性矩阵热力图 -->
         <div class="matrix-section">
-          <h4>📊 兼容性矩阵</h4>
+          <h4 class="tab-label"><MsIcon name="grid_view" :size="16" /> 兼容性矩阵</h4>
           <div class="matrix-grid">
             <div class="matrix-row matrix-header">
               <span class="matrix-cell browser-cell"></span>
@@ -242,20 +257,21 @@
                 :class="getResultClass(browser.key, vp.key)"
                 :title="getResultTitle(browser.key, vp.key)"
               >
-                {{ getResultIcon(browser.key, vp.key) }}
+                <MsIcon v-if="getResultIcon(browser.key, vp.key)" :name="getResultIcon(browser.key, vp.key)" :size="14" />
+                <span v-else>—</span>
               </span>
             </div>
           </div>
           <div class="matrix-legend">
-            <span class="legend-item legend-pass">✅ 通过</span>
-            <span class="legend-item legend-warn">⚠️ 失败</span>
-            <span class="legend-item legend-err">❌ 错误</span>
+            <span class="legend-item legend-pass"><MsIcon name="check_circle" :size="14" /> 通过</span>
+            <span class="legend-item legend-warn"><MsIcon name="warning" :size="14" /> 失败</span>
+            <span class="legend-item legend-err"><MsIcon name="cancel" :size="14" /> 错误</span>
           </div>
         </div>
 
         <!-- 问题清单 -->
         <div v-if="failedResults.length" class="issues-section">
-          <h4>⚠️ 问题清单 ({{ failedResults.length }})</h4>
+          <h4 class="tab-label"><MsIcon name="warning" :size="16" /> 问题清单 ({{ failedResults.length }})</h4>
           <div v-for="(item, idx) in failedResults" :key="idx" class="issue-item">
             <div class="issue-header">
               <el-tag size="small" :type="item.status === 'error' ? 'danger' : 'warning'">
@@ -280,9 +296,9 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Refresh, Loading } from '@element-plus/icons-vue'
 import { compatApi } from '@/api/index'
 import CompatTestExecutor from '@/components/CompatTestExecutor.vue'
+import MsIcon from '@/components/MsIcon.vue'
 
 // 常量
 const DEFAULT_BROWSERS = [
@@ -366,10 +382,10 @@ function getResultClass(browser: string, viewport: string): string {
 }
 function getResultIcon(browser: string, viewport: string): string {
   const r = getResult(browser, viewport)
-  if (!r) return '—'
-  if (r.status === 'passed') return '✅'
-  if (r.status === 'error') return '❌'
-  return '⚠️'
+  if (!r) return ''
+  if (r.status === 'passed') return 'check_circle'
+  if (r.status === 'error') return 'cancel'
+  return 'warning'
 }
 function getResultTitle(browser: string, viewport: string): string {
   const r = getResult(browser, viewport)
@@ -472,19 +488,21 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.compat-view { padding: 20px; }
-.view-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.view-title { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+.compat-view { padding: 20px; overflow-x: hidden; }
+.view-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 12px; min-width: 0; }
+.view-title { font-size: 20px; font-weight: 600; margin: 0 0 4px; display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .view-subtitle { color: #909399; font-size: 13px; margin: 0; }
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
 .stat-cards { margin-bottom: 16px; }
-.stat-card { background: #fff; border-radius: 8px; padding: 16px; display: flex; align-items: center; gap: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+.stat-card { background: #fff; border-radius: 8px; border: 1px solid #e2e8f0; padding: 16px; display: flex; align-items: center; gap: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); min-width: 0; }
 .stat-card--warn { border-left: 3px solid #e6a23c; }
-.stat-icon { font-size: 24px; }
+.stat-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 40px; height: 40px; border-radius: 8px; background: #f1f5f9; }
+.stat-info { min-width: 0; }
 .stat-value { font-size: 22px; font-weight: 700; color: #303133; }
 .stat-unit { font-size: 14px; font-weight: 400; margin-left: 2px; }
-.stat-label { font-size: 12px; color: #909399; }
+.stat-label { font-size: 12px; color: #909399; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.card-header { font-weight: 600; font-size: 14px; }
+.card-header { font-weight: 600; font-size: 14px; display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .new-test-card { margin-bottom: 0; }
 .form-tip { font-size: 12px; color: #909399; margin-left: 8px; }
 .matrix-preview { background: #f5f7fa; border-radius: 6px; padding: 8px; margin: 8px 0; }

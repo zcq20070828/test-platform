@@ -7,6 +7,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import SemanticSearch from '@/components/SemanticSearch.vue'
 import type { KnowledgeDoc } from '@/types'
+import MsIcon from '@/components/MsIcon.vue'
 
 const store = useKnowledgeStore()
 const mainStore = useMainStore()
@@ -837,12 +838,12 @@ function formatSize(bytes: number): string {
 function getFileIcon(name: string): string {
   const ext = name.split('.').pop()?.toLowerCase()
   const iconMap: Record<string, string> = {
-    md: 'Document', txt: 'Document', pdf: 'Document',
-    docx: 'Document', doc: 'Document', xlsx: 'Document',
-    json: 'Document', csv: 'Document',
-    folder: 'Folder'
+    md: 'description', txt: 'description', pdf: 'description',
+    docx: 'description', doc: 'description', xlsx: 'description',
+    json: 'description', csv: 'description',
+    folder: 'folder'
   }
-  return iconMap[ext || ''] || 'Document'
+  return iconMap[ext || ''] || 'description'
 }
 
 onMounted(() => { store.loadDocuments(); loadTemplates() })
@@ -895,7 +896,7 @@ function agentLabel(agent: string) {
           :key="kb.value"
           :value="kb.value"
         >
-          <el-icon><component :is="kb.icon" /></el-icon>
+          <MsIcon :name="kb.icon" :size="16" />
           {{ kb.label }} ({{ kb.value === 'all' ? store.stats.total : store.stats[kb.value === 'project-test' ? 'projectTest' : kb.value === 'project-biz' ? 'projectBiz' : 'general'] || 0 }})
         </el-radio-button>
       </el-radio-group>
@@ -929,7 +930,7 @@ function agentLabel(agent: string) {
       </el-col>
       <el-col :span="4">
         <el-card class="stat-card-action" @click="openUploadDialog">
-          <el-icon :size="28"><Upload /></el-icon>
+          <MsIcon name="upload" :size="28" />
           <div class="stat-label">导入文档</div>
         </el-card>
       </el-col>
@@ -940,20 +941,20 @@ function agentLabel(agent: string) {
       <template #header>
         <div class="templates-header">
           <div class="templates-title">
-            <el-icon><FolderOpened /></el-icon>
+            <MsIcon name="folder_open" />
             <span>交付件模板</span>
             <el-tag type="info" size="small">{{ templates.length }}</el-tag>
           </div>
           <el-button size="small" text @click="templatesExpanded = !templatesExpanded">
             {{ templatesExpanded ? '收起' : '展开' }}
-            <el-icon><ArrowUp v-if="templatesExpanded" /><ArrowDown v-else /></el-icon>
+            <MsIcon :name="templatesExpanded ? 'arrow_upward' : 'arrow_downward'" :size="16" />
           </el-button>
         </div>
       </template>
 
       <!-- 加载状态 -->
       <div v-if="templatesLoading" class="templates-loading">
-        <el-icon class="is-loading"><Loading /></el-icon> 加载中...
+        <MsIcon name="progress_activity" :loading="true" /> 加载中...
       </div>
 
       <!-- 模板列表 -->
@@ -992,7 +993,7 @@ function agentLabel(agent: string) {
                 plain
                 @click="downloadTemplate(fmt, t.name)"
               >
-                <el-icon><Download /></el-icon>
+                <MsIcon name="download" />
                 {{ fmt.toUpperCase() }}
               </el-button>
             </div>
@@ -1006,19 +1007,19 @@ function agentLabel(agent: string) {
     <!-- 操作栏 -->
     <div class="action-bar">
       <el-button type="danger" :disabled="selectedDocs.length === 0" @click="handleBatchDelete">
-        <el-icon><Delete /></el-icon>
+        <MsIcon name="delete" />
         批量删除{{ selectedDocs.length > 0 ? ` (${selectedDocs.length})` : '' }}
       </el-button>
       <el-button type="success" :disabled="selectedDocs.length === 0" :loading="parseSelectedLoading" @click="handleBatchParseSelected">
-        <el-icon><MagicStick /></el-icon>
+        <MsIcon name="auto_fix" />
         批量解析{{ selectedDocs.length > 0 ? ` (${selectedDocs.length})` : '' }}
       </el-button>
       <el-button v-if="false" type="success" :loading="parseLoading" @click="handleBatchParse">
-        <el-icon><MagicStick /></el-icon>
+        <MsIcon name="auto_fix" />
         {{ parseLoading ? parseProgress : '批量解析（向量化）' }}
       </el-button>
       <el-button type="primary" :loading="store.learnState.active && store.learnState.status === 'pending'" :disabled="store.learnState.active" @click="handleLearn">
-        <el-icon><Reading /></el-icon>
+        <MsIcon name="menu_book" />
         {{ store.learnState.active ? '学习中…' : '学习知识' }}
       </el-button>
       <span v-if="store.learnState.active" class="parse-hint">
@@ -1035,7 +1036,7 @@ function agentLabel(agent: string) {
       <el-table :data="store.searchResults" stripe>
         <el-table-column prop="name" label="文档名称" min-width="200">
           <template #default="{ row }">
-            <el-icon><component :is="getFileIcon(row.name)" /></el-icon>
+            <MsIcon :name="getFileIcon(row.name)" :size="16" />
             {{ row.name }}
           </template>
         </el-table-column>
@@ -1055,7 +1056,7 @@ function agentLabel(agent: string) {
         <el-table-column prop="name" label="文档名称" min-width="250">
           <template #default="{ row }">
             <div class="doc-name">
-              <el-icon><component :is="getFileIcon(row.name)" /></el-icon>
+              <MsIcon :name="getFileIcon(row.name)" :size="16" />
               <span>{{ row.name }}</span>
               <el-tag v-if="row.vectorized" type="success" size="small">已解析</el-tag>
             </div>
@@ -1133,7 +1134,7 @@ function agentLabel(agent: string) {
             :on-remove="handleLocalRemove"
             accept=".md,.txt,.pdf,.docx,.doc,.xlsx,.xls,.json,.csv,.png,.jpg,.jpeg,.gif,.bmp,.webp"
           >
-            <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+            <MsIcon name="upload" />
             <div class="el-upload__text">拖拽文件到此处，或<em>点击选择文件</em></div>
             <template #tip>
               <div class="el-upload__tip">
@@ -1148,7 +1149,7 @@ function agentLabel(agent: string) {
           <!-- 方式2：浏览本地目录 -->
           <div style="margin-top: 20px; padding-top: 20px; border-top: 1px dashed #dcdfe6;">
             <el-button @click="initLocalTree" style="margin-bottom: 12px;">
-              <el-icon><FolderOpened /></el-icon>
+              <MsIcon name="folder_open" />
               浏览本地目录
             </el-button>
             <div v-if="localTreeVisible" class="local-tree-container" style="border:1px solid #dcdfe6; border-radius:4px; padding:8px; min-height:300px; max-height:400px; overflow:auto">
@@ -1200,9 +1201,7 @@ function agentLabel(agent: string) {
             >
               <template #default="{ data }">
                 <span class="nas-tree-node">
-                  <el-icon style="margin-right:4px">
-                    <component :is="data.type === 'folder' ? 'FolderOpened' : getFileIcon(data.name)" />
-                  </el-icon>
+                  <MsIcon :name="data.type === 'folder' ? 'folder_open' : getFileIcon(data.name)" :size="16" />
                   <span>{{ data.name }}</span>
                   <span v-if="data.type === 'file'" style="color:#909399; font-size:12px; margin-left:8px">
                     {{ formatSize(data.size) }}
@@ -1265,9 +1264,7 @@ function agentLabel(agent: string) {
               >
                 <template #default="{ data }">
                   <span class="git-tree-node">
-                    <el-icon style="margin-right:4px">
-                      <component :is="data.type === 'folder' ? 'FolderOpened' : getFileIcon(data.name)" />
-                    </el-icon>
+                    <MsIcon :name="data.type === 'folder' ? 'folder_open' : getFileIcon(data.name)" :size="16" />
                     <span>{{ data.name }}</span>
                     <span v-if="data.type === 'file'" style="color:#909399; font-size:12px; margin-left:8px">
                       {{ formatSize(data.size) }}

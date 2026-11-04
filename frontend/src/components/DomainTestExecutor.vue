@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Document, Promotion, InfoFilled, CircleClose } from '@element-plus/icons-vue'
 import { useMainStore } from '@/stores/main'
 import { securityApi, performanceTestApi, request } from '@/api'
 import DashboardChatPanel from '@/components/DashboardChatPanel.vue'
 import type { AttachmentFile } from '@/types'
+import MsIcon from '@/components/MsIcon.vue'
+import { stageMsIcon, workflowMsIcon } from '@/utils/stageIcons'
 
 // 🔒 安全测试「测试执行」tab —— 两栏格局（左：执行方式+用户输入；右：实时输出）
 // 结构与「性能测试」PerfTestExecutor 对齐：下拉选择执行方式、聊天式输入区、右栏「处理过程信息」。
 const props = defineProps<{ domain: 'security' | 'performance' }>()
 
-const ICON = computed(() => (props.domain === 'security' ? '🔒' : '⚡'))
+const ICON = computed(() => (props.domain === 'security' ? 'lock' : 'bolt'))
 const LABEL = computed(() => (props.domain === 'security' ? '安全测试' : '性能测试'))
 const isSecurity = computed(() => props.domain === 'security')
 
@@ -31,14 +32,14 @@ interface Entry {
 const entries = computed<Entry[]>(() => {
   const list: Entry[] = stages.value.map((name, idx) => ({
     key: `stage-${idx}`,
-    name: `${ICON.value} ${LABEL.value}·${name}`,
+    name: `${LABEL.value}·${name}`,
     desc: `执行第 ${idx + 1} 阶段：${name}`,
     stageIdx: idx,
     isFull: false,
   }))
   list.push({
     key: 'full',
-    name: `${ICON.value} ${LABEL.value}·完整工作流`,
+    name: `${LABEL.value}·完整工作流`,
     desc: `自动串联全部 ${stages.value.length} 个阶段`,
     stageIdx: undefined,
     isFull: true,
@@ -124,7 +125,7 @@ const currentAgent = computed(() =>
 function onExecute(wfId: string) {
   currentWorkflowId.value = wfId
   localStorage.setItem(WF_HISTORY_KEY, wfId)
-  ElMessage.info({ message: '⏳ 已开始执行，实时处理过程（含交付物）显示在下方面板', duration: 6000 })
+  ElMessage.info({ message: '已开始执行，实时处理过程（含交付物）显示在下方面板', duration: 6000 })
 }
 
 function resetOutput() {
@@ -284,8 +285,8 @@ async function run() {
       if (wfId) { onExecute(wfId) }
       ElMessage.success(
         e.isFull
-          ? `${ICON.value} ${LABEL.value}工作流已启动（${stages.value.length}阶段自动串联）\n${stages.value.join(' → ')}`
-          : `${ICON.value} ${LABEL.value}·第${(e.stageIdx as number) + 1}步「${stages.value[e.stageIdx as number]}」已提交，请等待结果返回...`
+          ? `${LABEL.value}工作流已启动（${stages.value.length}阶段自动串联）\n${stages.value.join(' → ')}`
+          : `${LABEL.value}·第${(e.stageIdx as number) + 1}步「${stages.value[e.stageIdx as number]}」已提交，请等待结果返回...`
       )
       input.value = ''
       files.value = []
@@ -306,9 +307,9 @@ async function run() {
         <el-card class="config-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span class="header-icon">{{ ICON }}</span>
+              <span class="header-icon"><MsIcon :name="ICON" :size="20" color="#007aff" /></span>
               <div class="header-text">
-                <div class="header-title">{{ LABEL }}测试执行配置</div>
+                <div class="header-title" :title="LABEL + '测试执行配置'">{{ LABEL }}测试执行配置</div>
                 <div class="header-sub">选择阶段、填写需求，可上传技术方案文档作为分析输入</div>
               </div>
             </div>
@@ -324,9 +325,13 @@ async function run() {
               >
                 <el-option v-for="e in entries" :key="e.key" :value="e.key" :label="e.name">
                   <div class="de-opt">
-                    <span class="de-opt-name">{{ e.name }}</span>
+                    <span class="de-opt-name"><MsIcon :name="ICON" :size="16" /> {{ e.name }}</span>
                     <span class="de-opt-tag">
-                      {{ e.isFull ? '工作流' : `阶段 ${(e.stageIdx as number) + 1}` }}
+                      <MsIcon
+                        :name="e.isFull ? workflowMsIcon() : stageMsIcon(e.stageIdx as number)"
+                        :size="16"
+                      />
+                      <span>{{ e.isFull ? '工作流' : `阶段 ${(e.stageIdx as number) + 1}` }}</span>
                     </span>
                   </div>
                 </el-option>
@@ -365,14 +370,14 @@ async function run() {
                       class="attachment-image"
                     />
                     <div v-else class="attachment-file">
-                      <el-icon><Document /></el-icon>
+                      <MsIcon name="description" />
                       <div class="file-info">
                         <span class="file-name">{{ file.name }}</span>
                         <span class="file-size">{{ (file.size / 1024).toFixed(1) }}KB</span>
                       </div>
                     </div>
                     <el-button class="remove-attachment" text size="small" @click="removeAttachment(index)">
-                      <el-icon><CircleClose /></el-icon>
+                      <MsIcon name="cancel" />
                     </el-button>
                   </div>
                 </div>
@@ -387,7 +392,7 @@ async function run() {
                 >
                   <div class="input-toolbar">
                     <el-button text title="上传补充材料" @click="handleFileSelect">
-                      <el-icon><Document /></el-icon>
+                      <MsIcon name="description" />
                     </el-button>
                     <input ref="fileInput" type="file" multiple style="display: none" @change="handleFileChange" />
                     <span class="toolbar-note">补充材料（可选，Word 文档将自动解析正文）</span>
@@ -410,21 +415,21 @@ async function run() {
                       :disabled="!input.trim() && files.length === 0"
                       @click="run"
                     >
-                      <el-icon v-if="!submitting"><Promotion /></el-icon>
+                      <MsIcon v-if="!submitting" name="send" />
                       {{ selected.isFull ? `执行${LABEL}完整工作流` : `执行第 ${(selected.stageIdx as number) + 1} 阶段「${stages[selected.stageIdx as number]}」` }}
                     </el-button>
                   </div>
                 </div>
 
                 <div class="input-hint">
-                  <el-icon><InfoFilled /></el-icon>
+                  <MsIcon name="info" />
                   <span>支持拖拽文件到输入框上传（docx、md、txt、json 等，单文件 ≤ 10MB）</span>
                 </div>
               </div>
             </template>
 
             <div v-else class="de-empty-inline">
-              <div class="de-empty-icon">{{ ICON }}</div>
+              <div class="de-empty-icon"><MsIcon :name="ICON" :size="36" color="#a0b4d8" /></div>
               <p>请选择执行方式，然后在输入框描述测试需求</p>
             </div>
           </el-form>
@@ -436,7 +441,7 @@ async function run() {
         <el-card class="output-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span class="header-icon header-icon--live">📡</span>
+              <span class="header-icon header-icon--live"><MsIcon name="sensors" :size="20" color="#67c23a" /></span>
               <div class="header-text">
                 <div class="header-title">处理过程信息</div>
                 <div class="header-sub">
@@ -455,12 +460,12 @@ async function run() {
               :readonly="true"
               :is-loading="submitting"
               :current-agent="currentAgent"
-              empty-text="⏳ 等待阶段开始…"
+              empty-text="等待阶段开始…"
             />
           </div>
           <div v-else class="output-empty">
             <div class="output-empty-glow">
-              <el-icon :size="40" color="#a0b4d8"><Document /></el-icon>
+              <MsIcon name="description" :size="40" color="#a0b4d8" />
             </div>
             <p class="output-empty-title">执行后在此实时显示处理过程与交付物</p>
             <p class="output-empty-sub">支持实时流式输出 · 阶段进度 · 三格式交付物下载</p>
@@ -489,6 +494,10 @@ async function run() {
   padding: 14px 20px;
   border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5);
   background: linear-gradient(180deg, #fafbfd 0%, #ffffff 100%);
+  height: auto;
+  min-height: 44px;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 .config-card {
   display: flex;
@@ -518,6 +527,10 @@ async function run() {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .header-icon {
   flex-shrink: 0;
@@ -538,12 +551,18 @@ async function run() {
 .header-text {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 .header-title {
   font-size: 15px;
   font-weight: 700;
   color: var(--text-primary);
-  line-height: 1.3;
+  line-height: 1.35;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .header-sub {
   margin-top: 2px;
@@ -552,10 +571,16 @@ async function run() {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .reset-btn {
   flex-shrink: 0;
 }
+
 
 /* ── 执行方式：下拉与阶段提示 ─────────────── */
 .stage-hint {
@@ -596,12 +621,20 @@ async function run() {
   color: var(--text-primary);
 }
 .de-opt-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 10px;
   background: rgba(0, 122, 255, 0.1);
   color: var(--primary);
   flex-shrink: 0;
+}
+.de-opt-tag .ms-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
 }
 
 /* ── 任务输入区（对齐分步测试 DashboardChatPanel 输入样式）── */

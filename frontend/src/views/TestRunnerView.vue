@@ -10,16 +10,17 @@
 
     <el-tabs v-model="activeTab" class="runner-tabs">
       <!-- 原自动化测试执行（脚本运行） -->
-      <el-tab-pane label="🚀 测试执行" name="execute">
+      <el-tab-pane name="execute">
+          <template #label><span class="tab-label"><MsIcon name="rocket_launch" :size="18" /> 测试执行</span></template>
         <el-row :gutter="16">
           <!-- 左侧:配置面板 -->
           <el-col :span="14">
             <el-card class="config-card">
               <template #header>
                 <div class="card-header">
-                  <span><el-icon><Setting /></el-icon> 测试配置</span>
+                  <span><MsIcon name="settings" /> 测试配置</span>
               <el-button size="small" text @click="resetConfig">
-                <el-icon><Refresh /></el-icon> 重置
+                <MsIcon name="refresh" /> 重置
               </el-button>
             </div>
           </template>
@@ -29,11 +30,11 @@
               <div style="display:flex;align-items:center;gap:8px;width:100%">
                 <el-input v-model="config.testPath" placeholder="/path/to/tests" clearable style="flex:1" />
                 <el-button title="浏览目录" style="flex-shrink:0" @click="dirInputRef?.click()">
-                  <el-icon><FolderOpened /></el-icon>
+                  <MsIcon name="folder_open" />
                 </el-button>
                 <input ref="dirInputRef" type="file" webkitdirectory style="display:none" @change="handleBrowseDir" />
                 <el-button title="浏览文件" style="flex-shrink:0" @click="fileInputRef?.click()">
-                  <el-icon><Document /></el-icon>
+                  <MsIcon name="description" />
                 </el-button>
                 <input ref="fileInputRef" type="file" multiple style="display:none" @change="handleBrowseFile" />
               </div>
@@ -101,7 +102,7 @@
 
             <el-form-item>
               <el-button type="primary" :loading="running" @click="runTests">
-                <el-icon><VideoPlay /></el-icon>
+                <MsIcon name="play_circle" />
                 {{ running ? '执行中...' : '运行测试' }}
               </el-button>
               <el-button v-if="running" type="danger" @click="stopTests">
@@ -157,15 +158,15 @@
         <el-card class="log-card">
           <template #header>
             <div class="card-header">
-              <span><el-icon><Monitor /></el-icon> 执行日志</span>
+              <span><MsIcon name="desktop_windows" /> 执行日志</span>
               <el-button size="small" text @click="clearLog">
-                <el-icon><Delete /></el-icon> 清空
+                <MsIcon name="delete" /> 清空
               </el-button>
             </div>
           </template>
 
           <div v-if="logs.length === 0" class="log-empty">
-            <el-icon :size="32" color="#c0c4cc"><Document /></el-icon>
+            <MsIcon name="description" :size="32" color="#c0c4cc" />
             <p>暂无日志,点击「运行测试」开始执行</p>
           </div>
 
@@ -186,7 +187,7 @@
         <el-card v-if="results.failures && results.failures.length > 0" class="failures-card">
           <template #header>
             <div class="card-header">
-              <span><el-icon><WarningFilled /></el-icon> 失败用例 ({{ results.failures.length }})</span>
+              <span><MsIcon name="warning" /> 失败用例 ({{ results.failures.length }})</span>
             </div>
           </template>
           <el-collapse>
@@ -208,7 +209,7 @@
         <el-card v-if="config.coverage || (results.extra && (results.extra.scriptCoverage || results.extra.systemCoverageAvailable !== undefined || results.extra.coverage))" class="coverage-card">
           <template #header>
             <div class="card-header">
-              <span><el-icon><DataLine /></el-icon> 覆盖率报告</span>
+              <span><MsIcon name="show_chart" /> 覆盖率报告</span>
               <el-tag v-if="results.extra && results.extra.systemCoverageAvailable" type="success" size="small">系统覆盖率可用</el-tag>
               <el-tag v-else-if="results.extra" type="info" size="small">仅脚本覆盖率</el-tag>
               <el-tag v-else type="info" size="small">等待数据...</el-tag>
@@ -224,7 +225,7 @@
                 <el-collapse-item title="执行文件列表" name="files">
                   <ul class="file-list">
                     <li v-for="(file, i) in results.extra.scriptCoverage.executed" :key="i">
-                      <el-icon><Document /></el-icon> {{ file }}
+                      <MsIcon name="description" /> {{ file }}
                     </li>
                   </ul>
                 </el-collapse-item>
@@ -250,13 +251,13 @@
         <el-card v-if="config.verbose || results.rawOutput || results.extra?.verboseOutput" class="verbose-card">
           <template #header>
             <div class="card-header">
-              <span><el-icon><Tickets /></el-icon> 详细输出 (verbose)</span>
+              <span><MsIcon name="confirmation_number" /> 详细输出 (verbose)</span>
               <div>
                 <el-button size="small" text @click="copyRawOutput">
-                  <el-icon><CopyDocument /></el-icon> 复制
+                  <MsIcon name="content_copy" /> 复制
                 </el-button>
                 <el-button size="small" text @click="downloadRawOutput">
-                  <el-icon><Download /></el-icon> 下载
+                  <MsIcon name="download" /> 下载
                 </el-button>
               </div>
             </div>
@@ -279,7 +280,7 @@
         <el-card v-if="config.debug || results.extra?.debug" class="debug-card">
           <template #header>
             <div class="card-header">
-              <span><el-icon><Setting /></el-icon> 调试信息</span>
+              <span><MsIcon name="settings" /> 调试信息</span>
             </div>
           </template>
           <div class="debug-info">
@@ -310,7 +311,7 @@
                   v-for="(tc, i) in results.testcases"
                   :key="i"
                   :name="`tc-${i}`"
-                  :title="`${tc.status === 'passed' ? '✓' : tc.status === 'failed' ? '✗' : '○'} ${tc.name || '(unnamed)'}`"
+                  :title="`${tc.status === 'passed' ? '[通过]' : tc.status === 'failed' ? '[失败]' : '[未跑]'} ${tc.name || '(unnamed)'}`"
                 >
                   <div class="tc-detail">
                     <div>状态：<el-tag :type="tc.status === 'passed' ? 'success' : (tc.status === 'failed' ? 'danger' : 'info')" size="small">{{ tc.status }}</el-tag></div>
@@ -334,7 +335,8 @@
       </el-tab-pane>
 
       <!-- 测试脚本生成（两栏：脚本类型+输入 / 实时处理过程与交付物） -->
-      <el-tab-pane label="📜 测试脚本生成" name="script" lazy>
+      <el-tab-pane name="script" lazy>
+          <template #label><span class="tab-label"><MsIcon name="description" :size="18" /> 测试脚本生成</span></template>
         <TestScriptExecutor />
       </el-tab-pane>
     </el-tabs>
@@ -347,6 +349,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { request, testFrameworkApi, taskApi, getAuthHeaders } from '@/api'
 import { useMainStore } from '@/stores/main'
 import TestScriptExecutor from '@/components/TestScriptExecutor.vue'
+import MsIcon from '@/components/MsIcon.vue'
 
 // 自动化测试页两个 tab：测试执行（原脚本运行）、测试脚本生成
 const activeTab = ref('execute')
@@ -566,9 +569,9 @@ watch(() => store.realtimeSkillResult, (data: any) => {
   addLog('success', `智能体调用 ${data.skillId} 完成!通过: ${results.passed}  失败: ${results.failed}  跳过: ${results.skipped}  耗时: ${results.duration}ms`)
   if (utrm.extra?.note) addLog('info', `执行备注: ${utrm.extra.note}`)
   if (results.failed === 0 && results.total > 0) {
-    ElMessage.success(`✅ 全部通过!共 ${results.total} 个用例`)
+    ElMessage.success(`全部通过!共 ${results.total} 个用例`)
   } else if (results.failed > 0) {
-    ElMessage.error(`❌ ${results.failed} 个用例失败,请查看详情`)
+    ElMessage.error(`${results.failed} 个用例失败,请查看详情`)
   }
   testPhase.value = 'done'
 }, { deep: true })
@@ -664,7 +667,10 @@ checkInstalledFrameworks()
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-bottom: 20px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .view-title {
@@ -1051,4 +1057,8 @@ checkInstalledFrameworks()
   display: flex;
   gap: 6px;
 }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title, .page-title, h2, .header-title { min-width: 0; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import MsIcon from '@/components/MsIcon.vue'
 
 const emit = defineEmits<{
   result: [text: string]
@@ -135,12 +136,7 @@ onUnmounted(() => {
         @click="toggleRecording"
       >
         <template #icon>
-          <el-icon v-if="!isRecording">
-            <Microphone />
-          </el-icon>
-          <el-icon v-else class="recording-icon">
-            <Microphone />
-          </el-icon>
+          <MsIcon name="mic" :size="18" :cls="isRecording ? 'recording-icon' : ''" />
         </template>
       </el-button>
     </el-tooltip>

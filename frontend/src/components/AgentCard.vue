@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { InfoFilled, ArrowRight } from '@element-plus/icons-vue'
 import type { Agent } from '@/types'
 import { agentApi } from '@/api'
+import MsIcon from '@/components/MsIcon.vue'
+import { normalizeAgentIcon } from '@/utils/agentIcons'
+
+function normalizeIcon(agent: any) {
+  return normalizeAgentIcon(agent)
+}
 
 defineProps<{
   agent: Agent
@@ -74,10 +79,16 @@ const capabilities = () => detail.value?.capabilities || []
 </script>
 
 <template>
-  <el-card class="agent-card" shadow="hover" @click="emit('click')">
+  <el-card class="agent-card pto-agent-card" shadow="hover" @click="emit('click')">
     <div class="agent-header">
-      <span class="agent-icon">{{ agent.icon }}</span>
-      <span class="agent-name">{{ agent.name }}</span>
+      <div class="pto-icon-tile pto-icon-tile--md pto-icon-tile--indigo agent-icon-tile">
+        <span class="agent-icon"><MsIcon :name="normalizeIcon(agent)" :size="22" /></span>
+      </div>
+      <div class="agent-title-wrap">
+        <span class="agent-name">{{ agent.name }}</span>
+        <span v-if="agent.id" class="agent-id pto-mono">{{ agent.id }}</span>
+      </div>
+      <span class="pto-badge pto-badge--neutral agent-status-chip">就绪</span>
     </div>
     <div class="agent-desc">{{ agent.desc }}</div>
     <div class="agent-capabilities">
@@ -108,16 +119,16 @@ const capabilities = () => detail.value?.capabilities || []
       >
         <template #reference>
           <div class="intro-hint-row">
-            <el-icon class="intro-icon"><InfoFilled /></el-icon>
+            <MsIcon name="info" cls="intro-icon" />
             <span class="intro-label">简介</span>
-            <el-icon class="arrow-icon"><ArrowRight /></el-icon>
+            <MsIcon name="arrow_forward" cls="arrow-icon" />
           </div>
         </template>
 
         <div class="intro-popover-content" v-loading="detailLoading && !detailLoaded">
           <!-- 标题区 -->
           <div class="intro-header">
-            <span class="intro-emoji">{{ agent.icon }}</span>
+            <span class="intro-emoji"><MsIcon :name="normalizeIcon(agent)" :size="28" /></span>
             <div class="intro-title">
               <div class="intro-name">{{ agent.name }}</div>
               <div class="intro-id">{{ agent.id }}</div>
@@ -126,13 +137,13 @@ const capabilities = () => detail.value?.capabilities || []
 
           <!-- 简介文字 -->
           <div v-if="intro()" class="intro-section">
-            <div class="intro-section-title">📋 简介</div>
+            <div class="intro-section-title"><MsIcon name="description" :size="16" /> 简介</div>
             <div class="intro-text">{{ intro() }}</div>
           </div>
 
           <!-- 功能 -->
           <div v-if="capabilities().length" class="intro-section">
-            <div class="intro-section-title">⚙️ 功能</div>
+            <div class="intro-section-title"><MsIcon name="settings" :size="16" /> 功能</div>
             <div class="intro-tags">
               <el-tag
                 v-for="(cap, idx) in capabilities()"
@@ -147,7 +158,7 @@ const capabilities = () => detail.value?.capabilities || []
           <!-- Skills -->
           <div v-if="skills().length" class="intro-section">
             <div class="intro-section-title">
-              🧩 Skill
+              <span class="tab-label"><MsIcon name="extension" :size="14" /> Skill</span>
               <span class="skill-count">{{ skills().length }} 个</span>
             </div>
             <div class="intro-tags">
@@ -163,7 +174,7 @@ const capabilities = () => detail.value?.capabilities || []
 
           <!-- 知识库 -->
           <div v-if="agent.knowledgeBases?.length" class="intro-section">
-            <div class="intro-section-title">📚 知识库</div>
+            <div class="intro-section-title"><MsIcon name="menu_book" :size="16" /> 知识库</div>
             <div class="intro-tags">
               <el-tag
                 v-for="(kb, idx) in agent.knowledgeBases"
@@ -183,7 +194,7 @@ const capabilities = () => detail.value?.capabilities || []
     </div>
 
     <div v-if="agent.knowledgeBases?.length" class="agent-kbs">
-      <span class="kb-label">📚</span>
+      <span class="kb-label"><MsIcon name="menu_book" :size="14" /></span>
       <el-tag
         v-for="kb in agent.knowledgeBases"
         :key="kb"
@@ -197,31 +208,58 @@ const capabilities = () => detail.value?.capabilities || []
 <style scoped>
 .agent-card {
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: border-color var(--transition), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
 }
-
 .agent-card:hover {
-  transform: translateY(-4px);
-  border-color: var(--el-color-primary);
+  transform: translateY(-2px);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-card-lift);
 }
-
+.agent-card :deep(.el-card__body) {
+  padding: 16px;
+}
 .agent-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin-bottom: 12px;
 }
-
+.agent-icon-tile {
+  flex-shrink: 0;
+}
 .agent-icon {
-  font-size: 24px;
+  font-size: 18px;
+  line-height: 1;
 }
-
+.agent-title-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 .agent-name {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-
+.agent-id {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-status-chip {
+  flex-shrink: 0;
+}
 .agent-desc {
   font-size: 13px;
   color: var(--el-text-color-secondary);
@@ -232,59 +270,46 @@ const capabilities = () => detail.value?.capabilities || []
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-
 .agent-capabilities {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
 }
-
-/* 简介 hint 行 */
 .agent-intro-hint {
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px dashed var(--el-border-color-lighter);
+  border-top: 1px solid var(--divider);
 }
-
 .intro-hint-row {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
   border-radius: 6px;
-  background: var(--el-fill-color-lighter);
+  background: var(--surface-recessed);
   color: var(--el-text-color-secondary);
   font-size: 12px;
   cursor: pointer;
   transition: all 0.2s;
   user-select: none;
+  border: 1px solid transparent;
 }
-
 .intro-hint-row:hover {
-  background: var(--el-color-primary-light-9);
-  color: var(--el-color-primary);
+  background: var(--running-tint);
+  color: var(--running-text);
+  border-color: var(--running-border);
 }
-
-.intro-icon {
-  font-size: 14px;
-}
-
-.intro-label {
-  flex: 1;
-  font-weight: 500;
-}
-
+.intro-icon { font-size: 14px; }
+.intro-label { flex: 1; font-weight: 500; }
 .arrow-icon {
   font-size: 12px;
   opacity: 0.6;
   transition: transform 0.2s;
 }
-
 .intro-hint-row:hover .arrow-icon {
   transform: translateX(2px);
   opacity: 1;
 }
-
 .agent-kbs {
   display: flex;
   flex-wrap: wrap;
@@ -292,12 +317,9 @@ const capabilities = () => detail.value?.capabilities || []
   gap: 4px;
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px solid var(--el-border-color-lighter);
+  border-top: 1px solid var(--divider);
 }
-
-.kb-label {
-  font-size: 12px;
-}
+.kb-label { font-size: 12px; }
 </style>
 
 <style>
@@ -344,7 +366,7 @@ const capabilities = () => detail.value?.capabilities || []
 .intro-id {
   font-size: 11px;
   color: var(--el-text-color-secondary);
-  font-family: 'SF Mono', Consolas, Monaco, monospace;
+  font-family: var(--font-mono);
   margin-top: 2px;
 }
 
@@ -389,7 +411,7 @@ const capabilities = () => detail.value?.capabilities || []
 }
 
 .skill-tag {
-  font-family: 'SF Mono', Consolas, Monaco, monospace;
+  font-family: var(--font-mono);
   font-size: 11px !important;
 }
 
@@ -399,4 +421,7 @@ const capabilities = () => detail.value?.capabilities || []
   font-size: 12px;
   padding: 20px 0;
 }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

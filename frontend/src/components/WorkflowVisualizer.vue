@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useWorkflowStore } from '@/stores/workflow'
 import type { WorkflowStep } from '@/types'
+import MsIcon from '@/components/MsIcon.vue'
 
 const store = useWorkflowStore()
 
@@ -107,12 +108,12 @@ function getNodeClass(step: WorkflowStep): string {
 // 获取节点图标
 function getNodeIcon(status: string): string {
   const icons: Record<string, string> = {
-    pending: 'Clock',
-    running: 'Loading',
-    completed: 'CircleCheck',
-    failed: 'CircleClose'
+    pending: 'schedule',
+    running: 'progress_activity',
+    completed: 'check_circle',
+    failed: 'cancel'
   }
-  return icons[status] || 'Clock'
+  return icons[status] || 'schedule'
 }
 
 // 判断是否是审核节点
@@ -123,9 +124,9 @@ function isReviewer(agentId: string): boolean {
 // 获取节点标签
 function getNodeLabel(step: WorkflowStep): string {
   if (isReviewer(step.agent)) {
-    return '🛡️ 审核'
+    return '审核'
   }
-  return '⚡ 执行'
+  return '执行'
 }
 
 // 获取连线颜色
@@ -204,14 +205,14 @@ onUnmounted(() => {
     <div class="toolbar">
       <div class="zoom-controls">
         <el-button size="small" @click="handleZoom(0.1)">
-          <el-icon><ZoomIn /></el-icon>
+          <MsIcon name="zoom_in" />
         </el-button>
         <span class="zoom-level">{{ Math.round(scale * 100) }}%</span>
         <el-button size="small" @click="handleZoom(-0.1)">
-          <el-icon><ZoomOut /></el-icon>
+          <MsIcon name="zoom_out" />
         </el-button>
         <el-button size="small" @click="resetView">
-          <el-icon><RefreshRight /></el-icon>
+          <MsIcon name="refresh" />
         </el-button>
       </div>
 
@@ -281,11 +282,9 @@ onUnmounted(() => {
             <foreignObject x="10" y="10" width="160" height="60">
               <div class="node-content">
                 <div class="node-header">
-                  <el-icon :class="{ rotating: step.status === 'running' }">
-                    <component :is="getNodeIcon(step.status)" />
-                  </el-icon>
+                  <MsIcon :name="getNodeIcon(step.status)" :size="16" :loading="step.status === 'running'" />
                   <span class="node-label" :class="{ 'label-reviewer': isReviewer(step.agent) }">
-                    {{ getNodeLabel(step) }}
+                    <span class="tab-label"><MsIcon :name="isReviewer(step.agent) ? 'shield' : 'bolt'" :size="14" /> {{ getNodeLabel(step) }}</span>
                   </span>
                 </div>
                 <div class="node-name" :title="step.name">{{ step.name.slice(0, 12) }}{{ step.name.length > 12 ? '...' : '' }}</div>
@@ -504,4 +503,7 @@ onUnmounted(() => {
   max-height: 300px;
   overflow-y: auto;
 }
+
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.view-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

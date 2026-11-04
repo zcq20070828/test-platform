@@ -1,16 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { usePerformanceStore } from '@/stores/performance'
-import {
-  Microphone,
-  Monitor,
-  Cpu,
-  Connection,
-  Warning,
-  CircleCheck,
-  CircleClose,
-  Timer
-} from '@element-plus/icons-vue'
+import MsIcon from '@/components/MsIcon.vue'
 
 const store = usePerformanceStore()
 
@@ -58,9 +49,9 @@ function getStatusColor(status: string): string {
 // 获取告警类型图标
 function getAlertIcon(type: string) {
   switch (type) {
-    case 'error': return CircleClose
-    case 'warning': return Warning
-    default: return CircleCheck
+    case 'error': return 'cancel'
+    case 'warning': return 'warning'
+    default: return 'check_circle'
   }
 }
 
@@ -80,7 +71,7 @@ onUnmounted(() => {
     <!-- 顶部控制栏 -->
     <div class="control-bar">
       <div class="title">
-        <el-icon><Monitor /></el-icon>
+        <MsIcon name="desktop_windows" />
         <span>性能监控</span>
       </div>
       <div class="actions">
@@ -101,7 +92,7 @@ onUnmounted(() => {
     <div class="metrics-grid">
       <el-card class="metric-card">
         <div class="metric-icon cpu">
-          <el-icon><Cpu /></el-icon>
+          <MsIcon name="memory" />
         </div>
         <div class="metric-info">
           <div class="metric-label">CPU 使用率</div>
@@ -116,7 +107,7 @@ onUnmounted(() => {
 
       <el-card class="metric-card">
         <div class="metric-icon memory">
-          <el-icon><Monitor /></el-icon>
+          <MsIcon name="desktop_windows" />
         </div>
         <div class="metric-info">
           <div class="metric-label">内存使用率</div>
@@ -131,7 +122,7 @@ onUnmounted(() => {
 
       <el-card class="metric-card">
         <div class="metric-icon network">
-          <el-icon><Connection /></el-icon>
+          <MsIcon name="hub" />
         </div>
         <div class="metric-info">
           <div class="metric-label">网络流量</div>
@@ -143,7 +134,7 @@ onUnmounted(() => {
 
       <el-card class="metric-card">
         <div class="metric-icon agents">
-          <el-icon><Microphone /></el-icon>
+          <MsIcon name="mic" />
         </div>
         <div class="metric-info">
           <div class="metric-label">活跃智能体</div>
@@ -209,7 +200,7 @@ onUnmounted(() => {
               <div class="agent-meta">
                 <el-tag size="small" type="info">{{ agent.tasks }} 任务</el-tag>
                 <el-tag size="small">
-                  <el-icon><Timer /></el-icon>
+                  <MsIcon name="timer" />
                   {{ agent.avgResponseTime }}ms
                 </el-tag>
               </div>
@@ -237,9 +228,7 @@ onUnmounted(() => {
             :key="alert.id"
             :class="['alert-item', alert.type, { resolved: alert.resolved }]"
           >
-            <el-icon>
-              <component :is="getAlertIcon(alert.type)" />
-            </el-icon>
+            <MsIcon :name="getAlertIcon(alert.type)" :size="16" />
             <div class="alert-content">
               <div class="alert-message">{{ alert.message }}</div>
               <div class="alert-time">{{ new Date(alert.timestamp).toLocaleString() }}</div>
