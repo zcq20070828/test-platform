@@ -1,4 +1,6 @@
 /** Material Symbols icon names for agents (UI). */
+const DEFAULT_AGENT_ICON = 'smart_toy'
+
 export const AGENT_ICON_MAP: Record<string, string> = {
   'test-master': 'workspace_premium',
   'test-requirement-analyzer': 'search',
@@ -22,17 +24,17 @@ export const AGENT_ICON_MAP: Record<string, string> = {
   'ai-quality-reviewer-3': 'smart_toy',
   'compatibility-coordinator': 'devices',
   'ai-evaluation-agent': 'query_stats',
-  default: 'smart_toy',
+  default: DEFAULT_AGENT_ICON,
 }
 
 export function getAgentIcon(agentId: string | undefined | null): string {
-  if (!agentId) return AGENT_ICON_MAP.default
-  return AGENT_ICON_MAP[agentId] ?? AGENT_ICON_MAP.default
+  if (!agentId) return DEFAULT_AGENT_ICON
+  return AGENT_ICON_MAP[agentId] ?? DEFAULT_AGENT_ICON
 }
 
 /** If backend still sends emoji, normalize to Material Symbol by id. */
 export function normalizeAgentIcon(agent: { id?: string; icon?: string } | null | undefined): string {
-  if (!agent) return AGENT_ICON_MAP.default
+  if (!agent) return DEFAULT_AGENT_ICON
   const icon = agent.icon || ''
   // Material symbol names are snake_case ascii; emoji / CJK are not.
   if (icon && /^[a-z0-9_]+$/i.test(icon)) return icon
