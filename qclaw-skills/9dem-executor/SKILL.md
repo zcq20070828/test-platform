@@ -1,14 +1,18 @@
 ---
 name: 9dem-executor
-description: 九维穷举模型执行器。基于用户、数据、流程、操作、安全、性能、网络环境、终端环境、兼容性九个维度（9DEM）的穷举测试，生成高覆盖率测试用例。数据维度具备等价类划分、边界值分析、Pairwise 自动化计算；其余维度提供结构化方法论引导。V2.0集成PICT工具、测试脚本生成器、测试框架集成。
-version: 2.1.0
+description: 九维穷举模型执行器（9DEM + 9 种黑盒设计方法）。基于用户、数据、流程、操作、安全、性能、网络环境、终端环境、兼容性九个维度穷举测试范围，并用等价类划分、边界值分析、因果图、判定表、正交试验、错误推测、场景法、状态迁移、功能图 9 种方法确定性生成用例；跨方法自动去重，输出可直接落表的用例清单与维度覆盖矩阵。V3.0 集成设计方法引擎、PICT、测试脚本生成器、测试框架集成。
+version: 3.0.0
 ---
 
 # 九维穷举模型执行器（9DEM Executor）
 
 ## 角色定位
 
-测试方法论专家，基于九维穷举模型（9DEM）生成高覆盖率测试用例，并自动生成测试脚本和执行测试。
+测试方法论专家，用「维度 × 方法」二维模型生成高覆盖率测试用例，并自动生成测试脚本和执行测试。
+
+- **维度（9DEM）回答「测哪里」**：用户 / 数据 / 流程 / 操作 / 安全 / 性能 / 网络环境 / 终端环境 / 兼容性；
+- **方法（黑盒 9 法）回答「怎么设计」**：等价类划分、边界值分析、因果图、判定表、正交试验、错误推测、场景法、状态迁移、功能图；
+- 两条轴正交：同一维度可用多种方法设计，同一方法可覆盖多个维度。生成结果按「输入+步骤+预期」跨方法去重，避免同一条用例被重复计数。
 
 九维定义（权重裁剪依据需求类型动态调整）：
 
@@ -23,6 +27,22 @@ version: 2.1.0
 | ⑦ 网络环境 | network | 弱网/断网/切网/SSE断流/超时重试 | 正常/边界/异常 |
 | ⑧ 终端环境 | terminal | 浏览器与系统级中断（切后台/锁屏） | 正常/边界/异常 |
 | ⑨ 兼容性 | compatibility | 浏览器矩阵/SSE EventSource/渲染布局一致性 | 边界/异常 |
+
+黑盒 9 种设计方法（权重与维度正交，按输入信息可用性自动启用）：
+
+| 方法 | 键 | 典型适用维度 | 输入要求 | 输出 |
+|------|-----|-------------|---------|------|
+| 等价类划分法 | equivalence | ② 数据 / ① 用户 | inputSpec/fields | 有效/无效等价类各至少 1 条 |
+| 边界值分析法 | boundary | ② 数据 | inputSpec/fields 的区间或长度 | min-1/min/min+1/内点/max-1/max/max+1 |
+| 因果图法 | causeEffect | ② 数据 / ③ 流程 | causes + effects + rules | 每条规则 1 条 + 取反反例 |
+| 判定表法 | decisionTable | ② 数据 / ③ 流程 | rules（conditions/actions） | 每条规则列 1 条 + 全不满足默认规则 |
+| 正交试验法 | orthogonal | ⑨ 兼容性 / ② 数据 | factors（≥2 因子，每因子 ≥2 水平） | 2-wise 覆盖组合（超限时贪心，≤64 条） |
+| 错误推测法 | errorGuessing | ② 数据 / ⑤ 安全 / ④ 操作 | inputSpec/fields | 空值/null/超长/特殊字符/SQLi/XSS/全角/负数/重复提交/并发 |
+| 场景法 | scenario | ③ 流程 | scenarios（基本流/备选流/异常流） | 每条业务路径 1 条 |
+| 状态迁移法 | stateTransition | ③ 流程 | states + transitions | 合法迁移全覆盖 + 非法迁移抽样（≤12 条） |
+| 功能图法 | functionGraph | ④ 操作 | functions（前后置条件/依赖） | 每功能正常调用 + 前置条件不满足反例 |
+
+去重规则：以「输入 + 步骤 + 预期」归一化后作为唯一键；同一键只保留一条，`methods` / `dimensions` 字段合并标注全部命中方法（如「等价类划分法+边界值分析法」）。
 
 ## 核心功能
 
@@ -72,6 +92,54 @@ const inputSpec = {
 // 九维调用示例：仅计算 data；或传入全部九维键获取各维度引导
 const result = execute9DEM({ inputSpec, dimensions: ['data'] });
 const resultAll = execute9DEM({ inputSpec, dimensions: ['user','data','process','operation','security','performance','network','terminal','compatibility'] });
+```
+
+### 设计方法输入（designInput，全部可选，按需提供）
+
+```javascript
+const designInput = {
+  // M1 等价类 / M2 边界值 / M6 错误推测：字段规格（与 inputSpec 同结构，可不填，会自动复用）
+  inputSpec: { username: { type: 'string', length: [3, 20] } },
+
+  // M3 因果图 / M4 判定表
+  causes: ['已登录', '余额充足'],
+  effects: ['下单成功', '提示余额不足'],
+  rules: [
+    { id: 'R1', conditions: { C1: true, C2: true }, actions: { 下单成功: true } },
+    { id: 'R2', conditions: { C1: true, C2: false }, actions: { 提示余额不足: true } },
+  ],
+
+  // M5 正交试验
+  factors: { 平台: ['iOS', 'Android', 'Web'], 网络: ['4G', 'WiFi', '弱网'] },
+
+  // M7 场景法
+  scenarios: [
+    { name: '正常下单', type: 'basic', steps: ['选商品', '提交订单', '支付'] },
+    { name: '余额不足', type: 'exception', steps: ['选商品', '提交订单'] },
+  ],
+
+  // M8 状态迁移
+  states: {
+    states: ['待支付', '已支付', '已取消'],
+    transitions: [
+      { from: '待支付', to: '已支付', event: '支付成功' },
+      { from: '待支付', to: '已取消', event: '取消' },
+    ],
+  },
+
+  // M9 功能图
+  functions: [
+    { id: 'F1', name: '创建订单', preconditions: ['已登录'], postconditions: ['订单状态=待支付'], dependsOn: ['登录'] },
+  ],
+};
+
+const result = invoke({
+  inputSpec: { username: { type: 'string', length: [3, 20] } },
+  methods: ['equivalence', 'boundary', 'scenario', 'stateTransition'], // 缺省=全部 9 种
+  designInput,
+  includeDesignCases: true, // 缺省 true
+  dedupe: true,             // 缺省 true，跨方法去重
+});
 ```
 
 ### 测试脚本生成输入
@@ -128,6 +196,35 @@ const results = await executeTests(config);
       total: 18,
       combinations: [...]
     }
+  }
+}
+```
+
+### 设计方法输出（design，V3.0 新增）
+```javascript
+{
+  methods: [
+    { method: 'equivalence', methodKey: 'M1', methodLabel: '等价类划分法', caseCount: 8, skipped: false },
+    { method: 'causeEffect', methodKey: 'M3', methodLabel: '因果图法', caseCount: 0, skipped: true,
+      reason: '缺少 causes / effects / rules', guidance: '把输入条件作为「原因」…' }
+  ],
+  cases: [
+    {
+      methodKey: 'M1', methods: ['等价类划分法'], methodLabel: '等价类划分法',
+      dimensions: ['② 数据'], dimension: '② 数据', layer: '异常',
+      name: '等价类-username-长度过短',
+      precondition: '系统已部署且可访问对应功能',
+      input: 'username=""', steps: '', expected: '拒绝并提示长度不足',
+      priority: '中', trace: '无效等价类 len(username)<3',
+      mergedCount: 2   // 若被多方法命中，合并计数
+    }
+  ],
+  duplicates: [ { kept: '边界值-age-min(18)', mergedFrom: 'equivalence 等价类-age-范围内有效值' } ],
+  stats: {
+    requestedMethods: 9, methodsWithCases: 7, skippedMethods: ['M3', 'M4'],
+    totalCasesBeforeDedupe: 90, uniqueCases: 88, duplicatesRemoved: 2,
+    byMethod: { M1: 12, M2: 15, M3: 4 }, methodCoverage: 78,
+    dimensionsCovered: ['② 数据', '③ 流程', '⑤ 安全']
   }
 }
 ```
@@ -264,6 +361,7 @@ console.log(results.coverage);
 ├── SKILL.md                    # 本文档
 ├── executor.js                 # 九维穷举主入口（execute9DEM）
 ├── backend/
+│   ├── design-methods.js       # 黑盒 9 法确定性生成 + 跨方法去重（V3.0）
 │   ├── data-dimension.js       # 数据维度（等价类/边界值/Pairwise 自动化计算）
 │   ├── pict-integration.js     # PICT集成
 │   ├── test-script-generator.js # 测试脚本生成器
@@ -273,6 +371,13 @@ console.log(results.coverage);
 ```
 
 ## 版本历史
+
+### V3.0（2026-11-04）
+- ✅ 新增黑盒 9 种设计方法确定性生成器（design-methods.js）：等价类/边界值/因果图/判定表/正交试验/错误推测/场景法/状态迁移/功能图
+- ✅ 跨方法去重（输入+步骤+预期 归一化唯一键），同一条用例合并标注全部命中方法
+- ✅ 9dem-invoker 新增 methods / designInput / includeDesignCases / dedupe 参数，返回 design.cases 可直接落表
+- ✅ 方法按维度自动归类（数据/流程/安全/操作/兼容性），与 agent 输出的「维度覆盖矩阵」对齐
+- ✅ 9dem-executor 成为 test-case-generator 的唯一强制工具，产出的用例必须带方法标注
 
 ### V2.1（2026-09-20）
 - ✅ 五维穷举模型升级为九维穷举模型（9DEM）：用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性

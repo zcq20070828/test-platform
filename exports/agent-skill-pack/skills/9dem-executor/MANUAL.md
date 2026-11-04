@@ -4,7 +4,7 @@
 
 ## 1. 用途
 
-九维穷举模型执行器。基于用户、数据、流程、操作、安全、性能、网络环境、终端环境、兼容性九个维度（9DEM）的穷举测试，生成高覆盖率测试用例。数据维度具备等价类划分、边界值分析、Pairwise 自动化计算；其余维度提供结构化方法论引导。V2.0集成PICT工具、测试脚本生成器、测试框架集成。
+九维穷举模型执行器（9DEM + 9 种黑盒设计方法）。基于用户、数据、流程、操作、安全、性能、网络环境、终端环境、兼容性九个维度穷举测试范围，并用等价类划分、边界值分析、因果图、判定表、正交试验、错误推测、场景法、状态迁移、功能图 9 种方法确定性生成用例；跨方法自动去重，输出可直接落表的用例清单与维度覆盖矩阵。V3.0 集成设计方法引擎、PICT、测试脚本生成器、测试框架集成。
 
 ## 2. 目录结构
 
@@ -72,7 +72,7 @@ console.log(result);
 
 - 文件：`skills/9dem-executor/backend/9dem-invoker.js`
 - 导出：`invoke`
-- 说明：九维穷举模型执行器:基于用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性九维,生成等价类划分、边界值分析、Pairwise 组合等专业测试设计。
+- 说明：九维穷举 + 黑盒9法执行器:九维(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性)确定覆盖维度,黑盒9法(等价类划分/边界值分析/因果图/判定表/正交试验/错误推测/场景法/状态迁移/功能图)确定性生成用例,跨方法去重后返回可直接落表的用例清单。
 
 **参数**
 
@@ -82,6 +82,10 @@ console.log(result);
 | `inputSpec` | object | 否 | 结构化输入规范(优先),如 {field:{type:"string",minLength:1,maxLength:100}} |
 | `fields` | array | 否 | 字段列表(三选一),每项 {name,type,min,max,minLength,maxLength,values} |
 | `dimensions` | array | 否 | 计算维度,默认 ["data"];可选全部九维:user/data/process/operation/security/performance/network/terminal/compatibility |
+| `methods` | array | 否 | 黑盒设计方法,默认全部9种:equivalence/boundary/causeEffect/decisionTable/orthogonal/errorGuessing/scenario/stateTransition/functionGraph |
+| `designInput` | object | 否 | 设计方法的结构化输入。rules(causes/effects/rules)→因果图+判定表;factors→正交试验;scenarios→场景法;states(states/transitions)→状态迁移;functions(前后置条件/依赖)→功能图;inputSpec 缺省时自动复用顶层 inputSpec。 |
+| `includeDesignCases` | boolean | 否 | 是否输出黑盒方法生成的具体用例,默认 true |
+| `dedupe` | boolean | 否 | 是否跨方法去重(输入+步骤+预期),默认 true |
 
 **示例参数**
 
