@@ -48,6 +48,9 @@ BACKEND_LOG="/tmp/wb-backend-$BACKEND_PORT.log"
 FRONTEND_LOG="/tmp/wb-vite-$FRONTEND_PORT.log"
 BACKEND_PID="/tmp/wb-backend-$BACKEND_PORT.pid"
 FRONTEND_PID="/tmp/wb-vite-$FRONTEND_PORT.pid"
+# 后端堆上限:默认 V8 约 2GB,单个大任务(如超多字段用例生成)容易触发 OOM 把整个服务带走。
+# 这里显式放宽到 4GB;机器内存不足时可改小或保持默认。
+BACKEND_MAX_OLD_SPACE="${BACKEND_MAX_OLD_SPACE:-4096}"
 
 # ---------- 关键: 关闭 WorkBuddy 的 node-safe-delete-shim ----------
 # 该 shim 会拦截 vite 清理 .vite/deps 缓存(>50 文件)导致启动中止
@@ -120,7 +123,7 @@ start_backend(){
   if [ ${#DB_ENV_ARGS[@]} -gt 0 ]; then
     dim "  注入配置: $(printf '%s ' "${DB_ENV_ARGS[@]%%=*}")"
   fi
-  ( cd "$BACKEND_DIR" && nohup env PORT=$BACKEND_PORT NODE_ENV=development "${DB_ENV_ARGS[@]}" "$NODE_BIN" server.js > "$BACKEND_LOG" 2>&1 & echo $! > "$BACKEND_PID" )
+  ( cd "$BACKEND_DIR" && nohup env PORT=$BACKEND_PORT NODE_ENV=development "${DB_ENV_ARGS[@]}" "$NODE_BIN" --max-old-space-size="$BACKEND_MAX_OLD_SPACE" server.js > "$BACKEND_LOG" 2>&1 & echo $! > "$BACKEND_PID" )
   disown 2>/dev/null || true
   if ! wait_for "后端" "backend_up" 240 "$BACKEND_LOG"; then
     err "后端启动失败, 尾日志:"; tail -n 20 "$BACKEND_LOG" 2>/dev/null; return 1
