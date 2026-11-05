@@ -12534,7 +12534,7 @@ async function estimateManualEffort(task) {
         personDays = estimate.totalPersonDays || 0;
         console.log(`[TaskEffort] ${task.agent} 评估: complexity=${estimate.complexity}, personDays=${estimate.totalPersonDays}, hours=${estimate.totalHours}`);
       } else {
-        console.warn(`[TaskEffort] skill 脚本不存在，使用默认值`);
+        console.warn(`[TaskEffort] skill 脚本不存在，使用默认值(0.5 人天): ${effortScript}`);
         personDays = 0.5;
       }
     } catch (skillErr) {
@@ -12673,7 +12673,10 @@ async function executeTaskAsync(task) {
           'test-reporter': 'report-generation',
         };
         const manualMinutes = manualConfig[taskTypeMap[task.agent]] || manualConfig['default'] || 30;
-        const manualHours = manualMinutes / 60;
+        // 工时口径以「任务启动时 estimateManualEffort 的评估值」为准（按输入规模换算），
+        // 这里只在评估值缺失时退回配置表的固定分钟数，避免把 18.32h 覆盖成 0.25h。
+        const evaluatedHours = Number(task.manualHours) || 0;
+        const manualHours = evaluatedHours > 0 ? evaluatedHours : manualMinutes / 60;
         const estimatedCost = manualHours * hourlySalary;
 
         // 3. 计算节省成本

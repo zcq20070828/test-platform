@@ -141,6 +141,36 @@ async function invoke(params) {
     }
 
     const designStats = design ? design.stats : null;
+    const pairwise = result.data?.pairwise;
+    const pairwiseMeta = pairwise ? {
+      mode: pairwise.mode || 'full',
+      originalTotal: pairwise.originalTotal || pairwise.length,
+      factorCount: pairwise.factorCount != null ? pairwise.factorCount : (spec ? Object.keys(spec).length : 0),
+      excludedFields: pairwise.excludedFields || [],
+      compressed: (pairwise.mode || 'full') !== 'full',
+    } : null;
+
+    // 工具结果会被 JSON.stringify 后塞进 LLM messages：组合数过大时必须裁剪输出，
+    // 否则单条工具结果可达十几 MB，既撑爆上下文也拖高堆内存。
+    const PAIRWISE_OUTPUT_LIMIT = Number(process.env.NINEDEM_PAIRWISE_OUTPUT_LIMIT) || 200;
+    function capPairwise(container) {
+      const arr = container && container.pairwise;
+      if (!Array.isArray(arr) || arr.length <= PAIRWISE_OUTPUT_LIMIT) return container;
+      const capped = arr.slice(0, PAIRWISE_OUTPUT_LIMIT);
+      capped.mode = arr.mode;
+      capped.originalTotal = arr.originalTotal;
+      capped.excludedFields = arr.excludedFields;
+      capped.factorCount = arr.factorCount;
+      capped.outputTruncated = true;
+      capped.outputTotal = arr.length;
+      if (container && typeof container === 'object') container.pairwise = capped;
+      return container;
+    }
+    if (pairwiseMeta) {
+      pairwiseMeta.outputLimit = PAIRWISE_OUTPUT_LIMIT;
+      pairwiseMeta.outputTruncated = (pairwise?.length || 0) > PAIRWISE_OUTPUT_LIMIT;
+    }
+    const resultForOutput = result.data ? { ...result, data: capPairwise({ ...result.data }) } : result;
 
     return {
       skill: '9dem-executor',
@@ -161,14 +191,15 @@ async function invoke(params) {
         requestedDimensions: dimensions,
         dataEquivalenceClassesCount: result.data?.equivalenceClasses?.validClasses?.length || 0,
         dataBoundaryValuesCount: result.data?.boundaryValues?.length || 0,
-        dataPairwiseCount: result.data?.pairwise?.length || 0,
+        dataPairwiseCount: pairwise?.length || 0,
+        pairwise: pairwiseMeta,
         designMethodCoverage: designStats ? designStats.methodCoverage : 0,
         designUniqueCases: designStats ? designStats.uniqueCases : 0,
         designDuplicatesRemoved: designStats ? designStats.duplicatesRemoved : 0,
       },
       design,
-      dimensionsResult: result,
-      ...result
+      dimensionsResult: resultForOutput,
+      ...resultForOutput
     };
   } catch (e) {
     return {
