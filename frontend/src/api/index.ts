@@ -250,7 +250,7 @@ export const taskApi = {
   async create(
     agentId: string,
     input: string,
-    files?: { kbType?: string; filename?: string; name?: string; content?: string }[],
+    files?: { kbType?: string; filename?: string; name?: string; content?: string; base64?: string }[],
     options?: { source?: 'step' | 'workflow'; type?: string }
   ): Promise<{ task?: Task } & ApiResponse<any>> {
     const body = { agent: agentId, input, files: files || [], source: options?.source || 'step', type: options?.type }
@@ -295,7 +295,11 @@ export const taskApi = {
   },
 
   // 多轮对话续写（任意状态的任务都可继续对话/修改交付物）
-  async sendChat(taskId: string, message: string, attachments?: { name: string; content: string }[]): Promise<any> {
+  async sendChat(
+    taskId: string,
+    message: string,
+    attachments?: { name: string; content?: string; base64?: string }[]
+  ): Promise<any> {
     const res = await request(`/api/tasks/${taskId}/chat`, {
       method: 'POST',
       body: JSON.stringify({ message, attachments: attachments || [] }),
@@ -863,6 +867,7 @@ export const securityApi = {
     stage?: number,
     testDomain?: string,
     sourcePath?: string,
+    files?: { name: string; base64?: string; content?: string }[],
   ) {
     const url = stage !== undefined ? `/api/security/workflow?stage=${stage}` : '/api/security/workflow'
     const res = await request<{ workflowId: string; taskId: string } | { success: boolean; stage: string; output: unknown }>(url, {
@@ -873,6 +878,7 @@ export const securityApi = {
         description,
         testDomain: testDomain || 'all',
         sourcePath: sourcePath || '',
+        files: files || [],
       }),
     })
     return res.success ? (res.data as any) : null
@@ -976,9 +982,17 @@ export const performanceTestApi = {
     const d = res.data as any
     return { reports: d?.data || d || [], total: d?.total || 0 }
   },
-  async startWorkflow(target: string, description?: string, stage?: number) {
+  async startWorkflow(
+    target: string,
+    description?: string,
+    stage?: number,
+    files?: { name: string; base64?: string; content?: string }[],
+  ) {
     const url = stage !== undefined ? `/api/performance-test/workflow?stage=${stage}` : '/api/performance-test/workflow'
-    const res = await request<{ workflowId: string; testId: string } | { success: boolean; stage: string; output: unknown }>(url, { method: 'POST', body: JSON.stringify({ target, description }) })
+    const res = await request<{ workflowId: string; testId: string } | { success: boolean; stage: string; output: unknown }>(url, {
+      method: 'POST',
+      body: JSON.stringify({ target, description, files: files || [] }),
+    })
     // 完整工作流后端返回 { success, data: { workflowId, testId, target } }（嵌套 data），需解包；
     // 单阶段返回 { success, stage, phase, output, taskId }（无嵌套），原样返回
     const body: any = res.data

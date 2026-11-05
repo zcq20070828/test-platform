@@ -17,6 +17,11 @@ import * as securityDAO from './database/security-dao.js';
 import * as performanceDAO from './database/performance-dao.js';
 import { init as initWebCompat, create as createWebCompatReport, findByUser as getWebCompatByUser, countByUser as countWebCompatByUser, findById as getWebCompatById } from './database/web-compatibility-dao.js';
 import { getToolList, generateInstallScript, getTool as getToolInfo, checkToolsStatus, installToolBackend, upgradeToolBackend, isToolInstalledBackend } from './tool-registry.js';
+import {
+  estimateTokens as estimateInputTokens,
+  parseDocumentBuffer,
+  fitToBudget,
+} from './lib/document-reader.js';
 import bcrypt from 'bcrypt';
 import {
   getScannerStatus as getSecScannerStatus,
@@ -347,6 +352,9 @@ app.use('/api/parse', jsonLarge);
 app.use('/api/tasks', jsonLarge);
 app.use('/api/workflow', jsonLarge);
 app.use('/api/evaluation', jsonLarge);
+// 2026-11-05: 安全/性能/兼容/脚本等面板改为 base64 直传附件，需放宽 body 上限
+app.use('/api/security', express.json({ limit: '50mb' }));
+app.use('/api/performance-test', express.json({ limit: '50mb' }));
 app.use(express.json({ limit: '2mb' }));
 
 // 存储
@@ -1124,28 +1132,133 @@ async function readDeliverableTemplate(templateName) {
   return `[模板 ${templateName} 未找到]`;
 }
 
+// ── 附件注入：统一解析 + 落盘 + token 预算裁剪（2026-11-05） ──
+// 支持三种附件格式：
+//   { kbType, filename }            → 知识库文档
+//   { name, base64 }                → 前端上传的原始内容（推荐，后端统一解析）
+//   { name, content }               → 前端已解析好的文本（兼容旧客户端）
+// 单文件 token 预算与总量预算均可通过环境变量覆盖。
+const INPUT_DOC_MAX_TOKENS_PER_FILE = Number(process.env.INPUT_DOC_MAX_TOKENS_PER_FILE) || 30000;
+const INPUT_DOC_MAX_TOKENS_TOTAL = Number(process.env.INPUT_DOC_MAX_TOKENS_TOTAL) || 60000;
+
+/** 附件落盘：runtime/uploads/<batchId>/<安全文件名>，返回绝对路径 */
+async function persistUploadedFile(buffer, filename, batchId) {
+  const dir = path.join(RUNTIME_ROOT, 'uploads', batchId);
+  await fs.mkdir(dir, { recursive: true });
+  const safeName = String(filename || 'attachment')
+    .replace(/[/\\:*?"<>|]/g, '_')
+    .replace(/^\.+/, '')
+    .slice(0, 120) || 'attachment';
+  const target = path.join(dir, safeName);
+  await fs.writeFile(target, buffer);
+  return target;
+}
+
 async function injectFilesToInput(input, files) {
-  console.log(`[injectFilesToInput] received: files=${JSON.stringify(files)}`);
   if (!files || files.length === 0) return input;
+  console.log(`[injectFilesToInput] received ${files.length} file(s): ${files.map((f) => f.name || f.filename || '?').join(', ')}`);
+  const uploadBatchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const sections = [];
+  const parseWarnings = [];
+  let totalTokens = 0;
+
   for (const file of files) {
-    let filename, content;
-    if (file.kbType && file.filename) {
+    try {
       // 格式1: KB引用，从知识库读取
-      filename = file.filename;
-      content = await readKBFileContent(file.kbType, file.filename);
-      sections.push(`=== 文档: ${filename} (来自知识库 ${file.kbType}) ===\n${content}`);
-    } else if (file.name && file.content) {
-      // 格式2: 直接内容（用户上传的附件，不走知识库）
-      filename = file.name;
-      content = file.content;
-      sections.push(`=== 附件: ${filename} ===\n${content}`);
+      if (file.kbType && file.filename) {
+        const content = await readKBFileContent(file.kbType, file.filename);
+        const fitted = fitToBudget(content, { maxTokens: INPUT_DOC_MAX_TOKENS_PER_FILE });
+        totalTokens += estimateInputTokens(fitted.text);
+        if (fitted.omittedNote) parseWarnings.push(`${file.filename}: ${fitted.omittedNote}`);
+        sections.push(`=== 文档: ${file.filename} (来自知识库 ${file.kbType}) ===\n${fitted.text}`);
+        continue;
+      }
+
+      const filename = file.name || 'attachment';
+
+      // 格式2: 原始 base64 → 后端统一解析（表格保结构）
+      if (file.base64 || file.dataUrl) {
+        const raw = file.base64 || String(file.dataUrl).split(',').pop() || '';
+        const buffer = Buffer.from(raw, 'base64');
+        if (!buffer.length) {
+          sections.push(`=== 附件: ${filename} ===\n[附件内容为空]`);
+          continue;
+        }
+        const savedPath = await persistUploadedFile(buffer, filename, uploadBatchId);
+
+        let markdown;
+        let format = 'text';
+        try {
+          const parsed = await parseDocumentBuffer({
+            buffer,
+            filename,
+            parseOffice: async (buf, ext) => {
+              // 办公文档复用既有 parseDocumentContent（写临时文件后调用）
+              const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'docparse-'));
+              const tmpPath = path.join(tmpDir, `input${ext}`);
+              try {
+                await fs.writeFile(tmpPath, buf);
+                return await parseDocumentContent(tmpPath, 30000);
+              } finally {
+                fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+              }
+            },
+          });
+          markdown = parsed.markdown;
+          format = parsed.format;
+          for (const w of parsed.warnings) parseWarnings.push(`${filename}: ${w}`);
+        } catch (parseErr) {
+          console.error(`[injectFilesToInput] 解析失败 ${filename}: ${parseErr.message}`);
+          sections.push(`=== 附件: ${filename} ===\n[文档解析失败: ${parseErr.message}；原文件已保存: ${savedPath}]`);
+          parseWarnings.push(`${filename}: 解析失败 - ${parseErr.message}`);
+          continue;
+        }
+
+        const fitted = fitToBudget(markdown, { maxTokens: INPUT_DOC_MAX_TOKENS_PER_FILE });
+        const tokens = estimateInputTokens(fitted.text);
+        totalTokens += tokens;
+
+        const notes = [];
+        if (fitted.omittedNote) notes.push(fitted.omittedNote);
+        if (format === 'image') notes.push('图片未解析内容');
+        const noteLine = notes.length ? `\n[解析说明] ${notes.join('；')}` : '';
+        const pathLine = `\n[原文件] ${savedPath}`;
+
+        sections.push(`=== 附件: ${filename} (${format}, 约 ${tokens} token) ===\n${fitted.text}${noteLine}${pathLine}`);
+        continue;
+      }
+
+      // 格式3: 兼容旧客户端，前端已解析好的文本
+      if (file.content) {
+        const fitted = fitToBudget(String(file.content), { maxTokens: INPUT_DOC_MAX_TOKENS_PER_FILE });
+        totalTokens += estimateInputTokens(fitted.text);
+        if (fitted.omittedNote) parseWarnings.push(`${filename}: ${fitted.omittedNote}`);
+        sections.push(`=== 附件: ${filename} ===\n${fitted.text}`);
+        continue;
+      }
+
+      sections.push(`=== 附件: ${filename} ===\n[未提供可解析内容]`);
+    } catch (e) {
+      console.error(`[injectFilesToInput] 处理附件失败: ${e.message}`);
+      parseWarnings.push(`${file.name || file.filename || '?'}: ${e.message}`);
     }
   }
+
   if (sections.length === 0) return input;
+
+  // 总量超预算时，按比例二次收紧（保留结构优先级）
+  let body = sections.join('\n\n');
+  if (estimateInputTokens(body) > INPUT_DOC_MAX_TOKENS_TOTAL) {
+    body = fitToBudget(body, { maxTokens: INPUT_DOC_MAX_TOKENS_TOTAL }).text;
+    parseWarnings.push(`附件总量超出预算 ${INPUT_DOC_MAX_TOKENS_TOTAL} token，已按结构优先级裁剪`);
+  }
+  if (parseWarnings.length) {
+    console.warn(`[injectFilesToInput] 解析告警: ${parseWarnings.join(' | ')}`);
+  }
+
   return (
     '【用户上传的文档内容】\n' +
-    sections.join('\n\n') +
+    body +
     '\n\n---以上是用户原始任务---\n' +
     input
   );
@@ -4120,10 +4233,41 @@ async function executeChatRound(task, message, userFiles) {
     } catch (_) {}
     const userFileContents = [];
     for (const uf of userFiles) {
-      const fp = await saveUserRevisionFile(task.id, uf);
+      // 多轮对话附件也走统一解析（2026-11-05）：支持 base64 直传，Word/Excel 保留表格结构
+      let markdown = uf.content || '';
+      let originNote = '';
+      if (uf.base64 || uf.dataUrl) {
+        try {
+          const buffer = Buffer.from(uf.base64 || String(uf.dataUrl).split(',').pop() || '', 'base64');
+          const savedPath = await persistUploadedFile(buffer, uf.name || 'attachment', `chat-${task.id}`);
+          const parsed = await parseDocumentBuffer({
+            buffer,
+            filename: uf.name || 'attachment',
+            parseOffice: async (buf, ext) => {
+              const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatparse-'));
+              const tmpPath = path.join(tmpDir, `input${ext}`);
+              try {
+                await fs.writeFile(tmpPath, buf);
+                return await parseDocumentContent(tmpPath, 30000);
+              } finally {
+                fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+              }
+            },
+          });
+          markdown = parsed.markdown;
+          originNote = `\n[原文件] ${savedPath}`;
+          try { await taskDAO.createTaskOutputFile(task.id, savedPath, { versionSource: 'user_revision' }); } catch (_) {}
+        } catch (e) {
+          console.warn(`[Chat] 附件解析失败 ${uf.name}: ${e.message}`);
+          markdown = `[附件解析失败: ${e.message}]`;
+        }
+      }
+      const fitted = fitToBudget(markdown, { maxTokens: INPUT_DOC_MAX_TOKENS_PER_FILE });
+      const fp = await saveUserRevisionFile(task.id, { name: uf.name, content: fitted.text });
       if (fp) {
         try { await taskDAO.createTaskOutputFile(task.id, fp, { versionSource: 'user_revision' }); } catch (_) {}
-        userFileContents.push(`### 文件: ${uf.name || '附件'}\n${uf.content || ''}`);
+        const note = fitted.omittedNote ? `\n[解析说明] ${fitted.omittedNote}` : '';
+        userFileContents.push(`### 文件: ${uf.name || '附件'}\n${fitted.text}${note}${originNote}`);
       }
     }
     const chatInput = buildChatContinuationInput(task, message, userFileContents, chatHistory);
@@ -5704,14 +5848,19 @@ app.post('/api/parse/word', authenticate, async (req, res) => {
     const buffer = Buffer.from(base64, 'base64');
     console.log(`[Word解析] base64解码后buffer大小: ${buffer.length}, 前10字节: ${buffer.slice(0, 10).toString('hex')}`);
 
-    // 解析Word文档(mammoth已在顶部import)
-    const result = await mammoth.extractRawText({ buffer });
+    // 保留表格结构（2026-11-05）：extractRawText 会把表格压平成互不相干的段落
+    const parsed = await parseDocumentBuffer({ buffer, filename: filename || 'document.docx' });
+    const fitted = fitToBudget(parsed.markdown, { maxTokens: 30000 });
 
     res.json({
       success: true,
       filename: filename,
-      text: result.value,
-      messages: result.messages
+      text: fitted.text,
+      format: parsed.format,
+      truncated: fitted.truncated,
+      omittedNote: fitted.omittedNote,
+      warnings: parsed.warnings,
+      messages: parsed.warnings.map((w) => ({ type: 'warning', message: w })),
     });
   } catch (error) {
     console.error('Word解析失败:', error);
@@ -5746,9 +5895,27 @@ app.post('/api/parse', authenticate, async (req, res) => {
 
     await fs.writeFile(tmpPath, buffer);
 
-    const text = await parseDocumentContent(tmpPath);
+    // 统一解析 + token 预算裁剪（2026-11-05）。Word 走 reader 保表格；
+    // 其余办公格式复用 parseDocumentContent（Python）。
+    let text;
+    let warnings = [];
+    if (ext === '.docx' || ext === '.doc') {
+      const parsed = await parseDocumentBuffer({ buffer, filename });
+      text = parsed.markdown;
+      warnings = parsed.warnings;
+    } else {
+      text = await parseDocumentContent(tmpPath, 30000);
+    }
+    const fitted = fitToBudget(text, { maxTokens: 30000 });
 
-    res.json({ success: true, filename, text: text.substring(0, 50000) });
+    res.json({
+      success: true,
+      filename,
+      text: fitted.text,
+      truncated: fitted.truncated,
+      omittedNote: fitted.omittedNote,
+      warnings,
+    });
   } catch (error) {
     console.error('[Parse] 文档解析失败:', error);
     res.status(500).json({ error: error.message });
@@ -5756,6 +5923,80 @@ app.post('/api/parse', authenticate, async (req, res) => {
     if (tmpDir) {
       try { await fs.rm(tmpDir, { recursive: true, force: true }); } catch (_) {}
     }
+  }
+});
+
+/**
+ * POST /api/parse/batch - 批量解析附件为 Markdown（2026-11-05）
+ *
+ * 供安全/性能/兼容/脚本等「输入即文本」的面板使用：前端只传 base64，
+ * 后端统一解析（Word 保表格、Excel 保列、PDF 提表）并做 token 预算裁剪。
+ *
+ * body: { files: [{ name, base64 }], maxTokensPerFile? }
+ * resp: { success, sections: [{ name, markdown, tokens, truncated, note, warnings }], totalTokens }
+ */
+app.post('/api/parse/batch', authenticate, async (req, res) => {
+  try {
+    const { files, maxTokensPerFile } = req.body || {};
+    if (!Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ error: '缺少 files 参数' });
+    }
+    if (files.length > 20) {
+      return res.status(400).json({ error: '单次最多解析 20 个附件' });
+    }
+    const perFile = Math.max(500, Number(maxTokensPerFile) || INPUT_DOC_MAX_TOKENS_PER_FILE);
+
+    const sections = [];
+    let totalTokens = 0;
+
+    for (const f of files) {
+      const name = f.name || 'attachment';
+      const base64 = f.base64 || (f.dataUrl ? String(f.dataUrl).split(',').pop() : '');
+      if (!base64) {
+        sections.push({ name, markdown: `[附件: ${name} - 未提供内容]`, tokens: 0, truncated: false, warnings: ['缺少内容'] });
+        continue;
+      }
+      const buffer = Buffer.from(base64, 'base64');
+      if (buffer.length > MAX_UPLOAD_SIZE) {
+        sections.push({ name, markdown: `[附件: ${name} - 超过 ${MAX_UPLOAD_SIZE / 1024 / 1024}MB]`, tokens: 0, truncated: false, warnings: ['文件过大'] });
+        continue;
+      }
+      try {
+        const parsed = await parseDocumentBuffer({
+          buffer,
+          filename: name,
+          parseOffice: async (buf, ext) => {
+            const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'batchparse-'));
+            const tmpPath = path.join(tmpDir, `input${ext}`);
+            try {
+              await fs.writeFile(tmpPath, buf);
+              return await parseDocumentContent(tmpPath, 30000);
+            } finally {
+              fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+            }
+          },
+        });
+        const fitted = fitToBudget(parsed.markdown, { maxTokens: perFile });
+        const tokens = estimateInputTokens(fitted.text);
+        totalTokens += tokens;
+        sections.push({
+          name,
+          format: parsed.format,
+          markdown: fitted.text,
+          tokens,
+          truncated: fitted.truncated,
+          note: fitted.omittedNote || '',
+          warnings: parsed.warnings,
+        });
+      } catch (e) {
+        sections.push({ name, markdown: `[附件解析失败: ${e.message}]`, tokens: 0, truncated: false, warnings: [e.message] });
+      }
+    }
+
+    res.json({ success: true, sections, totalTokens });
+  } catch (error) {
+    console.error('[ParseBatch] 解析失败:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -5975,14 +6216,18 @@ function parseDocumentContent(filePath, timeoutMs = 5000) {
       return;
     }
 
-    // Word 文档(.docx/.doc)走 Node mammoth 解析
-    // 说明: 原 Python(parse_document.py)依赖 QClaw 自带 Python,该环境缺 python-docx 会崩溃;
-    // 而 Node 侧 mammoth 已随 readKBFileContent 验证可用,故统一在此复用,消除 Python 环境依赖。
+    // Word 文档(.docx/.doc)保留表格结构（2026-11-05）
+    // 原实现用 extractRawText 只取纯文本，表格单元格会被拆成互不相干的段落，
+    // 「字段名 | 值」的对应关系丢失，模型只能靠猜。改为 convertToHtml 后转 Markdown 表格。
     if (ext === '.docx' || ext === '.doc') {
       fs.readFile(filePath)
-        .then(buffer => mammoth.extractRawText({ buffer }))
+        .then(async (buffer) => {
+          const { markdown, warnings } = await parseDocumentBuffer({ buffer, filename: filePath });
+          if (warnings.length) console.warn(`[parseDocumentContent] ${filePath}: ${warnings.join('; ')}`);
+          return markdown;
+        })
         .then(result => {
-          const text = (result.value || '').trim();
+          const text = (result || '').trim();
           if (!text) {
             reject(new Error('Word 文档解析结果为空'));
             return;
@@ -16553,9 +16798,13 @@ async function executeSecurityRealSingleStage({ workflowId, taskInput, userId = 
 // POST /api/security/workflow
 app.post('/api/security/workflow', authenticate, async (req, res) => {
   try {
-    const { target, scanType = 'full', description = '', testDomain = 'web', sourcePath = '' } = req.body;
+    let { target, scanType = 'full', description = '', testDomain = 'web', sourcePath = '', files } = req.body;
     const stageIdx = parseInt(req.query.stage);
     if (!target) return res.status(400).json({ error: '缺少 target 参数' });
+    // 附件统一解析（2026-11-05）：前端只传 base64，后端保表格并做 token 预算裁剪
+    if (Array.isArray(files) && files.length) {
+      description = await injectFilesToInput(description || '', files);
+    }
 
     const userId = req.user.id;
     const SECURITY_STAGES = ['安全测试方案生成','安全测试用例生成','执行安全扫描','执行手工验证','安全报告生成'];
@@ -17242,9 +17491,13 @@ app.get('/api/compatibility/web/reports/:id/export', authenticate, async (req, r
 // POST /api/performance-test/workflow — 7步串联 workflow 入口
 app.post('/api/performance-test/workflow', authenticate, async (req, res) => {
   try {
-    const { target, description = '' } = req.body;
+    let { target, description = '', files } = req.body;
     const stageIdx = parseInt(req.query.stage);
     if (!target) return res.status(400).json({ error: '缺少 target 参数' });
+    // 附件统一解析（2026-11-05）
+    if (Array.isArray(files) && files.length) {
+      description = await injectFilesToInput(description || '', files);
+    }
 
     const userId = req.user.id;
     const PERFORMANCE_STAGES = [

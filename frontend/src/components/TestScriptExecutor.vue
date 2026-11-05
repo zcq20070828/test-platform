@@ -5,6 +5,7 @@ import { useMainStore } from '@/stores/main'
 import { request } from '@/api'
 import DashboardChatPanel from '@/components/DashboardChatPanel.vue'
 import type { AttachmentFile } from '@/types'
+import { describeAttachments, toAttachmentPayloads } from '@/utils/attachment'
 import MsIcon from '@/components/MsIcon.vue'
 import { scopeMsIcon } from '@/utils/stageIcons'
 
@@ -120,61 +121,6 @@ function extractUrl(text: string): string {
 }
 
 const TEXT_EXTS = ['.txt', '.md', '.json', '.csv', '.log', '.yaml', '.yml', '.xml', '.html', '.js', '.ts', '.py', '.java', '.go', '.sql']
-async function readAttachmentContent(file: AttachmentFile): Promise<string | null> {
-  if (!file.dataUrl) return null
-  if (file.size > 10 * 1024 * 1024) return `[附件: ${file.name} - 文件过大, 已跳过内容读取]`
-  const ext = '.' + (file.name.split('.').pop() || '').toLowerCase()
-  if (TEXT_EXTS.includes(ext)) {
-    try {
-      const base64 = file.dataUrl.split(',').pop() || ''
-      const binaryStr = atob(base64)
-      const decoded = new TextDecoder('utf-8').decode(Uint8Array.from(binaryStr, (c) => c.charCodeAt(0)))
-      const MAX = 50000
-      const truncated = decoded.length > MAX ? decoded.substring(0, MAX) + '\n... (内容过长已截断)' : decoded
-      return `=== ${file.name} ===\n\n\`\`\`\n${truncated}\n\`\`\``
-    } catch {
-      return `[附件: ${file.name}]`
-    }
-  }
-  // Word 文档:通过后端 /api/parse/word 解析(与 DashboardView.readAttachmentContent 统一)
-  if (['.docx', '.doc'].includes(ext)) {
-    try {
-      const base64 = file.dataUrl.split(',').pop() || ''
-      const res = await request<{ success: boolean; text?: string }>('/api/parse/word', {
-        method: 'POST',
-        body: JSON.stringify({ filename: file.name, base64 })
-      })
-      if (res.success && res.data?.success && res.data?.text) {
-        return `=== ${file.name} (已解析) ===\n\n${res.data.text}\n\n--- 文档解析完成 ---`
-      }
-      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析结果为空]`
-    } catch (e) {
-      console.warn('[TestScript] Word 解析失败:', file.name, e)
-      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析失败: ${e}]`
-    }
-  }
-  // 办公表格/文档(.xlsx/.xls/.pdf/.pptx/.ppt):走后端通用 /api/parse 解析
-  // (与 DashboardView.readAttachmentContent 及 test-script-generator 系统提示词承诺的 `=== 测试用例文档内容 ===` 标记保持一致)
-  if (['.xlsx', '.xls', '.pdf', '.pptx', '.ppt'].includes(ext)) {
-    try {
-      const base64 = file.dataUrl.split(',').pop() || ''
-      const res = await request<{ success: boolean; text?: string }>('/api/parse', {
-        method: 'POST',
-        body: JSON.stringify({ filename: file.name, base64 })
-      })
-      if (res.success && res.data?.success && res.data?.text) {
-        const MAX = 50000
-        const truncated = res.data.text.length > MAX ? res.data.text.substring(0, MAX) + '\n... (内容过长已截断)' : res.data.text
-        return `=== 测试用例文档内容 ===\n\n--- 文档 1: ${file.name} ---\n${truncated}`
-      }
-      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析结果为空]`
-    } catch (e) {
-      console.warn('[TestScript] 文档解析失败:', file.name, e)
-      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析失败: ${e}]`
-    }
-  }
-  return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB)]`
-}
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const isDragOver = ref(false)
@@ -242,17 +188,10 @@ async function run() {
     // 脚本类型作为前缀注入需求（智能体会据此聚焦生成对应类型脚本）
     const typeHint = e.isFull ? '【脚本类型：根据需求自动判断（接口/UI/E2E 等）】' : `【脚本类型：${e.scriptType}】`
     let desc = `${typeHint}\n${text}`
-    const filesToSubmit: { name: string; content: string }[] = []
-    if (files.value.length) {
-      const contents: string[] = []
-      for (const f of files.value) {
-        const c = await readAttachmentContent(f)
-        if (c) {
-          contents.push(c)
-          filesToSubmit.push({ name: f.name, content: c })
-        }
-      }
-      if (contents.length) desc += '\n\n---\n\n' + contents.join('\n\n---\n\n')
+    // 附件只传 base64，解析由后端统一完成（保留表格结构 + token 预算裁剪）
+    const filesToSubmit = toAttachmentPayloads(files.value)
+    if (filesToSubmit.length) {
+      desc += `\n\n---\n\n${describeAttachments(files.value)}`
     }
     // 复用分步测试通用 Agent 通道，与分步测试中选中 test-script-generator 完全等价
     const task: any = await mainStore.createTask(AGENT_ID, desc, filesToSubmit, { source: 'step', type: AGENT_ID })
