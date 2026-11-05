@@ -735,7 +735,7 @@ export const useMainStore = defineStore('main', () => {
   async function createTask(
     agentId: string,
     input: string,
-    files?: { kbType?: string; filename?: string; name?: string; content?: string }[],
+    files?: { kbType?: string; filename?: string; name?: string; content?: string; base64?: string }[],
     options?: { source?: 'step' | 'workflow'; type?: string }
   ) {
     console.log('[Store] createTask called:', { agentId, input: input.substring(0, 50), filesCount: files?.length || 0 })

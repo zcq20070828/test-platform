@@ -9,6 +9,7 @@ import type { AttachmentFile, ChatMessage } from '@/types'
 import { getAuthHeaders, request, taskApi } from '@/api'
 import MsIcon from '@/components/MsIcon.vue'
 import { getAgentIcon } from '@/utils/agentIcons'
+import { toAttachmentPayloads, describeAttachments, type AttachmentPayload } from '@/utils/attachment'
 
 const store = useMainStore()
 const router = useRouter()
@@ -270,90 +271,6 @@ watch(() => store.tasks, (newTasks) => {
 
 
 
-// 读取附件内容的辅助函数(读取文件真实内容而非仅传文件名)
-const TEXT_EXTS = ['.md', '.txt', '.csv', '.json', '.xml', '.yaml', '.yml', '.log', '.properties', '.cfg', '.ini', '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.sql', '.sh', '.bat', '.ps1']
-
-async function readAttachmentContent(file: AttachmentFile): Promise<string | null> {
-  if (!file.dataUrl) {
-    return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB)]`
-  }
-
-  // 超大文件(>10MB)跳过内容读取,避免消息过大
-  if (file.size > 10 * 1024 * 1024) {
-    return `[附件: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB) - 文件过大,已跳过内容读取]`
-  }
-
-  const ext = '.' + (file.name.split('.').pop() || '').toLowerCase()
-
-  // 1. 文本文件:直接解码 base64 获取文本内容 (仅限纯文本格式)
-  if (TEXT_EXTS.includes(ext)) {
-    try {
-      const base64 = file.dataUrl.split(',').pop() || ''
-      const binaryStr = atob(base64)
-      // 关键修复:atob 返回 Latin-1 二进制字符串(每个字符码点=UTF-8字节值)
-      // 必须转回 UTF-8,否则中文会双重编码变成乱码(å¥1⁄2ç...)
-      const decoded = new TextDecoder('utf-8').decode(
-        Uint8Array.from(binaryStr, c => c.charCodeAt(0))
-      )
-      // 内容过长时截断
-      const MAX_TEXT = 50000
-      const truncated = decoded.length > MAX_TEXT ? decoded.substring(0, MAX_TEXT) + '\n\n... (内容过长,已截断,完整文件在后端路径)' : decoded
-      return `=== ${file.name} (${(file.size / 1024).toFixed(1)}KB) ===\n\n\`\`\`\n${truncated}\n\`\`\``
-    } catch (e) {
-      console.warn('[Dashboard] 文本解码失败:', file.name, e)
-    }
-  }
-
-  // 2. Word 文档:通过后端 API 解析
-  if (['.docx', '.doc'].includes(ext)) {
-    try {
-      const base64 = file.dataUrl.split(',').pop() || ''
-      const res = await request<{ success: boolean; text?: string }>('/api/parse/word', {
-        method: 'POST',
-        body: JSON.stringify({ filename: file.name, base64 })
-      })
-      if (res.success && res.data?.success && res.data?.text) {
-        return `=== ${file.name} (已解析) ===\n\n${res.data.text}\n\n--- 文档解析完成 ---`
-      }
-      // 解析返回但内容为空
-      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析结果为空]`
-    } catch (e) {
-      console.warn('[Dashboard] Word 解析失败:', file.name, e)
-      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析失败: ${e}]`
-    }
-  }
-
-  // 2.5 办公表格/文档(.xlsx/.xls/.pdf/.pptx/.ppt):走后端通用 /api/parse 解析
-  //     与 test-script-generator 系统提示词承诺的 `=== 测试用例文档内容 ===` 标记保持一致,
-  //     确保上传的 Excel/PDF 用例能被真正解析进输入,而非仅传文件名与大小占位。
-  if (['.xlsx', '.xls', '.pdf', '.pptx', '.ppt'].includes(ext)) {
-    try {
-      const base64 = file.dataUrl.split(',').pop() || ''
-      const res = await request<{ success: boolean; text?: string }>('/api/parse', {
-        method: 'POST',
-        body: JSON.stringify({ filename: file.name, base64 })
-      })
-      if (res.success && res.data?.success && res.data?.text) {
-        const truncated = res.data.text.length > 50000
-          ? res.data.text.substring(0, 50000) + '\n\n... (内容过长,已截断,完整文件在后端路径)'
-          : res.data.text
-        return `=== 测试用例文档内容 ===\n\n--- 文档 1: ${file.name} ---\n${truncated}`
-      }
-      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析结果为空]`
-    } catch (e) {
-      console.warn('[Dashboard] 文档解析失败:', file.name, e)
-      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析失败: ${e}]`
-    }
-  }
-
-  // 3. 图片:仅引用文件名(无法提取测试文本内容)
-  if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'].includes(ext)) {
-    return `[图片附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB)]`
-  }
-
-  // 4. 其他类型:仅显示文件名
-  return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB)]`
-}
 
 
 // 发送任务(发送给当前选中的智能体)
@@ -374,14 +291,12 @@ async function handleSendTask(files?: AttachmentFile[], inputOverride?: string) 
   if (chatMode.value) {
     const taskId = chatMode.value.taskId
     let chatDisplay = taskInputValue
-    const chatFiles: { name: string; content: string }[] = []
+    // 附件只传 base64，解析交给后端统一处理（保留表格结构）
+    const chatFiles: AttachmentPayload[] = []
     if (files && files.length > 0) {
-      const names = files.map(f => `[附件: ${f.name} (${(f.size / 1024).toFixed(1)}KB)]`)
-      chatDisplay = chatDisplay ? chatDisplay + '\n\n' + names.join('\n') : names.join('\n')
-      for (const file of files) {
-        const content = await readAttachmentContent(file)
-        if (content !== null) chatFiles.push({ name: file.name, content })
-      }
+      const names = describeAttachments(files)
+      chatDisplay = chatDisplay ? chatDisplay + '\n\n' + names : names
+      chatFiles.push(...toAttachmentPayloads(files))
     }
     if (!taskInputValue.trim() && chatFiles.length === 0) return
     store.messages.push({ id: Date.now().toString(), role: 'user', type: 'user', content: chatDisplay, timestamp: new Date().toISOString() })
@@ -463,23 +378,13 @@ console.log('[Dashboard] handleSendTask called', {
 
   // 构建显示消息和附件内容
   let displayMessage = taskInputValue
-  let filesToSubmit: { name: string; content: string }[] = []
+  // 附件只传 base64，解析交给后端统一处理（保留表格结构、按 token 预算裁剪）
+  let filesToSubmit: AttachmentPayload[] = []
 
   if (files && files.length > 0) {
-    const fileNames = files.map(f => `[附件: ${f.name} (${(f.size / 1024).toFixed(1)}KB)]`)
-    displayMessage = displayMessage
-      ? displayMessage + '\n\n' + fileNames.join('\n')
-      : fileNames.join('\n')
-
-    // 统一走 readAttachmentContent：文本文件直接解码、docx 走后端 /api/parse/word 解析
-    for (const file of files) {
-      const content = await readAttachmentContent(file)
-      if (content === null) {
-        console.warn('[Dashboard] 跳过无 dataUrl 的文件:', file.name)
-        continue
-      }
-      filesToSubmit.push({ name: file.name, content })
-    }
+    const names = describeAttachments(files)
+    displayMessage = displayMessage ? displayMessage + '\n\n' + names : names
+    filesToSubmit = toAttachmentPayloads(files)
   }
 
   const fullMessage = taskInputValue

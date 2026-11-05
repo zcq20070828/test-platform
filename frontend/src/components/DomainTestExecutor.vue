@@ -5,6 +5,7 @@ import { useMainStore } from '@/stores/main'
 import { securityApi, performanceTestApi, request } from '@/api'
 import DashboardChatPanel from '@/components/DashboardChatPanel.vue'
 import type { AttachmentFile } from '@/types'
+import { describeAttachments, toAttachmentPayloads } from '@/utils/attachment'
 import MsIcon from '@/components/MsIcon.vue'
 import { stageMsIcon, workflowMsIcon } from '@/utils/stageIcons'
 
@@ -148,41 +149,6 @@ function extractTarget(text: string): { target: string; sourcePath: string } {
 }
 
 const TEXT_EXTS = ['.txt', '.md', '.json', '.csv', '.log', '.yaml', '.yml', '.xml', '.html', '.js', '.ts', '.py', '.java', '.go', '.sql']
-async function readAttachmentContent(file: AttachmentFile): Promise<string> {
-  if (!file.dataUrl) return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB)]`
-  if (file.size > 10 * 1024 * 1024) return `[附件: ${file.name} - 文件过大, 已跳过内容读取]`
-  const ext = '.' + (file.name.split('.').pop() || '').toLowerCase()
-  if (TEXT_EXTS.includes(ext)) {
-    try {
-      const base64 = file.dataUrl.split(',').pop() || ''
-      const binaryStr = atob(base64)
-      const decoded = new TextDecoder('utf-8').decode(Uint8Array.from(binaryStr, (c) => c.charCodeAt(0)))
-      const MAX = 50000
-      const truncated = decoded.length > MAX ? decoded.substring(0, MAX) + '\n... (内容过长已截断)' : decoded
-      return `=== ${file.name} ===\n\n\`\`\`\n${truncated}\n\`\`\``
-    } catch {
-      return `[附件: ${file.name}]`
-    }
-  }
-  // Word 文档:通过后端 /api/parse/word 解析(与 DashboardView.readAttachmentContent 统一)
-  if (['.docx', '.doc'].includes(ext)) {
-    try {
-      const base64 = file.dataUrl.split(',').pop() || ''
-      const res = await request<{ success: boolean; text?: string }>('/api/parse/word', {
-        method: 'POST',
-        body: JSON.stringify({ filename: file.name, base64 })
-      })
-      if (res.success && res.data?.success && res.data?.text) {
-        return `=== ${file.name} (已解析) ===\n\n${res.data.text}\n\n--- 文档解析完成 ---`
-      }
-      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析结果为空]`
-    } catch (e) {
-      console.warn('[DomainTest] Word 解析失败:', file.name, e)
-      return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB) - 解析失败: ${e}]`
-    }
-  }
-  return `[附件: ${file.name} (${(file.size / 1024).toFixed(1)}KB)]`
-}
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const isDragOver = ref(false)
@@ -256,10 +222,10 @@ async function run() {
     const extracted = extractTarget(text)
     const rawTarget = extracted.target
     let desc = text
-    if (files.value.length) {
-      const contents: string[] = []
-      for (const f of files.value) contents.push(await readAttachmentContent(f))
-      desc = contents.join('\n\n---\n\n') + '\n\n用户需求：' + desc
+    // 附件不在此处解析：原文件 base64 随工作流请求一并提交，由后端统一解析（保留表格结构）
+    const attachPayloads = toAttachmentPayloads(files.value)
+    if (attachPayloads.length) {
+      desc = `${describeAttachments(files.value)}\n\n用户需求：${desc}`
     }
     // 安全测试只走真实工具执行引擎，必须拿到可执行目标
     if (isSecurity.value && !rawTarget) {
@@ -276,9 +242,9 @@ async function run() {
     const result = isSecurity.value
       ? await securityApi.startWorkflow(
           finalTarget, scanType.value, desc, e.stageIdx,
-          testDomain.value, extracted.sourcePath,
+          testDomain.value, extracted.sourcePath, attachPayloads,
         )
-      : await performanceTestApi.startWorkflow(finalTarget, desc, e.stageIdx)
+      : await performanceTestApi.startWorkflow(finalTarget, desc, e.stageIdx, attachPayloads)
     if (result) {
       // 后端单阶段返回 taskId、完整工作流返回 workflowId/testId，统一兜底
       const wfId = result.workflowId || result.testId || result.taskId
