@@ -127,27 +127,27 @@ function generateBoundaryValues(inputSpec) {
 
 /**
  * 数据维度：Pairwise组合测试
- * @param {Object} factors - 因子定义（每个因子的值数组）
- * @returns {Array} Pairwise组合用例
+ *
+ * 保护策略（2026-11-04，修复 OOM）：
+ *   1. 字段数上限：只取前 PAIRWISE_MAX_FACTORS 个字段参与组合，其余字段跳过并记录；
+ *   2. 组合数上限：全组合数 <= PAIRWISE_ENUMERATION_LIMIT 时全枚举，超过则改走贪心 2-wise，
+ *      避免字段一多就生成百万级组合把后端堆内存打满（实测 12 字段 string×4 即 OOM）。
+ *
+ * @param {Object} factors - 因子定义（每个因子的值数组，或 {type,min,max,values,minLength,maxLength}）
+ * @returns {Array} Pairwise组合用例；数组上附带 mode/originalTotal/excludedFields 元信息
  */
 function generatePairwiseCombinations(factors) {
-  // 简化版Pairwise算法（实际应使用PICT工具）
+  const PAIRWISE_ENUMERATION_LIMIT = 65536;
+  const PAIRWISE_MAX_FACTORS = 12;
+
+  const allNames = Object.keys(factors || {});
+  const factorNames = allNames.slice(0, PAIRWISE_MAX_FACTORS);
+  const excludedFields = allNames.slice(PAIRWISE_MAX_FACTORS);
   const combinations = [];
-  const factorNames = Object.keys(factors);
 
-  // 生成所有组合（简化版，实际应使用正交数组）
-  function generateCombinations(index, current) {
-    if (index === factorNames.length) {
-      combinations.push({ ...current });
-      return;
-    }
-
-    const factorName = factorNames[index];
-    let values = factors[factorName];
-
-    // 兼容对象格式 {type, min, max, values, minLength, maxLength}
-    // （9dem-invoker 的 buildInputSpecFromFields 输出对象格式，
-    //  与 generateEquivalenceClasses / generateBoundaryValues 保持一致）
+  /** 把因子值规范化为数组（兼容对象规格） */
+  function resolveLevels(raw) {
+    let values = raw;
     if (!Array.isArray(values) && values && typeof values === 'object') {
       const spec = values;
       if (spec.type === 'number') {
@@ -162,27 +162,58 @@ function generatePairwiseCombinations(factors) {
         values = [minLen, minLen + 1, maxLen - 1, maxLen];
       }
     }
-
-    // 确保values是数组
-    if (!Array.isArray(values)) {
-      console.error(`Factor ${factorName} values is not an array:`, values);
-      return;
-    }
-
-    for (const value of values) {
-      current[factorName] = value;
-      generateCombinations(index + 1, current);
-    }
+    return Array.isArray(values) ? values : [];
   }
 
-  generateCombinations(0, {});
+  const levels = factorNames.map((name) => resolveLevels(factors[name]));
 
-  // 去重（简化版）
-  const uniqueCombinations = Array.from(
-    new Set(combinations.map(c => JSON.stringify(c)))
-  ).map(c => JSON.parse(c));
+  // 计算全组合数（factorNames 已截断到 12 个，6^12 也在安全整数范围内）
+  let total = 1;
+  for (const lv of levels) {
+    if (!lv.length) { total = 0; break; }
+    total *= lv.length;
+  }
+  if (!Number.isSafeInteger(total)) total = Number.MAX_SAFE_INTEGER;
 
-  return uniqueCombinations;
+  let mode = 'full';
+  let rows = [];
+
+  if (factorNames.length === 0) {
+    rows = [];
+  } else if (total > 0 && total <= PAIRWISE_ENUMERATION_LIMIT) {
+    // 全枚举
+    const current = {};
+    const walk = (index) => {
+      if (index === factorNames.length) {
+        combinations.push({ ...current });
+        return;
+      }
+      for (const value of levels[index]) {
+        current[factorNames[index]] = value;
+        walk(index + 1);
+      }
+      delete current[factorNames[index]];
+    };
+    walk(0);
+    rows = combinations;
+  } else {
+    // 2-wise 压缩：复用 design-methods 的贪心覆盖数组
+    mode = 'pairwise';
+    const { buildCoveringArray } = require('./backend/design-methods');
+    const covered = buildCoveringArray(levels, 64);
+    rows = covered.rows.map((row) => {
+      const combo = {};
+      factorNames.forEach((name, i) => { combo[name] = levels[i][row[i]]; });
+      return combo;
+    });
+  }
+
+  // 元信息挂在数组上（JSON.stringify 会忽略数组自定义属性，不污染工具结果体积）
+  rows.mode = mode;
+  rows.originalTotal = total;
+  rows.excludedFields = excludedFields;
+  rows.factorCount = factorNames.length;
+  return rows;
 }
 
 /**

@@ -1,6 +1,6 @@
 # Skill 安装与使用手册索引
 
-共 43 个 Skill。每个目录下都有独立的 `MANUAL.md`，包含安装、参数、调用示例、输出与排错。
+共 44 个 Skill。每个目录下都有独立的 `MANUAL.md`，包含安装、参数、调用示例、输出与排错。
 
 - **可执行 Skill**：已注册到 `manifest.json`，可用 `invoke-skill.mjs <id>` 或直接 import。
 - **代码/脚本型 Skill（未注册通用入口）**：目录内有可复用代码，但需要按手册直接 import / 运行脚本，不能走通用调用器。
@@ -44,6 +44,7 @@
 | Security Vulnerability Scanner | `security-vuln-scanner` | 提示词/方法论 Skill | — | [MANUAL.md](skills/security-vuln-scanner/MANUAL.md) |
 | self-healing | `self-healing` | 代码/脚本型 Skill（未注册通用入口） | — | [MANUAL.md](skills/self-healing/MANUAL.md) |
 | test-data-generator-skill | `test-data-generator-skill` | 可执行 Skill | `test-data-generator-skill` | [MANUAL.md](skills/test-data-generator-skill/MANUAL.md) |
+| test-effort-estimator · 人工工作量估算 | `test-effort-estimator` | 代码/脚本型 Skill（未注册通用入口） | — | [MANUAL.md](skills/test-effort-estimator/MANUAL.md) |
 | test-strategy-designer | `test-strategy-designer` | 可执行 Skill | `test-strategy-designer` | [MANUAL.md](skills/test-strategy-designer/MANUAL.md) |
 | trend-analyzer | `trend-analyzer` | 代码/脚本型 Skill（未注册通用入口） | — | [MANUAL.md](skills/trend-analyzer/MANUAL.md) |
 | UI 直执执行器（ui-direct-invoker） | `ui-direct-invoker` | 可执行 Skill | `ui-direct-invoker` | [MANUAL.md](skills/ui-direct-invoker/MANUAL.md) |

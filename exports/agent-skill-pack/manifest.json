@@ -1,14 +1,14 @@
 {
   "name": "通用测试智能体技能包",
   "version": "1.0.0",
-  "generatedAt": "2026-11-04T04:29:59.125Z",
+  "generatedAt": "2026-11-04T06:42:55.848Z",
   "description": "从测试中台抽取的 18 个智能体提示词与核心 Skill（含可执行后端与 SKILL.md），用于迁移到其他 Agent 运行时。",
   "source": "test-platform / qclaw-skills",
   "counts": {
     "agents": 18,
     "prompts": 17,
     "executableSkills": 18,
-    "skillDirectories": 43
+    "skillDirectories": 44
   },
   "agents": [
     {
@@ -1976,6 +1976,14 @@
           "exportName": "invoke"
         }
       ]
+    },
+    {
+      "id": "test-effort-estimator",
+      "directory": "skills/test-effort-estimator",
+      "name": "test-effort-estimator · 人工工作量估算",
+      "description": "---",
+      "executable": false,
+      "entries": []
     },
     {
       "id": "test-strategy-designer",
