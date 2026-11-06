@@ -1156,3 +1156,19 @@ export function createWebSocket(onMessage: (event: MessageEvent) => void): WebSo
   ws.onmessage = onMessage
   return ws
 }
+
+// 交付物质量 API（2026-11-06 阶段四）
+export const qualityApi = {
+  /** 质量趋势（门禁可用率 vs 人工可用率） */
+  async trend(days = 30): Promise<ApiResponse<any>> {
+    return request(`/api/quality/trend?days=${days}`)
+  },
+  /** 拒绝原因排行 + 反例库文本 */
+  async rejectReasons(days = 30): Promise<ApiResponse<any>> {
+    return request(`/api/quality/reject-reasons?days=${days}`)
+  },
+  /** 提交用例级反馈 */
+  async submitCaseFeedback(taskId: string, items: Array<{ caseId: string; usable: boolean; rejectReason?: string | null; comment?: string | null }>) {
+    return request(`/api/tasks/${taskId}/case-feedback`, { method: 'POST', body: JSON.stringify({ items }) })
+  },
+}

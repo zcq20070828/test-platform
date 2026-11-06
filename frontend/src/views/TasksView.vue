@@ -7,6 +7,7 @@ import type { Task, TaskStatus, Artifact } from '@/types'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { escapeHtml as escapeHtmlUtil } from '@/utils/safe-html'
 import MsIcon from '@/components/MsIcon.vue'
+import QualityCard from '@/components/QualityCard.vue'
 
 const store = useMainStore()
 const router = useRouter()
@@ -884,6 +885,12 @@ onMounted(() => {
               审核未通过
             </el-tag>
           </div>
+        </div>
+
+        <!-- 交付物质量与人工复核（阶段四） -->
+        <div class="section">
+          <h4 class="tab-label"><MsIcon name="verified" :size="16" /> 交付物质量</h4>
+          <QualityCard :task-id="selectedTask.id" :content="selectedTask.result || ''" />
         </div>
 
         <!-- 输出物列表 -->
