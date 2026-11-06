@@ -6686,9 +6686,19 @@ async function executeInteractiveWorkflow(workflowId, taskInput, retryCount = 0,
         metadata: { workflowId, phase: 'review' }
       });
 
+      // 2026-11-06：交互工作流每次只执行单个智能体（无上游阶段），
+      // 因此显式标记 hasPrevious=false，让审核如实说明「无法核对跨环节一致性」，
+      // 而不是含糊带过。跨环节检查在自动工作流（多阶段）里生效。
       const reviewResults = await callReviewersSequentially(
         workflowId, agentName, output, autoRetryCount, null, null,
-        { originalInput: enrichedInput || '', caseQuality: taskCaseQualityReports.get(workflowId) || null },
+        {
+          originalInput: enrichedInput || '',
+          previousOutput: '',
+          previousStage: '',
+          hasPrevious: false,
+          agentId: selectedAgentId,
+          caseQuality: taskCaseQualityReports.get(workflowId) || null,
+        },
       );
       workflowResults.reviewerResults = reviewResults;
       lastReviewResults = reviewResults;
@@ -7784,57 +7794,51 @@ ${previousStepOutput || '(无)'}
       });
 
       // 串行执行 3 个审核智能体(逐个执行)
-      const validResults = [];
-      for (let ri = 0; ri < REVIEWER_AGENTS.length; ri++) {
-        const reviewerId = REVIEWER_AGENTS[ri];
-        const reviewerInfo = AGENTS[reviewerId] || {};
-        const reviewerName = reviewerInfo.name || reviewerId;
+      // 2026-11-06：不再使用本地内联 prompt，改为复用 callReviewersSequentially，
+      // 使自动工作流与「单任务/交互工作流」行为一致——审核能拿到原始需求、门禁结论
+      // 以及**上一环节产出**（跨环节一致性检查）。
+      const hbReviewAll = startHeartbeat(`审核:${step.stage}`);
+      let validResults = [];
+      try {
+        validResults = await callReviewersSequentially(
+          workflowId,
+          `${step.stage}（${step.agentId}）`,
+          stepOutput,
+          stepRetryCount || 0,
+          null,
+          null,
+          {
+            originalInput: enrichedInput || '',
+            previousOutput: previousStepOutput || '',
+            previousStage: step.step > 1 ? (finalPlan[step.step - 2]?.stage || '上一阶段') : '',
+            hasPrevious: step.step > 1,
+            agentId: step.agentId,
+            caseQuality: taskCaseQualityReports.get(workflowId) || null,
+          },
+        );
+      } finally {
+        stopHeartbeat(hbReviewAll);
+      }
 
-        broadcast({ type: 'reviewer_started', workflowId, reviewerId, reviewerName, reviewerIndex: ri + 1, totalReviewers: REVIEWER_AGENTS.length, stepIndex: step.step - 1 });
-
-        const reviewPrompt = `请对以下「${step.stage}」输出进行AI质量审核评估:\n\n${stepOutput}\n\n请按照4维度评估框架输出评分和结论。`;
-        const hbReview = startHeartbeat(`审核${ri + 1}:${reviewerName}`);
-        let result;
-        try {
-          result = await spawnAgentSession(reviewerId, reviewPrompt, `${workflowId}-review-${step.step}-${reviewerId}`);
-        } finally {
-          stopHeartbeat(hbReview);
-        }
-        const reviewText = result.text || '';
-        const parsed = parseReviewResult(reviewText);
-
-        const reviewEntry = { reviewerId, reviewerName, score: parsed.score, veto: parsed.veto, passed: parsed.passed, output: reviewText };
-        validResults.push(reviewEntry);
-
-        // 【审核结果持久化】保存到 task_review_results 表
-        try {
-          await query(`
-            INSERT INTO task_review_results 
-            (task_id, reviewer_id, reviewer_name, score, veto, passed, output, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
-          `, [workflowId, reviewerId, reviewerName, parsed.score, parsed.veto ? 1 : 0, parsed.passed ? 1 : 0, reviewText]);
-          console.log(`[Review] Saved review result: taskId=${workflowId}, reviewer=${reviewerId}, score=${parsed.score}`);
-        } catch (dbErr) {
-          console.error(`[Review] Failed to save review result to DB:`, dbErr.message);
-        }
-
-        // 【交付物持久化】审核阶段完成后保存到 output/ 目录
-        const reviewArtifacts = ensureStageArtifacts(reviewText, { stage: step.stage, reviewer: reviewerName });
-        if (reviewArtifacts && reviewArtifacts.length > 0) {
+      // 审核阶段产出的审核报告另行落盘（callReviewersSequentially 只写 task_review_results）
+      try {
+        for (const r of validResults) {
+          if (!r || !r.output) continue;
+          const reviewArtifacts = ensureStageArtifacts(r.output, { stage: step.stage, reviewer: r.reviewerName });
+          if (!reviewArtifacts || !reviewArtifacts.length) continue;
           const deliverables = reviewArtifacts.map(a => ({
             format: a.contentType === 'text/markdown' ? 'md' : (a.contentType?.split('/')[1] || 'md'),
             content: a.content || '',
-            fileName: a.name || `${step.stage}_审核报告.md`
+            fileName: a.name || `${step.stage}_审核报告.md`,
           }));
-          saveDeliverablesToFiles(workflowId, step.step, reviewerId, deliverables)
-            .then(paths => { if (paths.length > 0) console.log(`[Artifact] Saved ${paths.length} review artifact(s): ${paths.join(', ')}`); })
-            .catch(e => console.warn(`[Artifact] Save review artifact failed: ${e.message}`));
+          const paths = await saveDeliverablesToFiles(workflowId, step.step, r.reviewerId, deliverables);
+          if (paths.length) console.log(`[Artifact] Saved ${paths.length} review artifact(s): ${paths.join(', ')}`);
         }
-
-        broadcast({ type: 'reviewer_completed', workflowId, reviewerId, reviewerName, reviewerIndex: ri + 1, totalReviewers: REVIEWER_AGENTS.length, score: parsed.score, veto: parsed.veto, passed: parsed.passed, stepIndex: step.step - 1, output: reviewText, artifacts: reviewArtifacts });
+      } catch (e) {
+        console.warn(`[Artifact] Save review artifact failed: ${e.message}`);
       }
 
-      // 过滤掉 score=0 的"伪结果"(通常是 CLI 注入失败导致的空输出)
+      // 过滤掉 score=0 的"伪结果"(通常是调用失败导致的空输出)
       const effectiveResults = validResults.filter(r => r.score > 0);
       const scores = effectiveResults.map(r => r.score);
       const vetoTriggered = effectiveResults.some(r => r.veto);
@@ -11968,6 +11972,13 @@ async function executeTaskWithReview(task, userId = null) {
           null,
           {
             originalInput: task.originalInput || task.input || '',
+            // 单任务链路：若输入里引用了前置任务（UUID），其产出已由
+            // enrichInputWithTaskReferences 注入 input，这里不重复传 previousOutput；
+            // 显式标记 hasPrevious=false，让审核如实说明边界。
+            previousOutput: '',
+            previousStage: '',
+            hasPrevious: false,
+            agentId: task.agent,
             caseQuality: taskCaseQualityReports.get(task.id) || null,
           },
         );
@@ -13189,6 +13200,14 @@ ${truncateForReview(reviewContext.originalInput, 12000)}
 `
       : `【原始需求】未提供（本次只能做内部一致性检查，不得声称已核对需求）\n\n`;
 
+    // 2026-11-06：审核必须能看到**上一环节产出**，否则无法判断当前环节是否正确承接了上游约束
+    // （例如需求分析写「5 次锁定」，用例写成「3 次」，此前三方审核都发现不了）。
+    const prev = reviewContext.previousOutput;
+    const prevStage = reviewContext.previousStage || '上一环节';
+    const previousSection = prev
+      ? `【上一环节产出（${prevStage}，用于核对承接关系）】\n${truncateForReview(prev, 10000)}\n\n`
+      : `【上一环节产出】${reviewContext.hasPrevious === false ? '本环节为首个阶段，无上游产出' : '未提供（无法核对跨环节一致性，不得声称已核对）'}\n\n`;
+
     const gateSection = reviewContext.caseQuality && reviewContext.caseQuality.applicable
       ? `【确定性质量检查结果（规则引擎计算，无需你复算，但必须在结论中体现）】
 - 用例总数：${reviewContext.caseQuality.total}
@@ -13200,19 +13219,72 @@ ${reviewContext.caseQuality.summary ? `- 结论：${reviewContext.caseQuality.su
 `
       : '';
 
+    // 2026-11-06：审核重点必须**随阶段/交付物类型变化**。
+    // 实测问题：阶段1（需求分析）的交付物被 reviewer-1 以「未生成可执行测试用例」判 55 分 + 一票否决，
+    // 这是把下游阶段的职责强加给上游产出。同一个 prompt 套所有阶段必然产生这类误判。
+    const DELIVERABLE_FOCUS = {
+      'test-requirement-analyzer': `1. 是否从原始需求中提取出**全部**功能点与非功能点，遗漏项要指出需求原文位置
+2. 需求编号（FR-/NFR-/API-）是否连续、可追溯，禁止使用占位编号而不说明
+3. 每条需求是否给出可测试性判断与验收标准；模糊规则是否被单列为「待确认事项」而不是直接下结论
+4. 是否存在原始需求中没有的编造内容（编造的功能、编造的接口、编造的验收标准）
+5. 本阶段只需产出需求分析报告，**不得要求它包含测试用例、脚本或执行结果**`,
+      'test-scheme-generator': `1. 测试策略是否覆盖原始需求中的全部需求类型（功能/接口/性能/安全/兼容）
+2. 工作量与时间安排是否有依据，是否与需求规模匹配
+3. 风险项是否具体可落地（不能只写「存在风险」而无法应对）
+4. 准入准出标准是否可度量
+5. 本阶段只需产出测试方案，**不得要求它包含具体用例正文**`,
+      'test-case-generator': `1. 每条用例的预期结果是否可判定（状态码/字段值/明确文案/跳转/数值变化），而不是只写「正常/通过」
+2. 输入数据是否为符合业务规则的真实值，不能是「10位数字」「AAAAAA」这类占位
+3. 用例是否覆盖原始需求中的每个功能点/接口/验收标准，缺失项要指出具体需求编号
+4. 是否存在需求中不存在的编造内容（编造的需求编号、编造的接口）
+5. 同一规则是否被拆成多条重复用例
+6. 若提供了「确定性质量检查结果」，你的评分必须与之相容：可用率明显偏低时不得给高分`,
+      'test-data-generator': `1. 测试数据是否覆盖用例要求的有效/无效/边界等价类
+2. 数据字段是否与需求中的字段定义一致（类型、长度、取值范围）
+3. 是否对敏感数据做了脱敏，脱敏规则是否说明
+4. 数据是否可直接用于执行，而不是占位描述`,
+      'api-executor': `1. 是否基于真实 HTTP 请求执行，而不是仅描述「应该怎么测」
+2. 断言是否覆盖状态码、响应字段与业务码
+3. 失败项是否给出真实响应内容，不得编造通过率
+4. 是否覆盖鉴权、参数异常、幂等等关键场景`,
+      'ui-e2e-executor': `1. 是否基于真实浏览器/设备执行，是否有截图或日志证据
+2. 步骤是否可按描述复现（元素定位、等待策略）
+3. 失败项是否附真实错误信息，不得编造通过率
+4. 是否覆盖关键业务流程与异常分支`,
+      'defect-analyzer': `1. 缺陷是否来自真实执行结果/日志，ID、复现步骤、堆栈不得编造
+2. 根因链是否有日志或堆栈支撑，而不是泛泛而谈
+3. 严重程度与优先级的判定是否有依据
+4. 修复建议是否具体可执行`,
+      'test-reporter': `1. 报告中的用例数、通过率、缺陷数是否与真实执行结果一致，不得编造
+2. 无法计算的指标是否明确写「无法计算」而不是给假分数
+3. 结论是否与数据一致（不能数据很差却结论「建议上线」）
+4. 趋势与风险分析是否有数据支撑`,
+      'data-masking': `1. 敏感字段是否被真实替换（手机号/身份证/邮箱/姓名/口令）
+2. 脱敏后数据是否仍可用于测试（保持格式与长度）
+3. 是否记录脱敏规则与映射后可逆性说明
+4. 是否存在未脱敏的敏感信息残留`,
+    };
+    const focusText = DELIVERABLE_FOCUS[reviewContext.agentId]
+      || `1. 交付物是否覆盖了原始需求中的每个功能点/接口/验收标准，缺失项要指出具体需求编号
+2. 内容是否与需求描述一致，而不是只看格式是否完整
+3. 是否存在需求中不存在的编造内容
+4. 若提供了「确定性质量检查结果」，你的评分必须与之相容`;
+
     const reviewInput = `请对以下测试产出物进行质量审核评估:
 
-${originalSection}${gateSection}【产出物来源】${agentName}
+${originalSection}${previousSection}${gateSection}【产出物来源】${agentName}
 【产出物内容】
 ${output}
 
 请按照4维度评估框架(事实与幻觉检测、逻辑一致性、安全合规、格式规范)输出评分和结论。
 
-【审核重点（有原始需求时必须执行）】
-1. 交付物是否覆盖了原始需求中的每个功能点/接口/验收标准，缺失项要指出具体需求编号
-2. 每条用例的预期结果是否与需求描述一致，而不是只看格式是否完整
-3. 是否存在需求中不存在的编造内容（编造的需求编号、编造的接口、编造的验收标准）
-4. 若提供了「确定性质量检查结果」，你的评分必须与之相容：可用率明显偏低时不得给高分`;
+【本阶段审核重点（必须逐条执行）】
+${focusText}
+
+【跨环节一致性检查（提供了「上一环节产出」时必须执行）】
+5. 上一环节已明确的需求编号/接口/规则/数值（如「5 次锁定」「30 分钟」「JWT 2 小时」），在当前环节是否被完整承接：有无遗漏、有无被改成不一致的数值、有无被曲解
+6. 当前环节是否新增了上一环节未提及、也不在原始需求中的内容（凭空扩展范围）
+7. 若问题源自上一环节本身的遗漏（上游没写清楚），必须写明「上游缺失」，不要把责任归到当前环节的编造上`;
 
     const result = await spawnAgentSession(reviewerId, reviewInput, `${taskId}-review-${reviewerId}`);
     const reviewOutput = result.text || result.data || '';
