@@ -10430,36 +10430,47 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
 
           try {
             const repairStart = Date.now();
-            // 分批并行：单批 20 条（推理模型单次输出 20 行约 30~50s），
-            // 76 条 → 4 批并发，总耗时接近单批，避免单次请求撑爆 max_tokens 或超时。
-            const REPAIR_BATCH_SIZE = Number(process.env.CASE_QUALITY_REPAIR_BATCH) || 20;
-            const targets = gateReport.cases;
+            // 分批修复参数（2026-11-06 调优）：
+            // 实测 deepseek-v4-pro 处理 20 行补丁需 3 分钟以上，4 批并发会排队并集体超时。
+            // 改为「小批 + 有限并发 + 宽松超时」：每批 8 条、同时最多 2 批、单批 300s 超时。
+            const REPAIR_BATCH_SIZE = Number(process.env.CASE_QUALITY_REPAIR_BATCH) || 8;
+            const REPAIR_CONCURRENCY = Number(process.env.CASE_QUALITY_REPAIR_CONCURRENCY) || 3;
+            const REPAIR_TIMEOUT_MS = Number(process.env.CASE_QUALITY_REPAIR_TIMEOUT_MS) || 300000;
+            const REPAIR_MAX_BATCHES = Number(process.env.CASE_QUALITY_REPAIR_MAX_BATCHES) || 5;
+
+            const targets = gateReport.cases.slice(0, REPAIR_BATCH_SIZE * REPAIR_MAX_BATCHES);
             const batches = [];
             for (let b = 0; b < targets.length; b += REPAIR_BATCH_SIZE) {
               batches.push(targets.slice(b, b + REPAIR_BATCH_SIZE));
             }
-            console.log(`[CaseGate] 定向修复分 ${batches.length} 批并行（每批 ≤${REPAIR_BATCH_SIZE} 条）`);
+            console.log(`[CaseGate] 定向修复分 ${batches.length} 批（每批 ≤${REPAIR_BATCH_SIZE} 条，并发 ${REPAIR_CONCURRENCY}，单批超时 ${REPAIR_TIMEOUT_MS / 1000}s）`);
 
             const requestContext = truncateForReview(taskInput, 4000);
-            const results = await Promise.allSettled(batches.map(async (batch, bi) => {
+            const runBatch = async (batch, bi) => {
               const batchReport = { ...gateReport, cases: batch };
-              const prompt = buildSurgicalRepairPrompt(batchReport, { maxItems: REPAIR_BATCH_SIZE });
-              const out = await callDeepSeekRewrite([
-                { role: 'system', content: '你是测试用例评审专家，只输出要求格式的 Markdown 表格，不输出任何解释文字。' },
-                { role: 'user', content: `${prompt}\n\n【原始需求（改写预期结果时以此为准）】\n${requestContext}` },
-              ], { timeoutMs: 180000, maxTokens: 32000 });
-              console.log(`[CaseGate] 批次${bi + 1}/${batches.length} 返回 ${(out.content || '').length} 字`);
-              return out.content || '';
-            }));
-
-            const patches = results
-              .map((r, i) => {
-                if (r.status === 'fulfilled') return r.value;
-                console.warn(`[CaseGate] 批次${i + 1} 失败: ${r.reason?.message || r.reason}`);
+              const prompt = buildSurgicalRepairPrompt(batchReport, { maxItems: batch.length });
+              try {
+                const out = await callDeepSeekRewrite([
+                  { role: 'system', content: '你是测试用例评审专家，只输出要求格式的 Markdown 表格，不输出任何解释文字。' },
+                  { role: 'user', content: `${prompt}\n\n【原始需求（改写预期结果时以此为准）】\n${requestContext}` },
+                ], { timeoutMs: REPAIR_TIMEOUT_MS, maxTokens: 16000 });
+                console.log(`[CaseGate] 批次${bi + 1}/${batches.length} 返回 ${(out.content || '').length} 字`);
+                return out.content || '';
+              } catch (e) {
+                console.warn(`[CaseGate] 批次${bi + 1}/${batches.length} 失败: ${e.message}`);
                 return '';
-              })
-              .filter((x) => x && x.trim())
-              .join('\n');
+              }
+            };
+
+            // 有限并发：用滑动窗口而不是一次性全发，避免排队导致集体超时
+            const results = [];
+            for (let i = 0; i < batches.length; i += REPAIR_CONCURRENCY) {
+              const slice = batches.slice(i, i + REPAIR_CONCURRENCY);
+              const settled = await Promise.all(slice.map((batch, k) => runBatch(batch, i + k)));
+              results.push(...settled);
+            }
+
+            const patches = results.filter((x) => x && x.trim()).join('\n');
 
             console.log(`[CaseGate] 定向修复总返回 ${patches.length} 字，耗时 ${Math.round((Date.now() - repairStart) / 1000)}s`);
             if (!patches.trim()) {
@@ -12239,32 +12250,66 @@ function normalizeReviewIssues(raw) {
     .slice(0, 80);
 }
 
+/**
+ * 从文本中提取第一个「花括号配平」的 JSON 对象
+ *
+ * 说明（2026-11-06）：审核输出现在含嵌套的 issues 数组，
+ * 早期用的 /\{[^{}]*"score"[^{}]*\}/ 只能匹配扁平对象，
+ * 一旦有嵌套就整体失配，导致 score 被宽松解析成个位数。
+ * 这里改为配平扫描，并在扫描时跳过字符串内的括号。
+ */
+function extractBalancedJson(text) {
+  const src = String(text || '');
+  const start = src.indexOf('{');
+  if (start < 0) return null;
+
+  for (let from = start; from >= 0; from = src.indexOf('{', from + 1)) {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = from; i < src.length; i += 1) {
+      const ch = src[i];
+      if (inStr) {
+        if (esc) { esc = false; continue; }
+        if (ch === '\\') { esc = true; continue; }
+        if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          const candidate = src.slice(from, i + 1);
+          try {
+            const parsed = JSON.parse(candidate);
+            if (parsed && typeof parsed === 'object' && ('score' in parsed || 'veto' in parsed)) return parsed;
+          } catch (_) { /* 换下一个起点 */ }
+          break;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function parseReviewResult(reviewText) {
   try {
-    // 优先解析包含 issues 的完整 JSON（先用非贪婪匹配到最外层花括号）
-    const fullMatch = reviewText.match(/\{[\s\S]*?"score"[\s\S]*?\}/);
-    if (fullMatch) {
-      try {
-        const parsed = JSON.parse(fullMatch[0]);
-        return {
-          score: Number(parsed.score) || 0,
-          veto: parsed.veto === true,
-          passed: Number(parsed.score) >= 80 && parsed.veto !== true,
-          reason: parsed.reason || '',
-          issues: normalizeReviewIssues(parsed.issues),
-          usabilityEstimate: typeof parsed.usabilityEstimate === 'number' ? parsed.usabilityEstimate : undefined,
-        };
-      } catch (_) { /* 落到下面的宽松解析 */ }
+    // 1) 优先从 ```json 代码块里取（模型最常见的输出形态）
+    // 2) 其次做花括号配平扫描
+    const fenced = String(reviewText).match(/```(?:json)?\s*\n([\s\S]*?)```/i);
+    let parsed = null;
+    if (fenced) {
+      try { parsed = JSON.parse(fenced[1].trim()); } catch (_) { parsed = null; }
     }
+    if (!parsed) parsed = extractBalancedJson(reviewText);
 
-    // 尝试从文本中提取 JSON
-    const jsonMatch = reviewText.match(/\{[^{}]*"score"[^{}]*\}/s);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
+    if (parsed) {
+      const score = Number(parsed.score);
       return {
-        score: parsed.score || 0,
-        veto: parsed.veto || false,
-        passed: parsed.score >= 80 && !parsed.veto,
+        score: Number.isFinite(score) ? score : 0,
+        veto: parsed.veto === true,
+        passed: Number.isFinite(score) && score >= 80 && parsed.veto !== true,
         reason: parsed.reason || '',
         issues: normalizeReviewIssues(parsed.issues),
         usabilityEstimate: typeof parsed.usabilityEstimate === 'number' ? parsed.usabilityEstimate : undefined,
