@@ -10,7 +10,7 @@
 
 CREATE TABLE IF NOT EXISTS `case_feedback` (
   `id` varchar(36) NOT NULL,
-  `task_id` varchar(36) NOT NULL COMMENT '关联任务',
+  `task_id` varchar(64) NOT NULL COMMENT '关联任务（工作流派生 ID 可达 43 字符）',
   `case_id` varchar(32) NOT NULL COMMENT '用例编号，如 TC-012',
   `usable` tinyint(1) NOT NULL COMMENT '1=可用 0=不可用',
   `reject_reason` varchar(64) DEFAULT NULL COMMENT '断言缺失/输入占位/重复/无价值/与需求不符/其他',
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS `case_feedback` (
 
 CREATE TABLE IF NOT EXISTS `task_quality_metrics` (
   `id` varchar(36) NOT NULL,
-  `task_id` varchar(36) NOT NULL,
+  `task_id` varchar(64) NOT NULL,
   `agent_id` varchar(64) NOT NULL,
   `total_cases` int(11) DEFAULT 0,
   `usable_cases` int(11) DEFAULT 0,
