@@ -6598,6 +6598,9 @@ async function executeInteractiveWorkflow(workflowId, taskInput, retryCount = 0,
   const agentInfo = AGENTS[selectedAgentId] || {};
   const agentName = agentInfo.name || selectedAgentId;
   const stored = workflows.get(workflowId) || {};
+  // 审核广播必须带 userId：工作流事件只给了 workflowId，sseBroadcast 若拿 workflowId 去
+  // tasks 表反查必然查不到，会导致 reviewer_* 事件被 ISO 隔离拦截、前端无实时审核信息。
+  const workflowUserId = stored.userId || stored.user_id || null;
 
   await pushChatMessage({
     role: 'assistant',
@@ -6694,7 +6697,7 @@ async function executeInteractiveWorkflow(workflowId, taskInput, retryCount = 0,
       // 因此显式标记 hasPrevious=false，让审核如实说明「无法核对跨环节一致性」，
       // 而不是含糊带过。跨环节检查在自动工作流（多阶段）里生效。
       const reviewResults = await callReviewersSequentially(
-        workflowId, agentName, output, autoRetryCount, null, null,
+        workflowId, agentName, output, autoRetryCount, workflowUserId, null,
         {
           originalInput: enrichedInput || '',
           previousOutput: '',
@@ -6703,6 +6706,7 @@ async function executeInteractiveWorkflow(workflowId, taskInput, retryCount = 0,
           agentId: selectedAgentId,
           caseQuality: taskCaseQualityReports.get(workflowId) || null,
         },
+        workflowId,
       );
       workflowResults.reviewerResults = reviewResults;
       lastReviewResults = reviewResults;
@@ -6934,6 +6938,7 @@ async function executeAutoNativeWorkflow(workflowId, taskInput) {
   console.log('[AutoNative] Starting workflow ' + workflowId);
   const workflowResults = { id: workflowId, status: 'running', mode: 'auto-native', scenario: 'QClaw原生方式', executorResults: [], startedAt: new Date().toISOString() };
   const stored = workflows.get(workflowId) || {}; syncWorkflow(workflowId, { workflowResults });
+  const nativeWorkflowUserId = stored.userId || stored.user_id || null;
   // ========== 全局超时:30分钟,防止无限挂死 ==========
   const NATIVE_TIMEOUT_MS = 30 * 60 * 1000;
   const nativeTimer = setTimeout(() => {
@@ -7081,7 +7086,7 @@ async function executeAutoNativeWorkflow(workflowId, taskInput) {
           `${stage.stage}（${stage.agentId}）`,
           result.text || '',
           0,
-          null,
+          nativeWorkflowUserId,
           null,
           {
             originalInput: taskInput || '',
@@ -7091,6 +7096,7 @@ async function executeAutoNativeWorkflow(workflowId, taskInput) {
             agentId: stage.agentId,
             caseQuality: taskCaseQualityReports.get(workflowId) || null,
           },
+          workflowId,
         );
         const effective = nativeReviewResults.filter((r) => r.score > 0);
         const vetoed = effective.some((r) => r.veto);
@@ -7103,6 +7109,7 @@ async function executeAutoNativeWorkflow(workflowId, taskInput) {
         broadcast({
           type: 'step_review_completed',
           workflowId,
+          userId: nativeWorkflowUserId || null,
           stage: stage.stage,
           scores: effective.map((r) => r.score),
           veto: vetoed,
@@ -7870,7 +7877,7 @@ ${previousStepOutput || '(无)'}
           `${step.stage}（${step.agentId}）`,
           stepOutput,
           stepRetryCount || 0,
-          null,
+          userId,
           null,
           {
             originalInput: enrichedInput || '',
@@ -7880,6 +7887,7 @@ ${previousStepOutput || '(无)'}
             agentId: step.agentId,
             caseQuality: taskCaseQualityReports.get(workflowId) || null,
           },
+          workflowId,
         );
       } finally {
         stopHeartbeat(hbReviewAll);
@@ -10461,7 +10469,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                     result: sanitizeEvidenceValue(out),
                   });
                   try {
-                    broadcast({ type: 'agent_skill_result', agentId, skillId, taskId, result: out, timestamp: new Date().toISOString() });
+                    broadcast({ type: 'agent_skill_result', agentId, skillId, taskId, userId: userId || null, result: out, timestamp: new Date().toISOString() });
                   } catch (_) {}
                 }
               }
@@ -10557,6 +10565,9 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
           broadcast({
             type: 'case_quality_gate',
             agentId,
+            // 必须带 userId：spawnAgentSession 里的 taskId 是工作流派生 ID
+            // （如 xxx-step-2），sseBroadcast 反查 tasks 表查不到，会被 ISO 拦截
+            userId: userId || null,
             taskId,
             round: repairRound + 1,
             total: gateReport.total,
@@ -10582,6 +10593,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
           broadcast({
             type: 'case_quality_repair',
             agentId,
+            userId: userId || null,
             taskId,
             round: repairRound,
             issues: gateReport.cases.length,
@@ -10708,6 +10720,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
           broadcast({
             type: 'rule_quality_gate',
             agentId,
+            userId: userId || null,
             taskId,
             rate: ruleReport.usabilityRate,
             pass: ruleReport.pass,
@@ -12390,7 +12403,7 @@ async function callReviewersInParallel(taskId, agentName, output, retryCount = 0
  * @param {Function} onEachComplete - 每个审核完成后回调 (reviewerResult, index) => void
  * @returns {Promise<Object[]>} 审核结果数组
  */
-async function callReviewersSequentially(taskId, agentName, output, retryCount = 0, userId = null, onEachComplete = null, reviewContext = {}) {
+async function callReviewersSequentially(taskId, agentName, output, retryCount = 0, userId = null, onEachComplete = null, reviewContext = {}, workflowId = null) {
   const results = [];
   
   // 清理该任务之前的审核结果（避免重复）
@@ -12408,7 +12421,9 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
     // 广播当前审核智能体开始
     broadcast({
       type: 'reviewer_started',
-      taskId,
+      // 工作流链路传进来的是 workflowId，必须同时给出 workflowId 字段，
+      // 否则 sseBroadcast 拿它去 tasks 表反查 userId 必然查不到 → ISO-BLOCKED 丢事件
+      ...(workflowId ? { workflowId } : { taskId }),
       reviewerId,
       reviewerName,
       reviewerIndex: i + 1,
@@ -12436,7 +12451,7 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
       // 广播单个审核完成
       broadcast({
         type: 'reviewer_completed',
-        taskId,
+        ...(workflowId ? { workflowId } : { taskId }),
         reviewerId,
         reviewerName,
         reviewerIndex: i + 1,
@@ -12482,7 +12497,7 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
 
       broadcast({
         type: 'reviewer_completed',
-        taskId,
+        ...(workflowId ? { workflowId } : { taskId }),
         reviewerId,
         reviewerName,
         reviewerIndex: i + 1,

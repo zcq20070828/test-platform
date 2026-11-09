@@ -156,6 +156,8 @@ export const useMainStore = defineStore('main', () => {
 
   // 智能体“真正调用”可执行 skill 后回传的结构化结果（如 UTRM）
   const realtimeSkillResult = ref<any>(null)
+  // 用例门禁实时结果（供分步测试页展示可用率）
+  const realtimeCaseQuality = ref<any>(null)
   const stats = ref<Stats | null>(null)
   const statsLoading = ref(false)
   let eventSource: EventSource | null = null
@@ -1101,6 +1103,62 @@ export const useMainStore = defineStore('main', () => {
         }
         return
 
+      case 'case_quality_gate':
+        // 用例确定性门禁结果（2026-11-06 阶段二）：让分步测试页能实时看到可用率
+        message = `用例质量检查：${data.usable}/${data.total} 条可用（${(Number(data.usabilityRate || 0) * 100).toFixed(1)}%）${data.pass ? '达标' : '未达标'}`
+        status = data.pass ? 'success' : 'warning'
+        writeMsg({
+          id: `case-gate-${data.taskId || Date.now()}-${data.round || 1}`,
+          role: 'assistant',
+          type: 'agent',
+          agentName: '用例质量门禁',
+          content: `${message}${data.summary ? `\n\n${data.summary}` : ''}`,
+          timestamp: new Date().toISOString(),
+        })
+        realtimeCaseQuality.value = data
+        break
+
+      case 'case_quality_repair':
+        message = `正在定向修复 ${data.issues || 0} 条问题用例（第 ${data.round || 1} 轮）`
+        status = 'info'
+        writeMsg({
+          id: `case-repair-${data.taskId || Date.now()}-${data.round || 1}`,
+          role: 'assistant',
+          type: 'agent',
+          agentName: '用例质量门禁',
+          content: message,
+          timestamp: new Date().toISOString(),
+        })
+        break
+
+      case 'rule_quality_gate':
+        // 按智能体的确定性规则检查（阶段四）：需求分析/方案/执行/缺陷/报告等
+        message = `${data.agentId} 确定性检查：得分 ${(Number(data.rate || 0) * 100).toFixed(1)}%，${data.pass ? '通过' : '未通过'}`
+        status = data.pass ? 'success' : 'warning'
+        writeMsg({
+          id: `rule-gate-${data.taskId || Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          role: 'assistant',
+          type: 'agent',
+          agentName: '交付物质量检查',
+          content: `${message}${Array.isArray(data.issues) && data.issues.length ? `\n\n问题：${data.issues.join('；')}` : ''}`,
+          timestamp: new Date().toISOString(),
+        })
+        break
+
+      case 'step_review_completed':
+        // 原生工作流每阶段审核结果
+        message = `「${data.stage || '阶段'}」审核：${(data.scores || []).join(', ') || '无有效评分'}，${data.passed ? '通过' : '未通过'}`
+        status = data.passed ? 'success' : 'warning'
+        writeMsg({
+          id: `step-review-${data.workflowId || Date.now()}-${data.stage || ''}`,
+          role: 'assistant',
+          type: 'agent',
+          agentName: 'AI质量审核',
+          content: message,
+          timestamp: new Date().toISOString(),
+        })
+        break
+
       case 'agent_skill_result':
         // 智能体通过工具调用真正执行了 skill（如 ui/api-test-tool-invoker），回传结构化结果
         realtimeSkillResult.value = data
@@ -2022,6 +2080,7 @@ export const useMainStore = defineStore('main', () => {
     // 实时事件
     realtimeLogs,
     realtimeSkillResult,
+    realtimeCaseQuality,
     stats,
     statsLoading,
 
