@@ -24,6 +24,10 @@ import {
   fitToBudget,
 } from './lib/document-reader.js';
 import {
+  checkWithRules as checkByAgentRules,
+  getRulesFor as getAgentQualityRules,
+} from './lib/quality-rules.js';
+import {
   checkDeliverable as checkCaseQuality,
   buildRepairPrompt as buildCaseRepairPrompt,
   applyInputRepairs as applyCaseInputRepairs,
@@ -6989,6 +6993,8 @@ async function executeAutoNativeWorkflow(workflowId, taskInput) {
     let lastOutput = taskInput;
     let previousOutputFile = null; // 上一阶段的输出文件路径
     let finalOutputFile = null; // 最终输出文件路径(用于文件交付)
+    let stageIndex = 0;
+    let nativePrevOutput = '';
     for (let i = 0; i < stages.length; i++) {
       const stage = stages[i];
       console.log('[AutoNative] Stage: ' + stage.stage + ' (' + stage.agentId + ')');
@@ -7065,6 +7071,65 @@ async function executeAutoNativeWorkflow(workflowId, taskInput) {
       const stepArtifacts = ensureStageArtifacts(result.text || '', { stage: stage.stage, agentId: stage.agentId });
       results.push({ stage: stage.stage, agentId: stage.agentId, result: result.text, success: result.success, artifacts: stepArtifacts, usage: result.usage || null });
       broadcast({ type: 'agent_completed', workflowId, agentId: stage.agentId, stage: stage.stage, success: result.success, result: result.text || '', artifacts: ensureStageArtifacts(result.text || '', { stage: stage.stage, agentId: stage.agentId }) });
+
+      // ========== 三审（2026-11-06 补齐）==========
+      // 此前原生工作流完全没有审核，产出直接进入下一阶段。
+      // 现在与其它两条链路一致：传原始需求 + 上游产出 + 门禁结论。
+      try {
+        const nativeReviewResults = await callReviewersSequentially(
+          workflowId,
+          `${stage.stage}（${stage.agentId}）`,
+          result.text || '',
+          0,
+          null,
+          null,
+          {
+            originalInput: taskInput || '',
+            previousOutput: stageIndex > 0 ? (nativePrevOutput || '') : '',
+            previousStage: stageIndex > 0 ? (stages[stageIndex - 1]?.stage || '上一阶段') : '',
+            hasPrevious: stageIndex > 0,
+            agentId: stage.agentId,
+            caseQuality: taskCaseQualityReports.get(workflowId) || null,
+          },
+        );
+        const effective = nativeReviewResults.filter((r) => r.score > 0);
+        const vetoed = effective.some((r) => r.veto);
+        const avg = effective.length ? effective.reduce((a, b) => a + b.score, 0) / effective.length : 0;
+        const nativePass = effective.length >= 2 ? (avg >= REVIEW_PASS_THRESHOLD && !vetoed) : true;
+        console.log(`[AutoNative] 阶段「${stage.stage}」审核: scores=[${effective.map((r) => r.score).join(',')}] veto=${vetoed} pass=${nativePass}`);
+        workflowResults.reviewerResults = (workflowResults.reviewerResults || []).concat(
+          nativeReviewResults.map((r) => ({ ...r, stage: stage.stage })),
+        );
+        broadcast({
+          type: 'step_review_completed',
+          workflowId,
+          stage: stage.stage,
+          scores: effective.map((r) => r.score),
+          veto: vetoed,
+          passed: nativePass,
+        });
+        if (!nativePass) {
+          const reason = vetoed
+            ? `阶段「${stage.stage}」审核触发一票否决`
+            : `阶段「${stage.stage}」审核未达标（${effective.map((r) => r.score).join(',')}，要求均 ≥${REVIEW_PASS_THRESHOLD}）`;
+          console.warn(`[AutoNative] ${reason}，终止工作流（不自动重试，避免长时间占用）`);
+          workflowResults.status = 'failed';
+          workflowResults.error = reason;
+          workflowResults.executorResults = results;
+          workflowResults.completedAt = localNowStr();
+          syncWorkflow(workflowId, { status: 'failed', workflowResults });
+          broadcast({ type: 'workflow_error', workflowId, message: reason, reason: 'review_failed', stage: stage.stage });
+          clearTimeout(nativeTimer);
+          cleanupWorkflowSessions(workflowId).catch(() => {});
+          return;
+        }
+      } catch (reviewErr) {
+        // 审核本身异常不应阻断流水线（与其它链路一致：记录并继续）
+        console.warn(`[AutoNative] 阶段「${stage.stage}」审核异常: ${reviewErr.message}`);
+      }
+
+      nativePrevOutput = result.text || '';
+      stageIndex += 1;
     }
     const NL = String.fromCharCode(10);
     const finalOutput = results.map(r => '【' + r.stage + '】' + NL + r.result).join(NL + NL + '---' + NL + NL);
@@ -10627,6 +10692,68 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
         }
       }
 
+      // ── 按智能体的确定性规则检查（2026-11-06 阶段四 4.3）──
+      // 覆盖没有统一用例表的交付物：需求分析/方案/数据/执行/缺陷/报告/脱敏/安全/性能/兼容/脚本。
+      // 规则是「结构 + 要素 + 反编造」三类，全部可规则判定，不调用 LLM。
+      if (RULE_GATE_AGENTS.has(agentId) && getAgentQualityRules(agentId)) {
+        let ruleReport = null;
+        try {
+          ruleReport = checkByAgentRules(agentId, text, { minPassRate: RULE_GATE_MIN_RATE });
+        } catch (ruleErr) {
+          console.warn(`[RuleGate] ${agentId} 规则检查异常: ${ruleErr.message}`);
+        }
+
+        if (ruleReport && ruleReport.applicable) {
+          console.log(`[RuleGate] ${agentId} ${ruleReport.summary.text}`);
+          broadcast({
+            type: 'rule_quality_gate',
+            agentId,
+            taskId,
+            rate: ruleReport.usabilityRate,
+            pass: ruleReport.pass,
+            byReason: ruleReport.byReason,
+            issues: ruleReport.summary.issues,
+            timestamp: new Date().toISOString(),
+          });
+
+          // 落库（同一任务可能已由用例门禁写过，这里用 upsert 合并覆盖）
+          try {
+            await caseFeedbackDAO.upsertTaskQuality({
+              taskId,
+              agentId,
+              total: ruleReport.total,
+              usable: ruleReport.usable,
+              usabilityRate: ruleReport.usabilityRate,
+              blockerCount: ruleReport.bySeverity?.blocker || 0,
+              majorCount: ruleReport.bySeverity?.major || 0,
+              autoRepairs: 0,
+              repairRounds: 0,
+              byReason: ruleReport.byReason || {},
+              pass: ruleReport.pass,
+            });
+          } catch (dbErr) {
+            console.warn(`[RuleGate] 质量快照落库失败: ${dbErr.message}`);
+          }
+
+          if (!ruleReport.pass) {
+            const issueText = ruleReport.summary.issues.join('；');
+            if (RULE_GATE_ENFORCE) {
+              console.error(`[RuleGate] ${agentId} 规则检查未通过（${(ruleReport.usabilityRate * 100).toFixed(1)}%），拒绝交付`);
+              return {
+                success: false,
+                error: `交付物未通过确定性检查（得分 ${(ruleReport.usabilityRate * 100).toFixed(1)}%，要求 ${(RULE_GATE_MIN_RATE * 100).toFixed(0)}%）：${issueText}`,
+                ruleQuality: ruleReport,
+                skillExecutions,
+              };
+            }
+            // 灰度模式：只标注不阻断
+            const banner = `> ⚠️ **质量提示**：本交付物未通过确定性检查（得分 **${(ruleReport.usabilityRate * 100).toFixed(1)}%**，要求 ${(RULE_GATE_MIN_RATE * 100).toFixed(0)}%）。问题：${issueText}。\n\n`;
+            text = banner + text;
+            console.warn(`[RuleGate] ${agentId} 未通过但处于灰度模式（RULE_GATE_ENFORCE=0），已标注后交付`);
+          }
+        }
+      }
+
       const duration = Date.now() - startTime;
       console.log(`[Agent] Gateway API success for ${agentId} (took ${duration}ms)`);
       recordAgentSuccess(agentId);
@@ -11847,6 +11974,28 @@ const CASE_QUALITY_AUTO_REPAIR = process.env.CASE_QUALITY_AUTO_REPAIR !== '0';
 const CASE_QUALITY_MAX_REPAIR_ROUNDS = Number(process.env.CASE_QUALITY_MAX_REPAIR_ROUNDS) || 1;
 // 需要跑用例门禁的智能体
 const CASE_QUALITY_GATE_AGENTS = new Set(['test-case-generator']);
+// 按智能体规则集做确定性检查（2026-11-06 阶段四 4.3）：
+// 覆盖需求分析/方案/数据/执行/缺陷/报告/脱敏/安全/性能/兼容/脚本等无统一用例表的交付物
+const RULE_GATE_AGENTS = new Set([
+  'test-requirement-analyzer',
+  'test-scheme-generator',
+  'test-data-generator',
+  'api-executor',
+  'ui-e2e-executor',
+  'defect-analyzer',
+  'test-reporter',
+  'data-masking',
+  'security-sentinel',
+  'performance-tester',
+  'compatibility-coordinator',
+  'test-script-generator',
+]);
+// 规则门禁通过阈值（按权重）
+const RULE_GATE_MIN_RATE = Number(process.env.RULE_GATE_MIN_RATE) || 0.8;
+// 规则门禁是否阻断：默认**只标注不阻断**（灰度）。
+// 新规则集未经真实语料校准，直接阻断会让大量任务失败；观察两周后再用
+// RULE_GATE_ENFORCE=1 开启阻断。
+const RULE_GATE_ENFORCE = process.env.RULE_GATE_ENFORCE === '1';
 // 门禁结果暂存，供任务详情/审核环节读取
 const taskCaseQualityReports = new Map();
 // 反例库缓存（1 小时刷新一次）
