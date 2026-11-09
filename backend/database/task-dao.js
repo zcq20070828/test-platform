@@ -226,11 +226,22 @@ async function getTasks(filters = {}) {
   // 为每个任务查询审核结果（用于前端显示评分）
   if (tasks.length > 0) {
     const taskIds = tasks.map(t => t.id);
-    const reviewSql = `SELECT task_id, reviewer_id, reviewer_name, score, veto, passed, output 
-                       FROM task_review_results 
-                       WHERE task_id IN (${taskIds.map(() => '?').join(',')}) 
-                       ORDER BY created_at ASC`;
-    const reviewRows = await query(reviewSql, taskIds);
+    // 2026-11-09：审核记录改为按 attempt 累积（重试不再删历史），
+    // 因此这里只取每个任务「最大 attempt」那一轮作为当前结论，
+    // 否则一个重试 3 轮的任务会在前端显示 9 条审核结果，看起来像三个人审了三次。
+    // 历史轮次仍保留在库里，供复盘查询（见 api/stats 的审核明细）。
+    const reviewSql = `SELECT r.task_id, r.reviewer_id, r.reviewer_name, r.score, r.veto, r.passed,
+                              r.attempt, r.output, r.error
+                       FROM task_review_results r
+                       JOIN (
+                         SELECT task_id, MAX(attempt) AS max_attempt
+                         FROM task_review_results
+                         WHERE task_id IN (${taskIds.map(() => '?').join(',')})
+                         GROUP BY task_id
+                       ) m ON m.task_id = r.task_id AND m.max_attempt = r.attempt
+                       WHERE r.task_id IN (${taskIds.map(() => '?').join(',')})
+                       ORDER BY r.created_at ASC, r.reviewer_id ASC`;
+    const reviewRows = await query(reviewSql, [...taskIds, ...taskIds]);
     
     // 按 taskId 分组
     const reviewMap = new Map();
@@ -242,7 +253,10 @@ async function getTasks(filters = {}) {
         score: r.score,
         veto: r.veto === 1,
         passed: r.passed === 1,
-        output: r.output
+        attempt: r.attempt,
+        output: r.output,
+        // error 非空 = 审核智能体自身没跑起来，这条评分不可用，前端应显示为「审核异常」而非「0 分」
+        error: r.error || null
       });
     }
     

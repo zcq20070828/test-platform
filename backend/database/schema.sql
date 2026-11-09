@@ -69,11 +69,14 @@ CREATE TABLE IF NOT EXISTS task_review_results (
   score INT COMMENT '评分',
   veto BOOLEAN DEFAULT FALSE COMMENT '是否一票否决',
   passed BOOLEAN COMMENT '是否通过',
-  output MEDIUMTEXT 
+  attempt INT NOT NULL DEFAULT 0 COMMENT '第几轮审核（0=首轮），重试不再删除历史',
+  output MEDIUMTEXT,
+  error VARCHAR(500) DEFAULT NULL COMMENT '审核智能体自身失败原因；非空表示该评分不可用',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_task_id (task_id),
   INDEX idx_reviewer_id (reviewer_id),
   INDEX idx_passed (passed),
+  INDEX idx_task_attempt (task_id, attempt),
   FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='任务审核结果表';
 
