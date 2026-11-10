@@ -112,6 +112,44 @@ function readableString(len) {
 }
 
 /**
+ * 生成「长度正确且符合字段语义」的值
+ *
+ * 用于长度边界用例：手机号 11 位、密码 8~64 位、验证码 6 位等，
+ * 既保住用例要求的长度，又是该字段看得懂的样例值。
+ */
+function lengthAwareValue(field, len, wantIllegal = false) {
+  const n = Math.max(1, Math.min(Number(len) || 1, 64));
+
+  if (/手机|phone|mobile|msisdn/i.test(field)) {
+    const base = wantIllegal ? '12345' : '13800138000';
+    return (base + base.repeat(4)).slice(0, n);
+  }
+  if (/验证码|smscode|captcha|otp/i.test(field)) {
+    const base = wantIllegal ? '12' : '123456';
+    return (base + base.repeat(6)).slice(0, n);
+  }
+  if (/身份证|idcard|id_no/i.test(field)) {
+    const base = wantIllegal ? '123' : '110101199001011234';
+    return (base + base.repeat(2)).slice(0, n);
+  }
+  if (/邮箱|email|mail/i.test(field)) {
+    if (wantIllegal) return 'not-an-email'.slice(0, n);
+    // 邮箱必须保留 @ 结构；长度不够时先退到短域名，再不够就只能放弃结构
+    const longDomain = '@example.com';
+    const shortDomain = '@x.co';
+    if (n > longDomain.length) return readableString(n - longDomain.length) + longDomain;
+    if (n > shortDomain.length) return readableString(n - shortDomain.length) + shortDomain;
+    return readableString(n);
+  }
+  if (/密码|password|passwd|pwd/i.test(field)) {
+    // 至少含大小写与数字，符合常见复杂度要求
+    const base = wantIllegal ? 'Ab1' : 'Abc12345';
+    return (base + readableString(n)).slice(0, n);
+  }
+  return readableString(n);
+}
+
+/**
  * 识别并修复单条输入表达式里的占位值
  *
  * 支持形如 `phone="AAAAAAAAAAA"`、`password=33位字符`、`channel=__ILLEGAL__`、
@@ -120,9 +158,13 @@ function readableString(len) {
  * @param {string} input
  * @returns {{ input: string, repaired: boolean, repairs: Array<{field:string,from:string,to:string}> }}
  */
-export function repairPlaceholderInput(input) {
+export function repairPlaceholderInput(input, context = '') {
   const original = String(input || '');
   if (!original.trim()) return { input: original, repaired: false, repairs: [] };
+  // 用例名/步骤里常写着「31位」「max-1」「边界」，是判断「这是长度边界用例」的唯一线索。
+  // 早期只看输入片段本身，导致「密码31位」被修成 8 位真实密码，与用例名和步骤矛盾——
+  // 审核因此判「输入数据与步骤不一致」，这是修复动作自己制造的新问题。
+  const ctx = String(context || '');
 
   const repairs = [];
 
@@ -146,24 +188,27 @@ export function repairPlaceholderInput(input) {
       const lenMatch = rawValue.match(/(\d+)\s*位/);
       const len = lenMatch ? Number(lenMatch[1]) : 0;
       const semantic = fieldExample(field, wantIllegal);
-      const looksBoundary = /边界|min|max|超长|过短/i.test(part);
+      const looksBoundary = /边界|min|max|超长|过短|\d+\s*位/i.test(part) || /边界|min|max|超长|过短|\d+\s*位/i.test(ctx);
       if (looksBoundary && len > 0) {
-        replacement = len <= 11 ? readableString(len) : `"${readableString(Math.min(len, 64))}"`;
+        replacement = `"${lengthAwareValue(field, len, wantIllegal)}"`;
       } else {
         replacement = /^\d+$/.test(semantic) ? semantic : `"${semantic}"`;
       }
     } else if (placeholder.tag === 'repeatedA' || placeholder.tag === 'emptyQuotes') {
       const inner = rawValue.replace(/^"|"$/g, '');
       const len = Math.max(inner.length, 1);
-      const semantic = fieldExample(field, wantIllegal);
-      const semanticKnown = FIELD_EXAMPLES.some((f) => f.match.test(field));
-      if (semanticKnown && !wantIllegal) {
-        replacement = /^-?\d+(\.\d+)?$/.test(semantic) ? semantic : `"${semantic}"`;
-      } else if (semanticKnown && wantIllegal) {
-        replacement = `"${semantic}"`;
+      const looksBoundary = /边界|min|max|超长|过短|\d+\s*位/i.test(part) || /边界|min|max|超长|过短|\d+\s*位/i.test(ctx);
+      if (looksBoundary) {
+        // 长度边界用例：必须保住原长度，否则用例名「密码31位」与输入 8 位自相矛盾
+        replacement = `"${lengthAwareValue(field, len, wantIllegal)}"`;
       } else {
-        // 无字段语义可依时，按原长度生成非重复字符，保证长度边界仍然有效
-        replacement = `"${readableString(len)}"`;
+        const semantic = fieldExample(field, wantIllegal);
+        const semanticKnown = FIELD_EXAMPLES.some((f) => f.match.test(field));
+        if (semanticKnown) {
+          replacement = /^-?\d+(\.\d+)?$/.test(semantic) ? semantic : `"${semantic}"`;
+        } else {
+          replacement = `"${readableString(len)}"`;
+        }
       }
     } else {
       const semantic = fieldExample(field, wantIllegal);
@@ -602,11 +647,14 @@ export function applyInputRepairs(text) {
   const out = lines.map((line) => {
     if (!/^\s*\|/.test(line)) return line;
     const cells = line.trim().replace(/^\||\|$/g, '').split('|');
+    // 上下文取同行全部内容（用例名/输入/步骤/预期都在里面），
+    // 用整行判断「这是不是长度边界用例」，比只看输入单元格可靠
+    const rowContext = cells.join(' ');
     let changed = false;
     for (let i = 0; i < cells.length; i += 1) {
       const cell = cells[i];
       if (!/[A-Za-z_\u4e00-\u9fa5][\w\u4e00-\u9fa5.]*\s*=/.test(cell)) continue;
-      const rep = repairPlaceholderInput(cell);
+      const rep = repairPlaceholderInput(cell, rowContext);
       if (rep.repaired && !PLACEHOLDER_PATTERNS.some((p) => p.re.test(rep.input))) {
         cells[i] = rep.input;
         changed = true;

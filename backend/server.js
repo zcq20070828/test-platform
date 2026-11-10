@@ -12467,10 +12467,16 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
       
       // 保存审核结果到数据库
       try {
-        // callSingleReviewer 内部用 try/catch 兜住了模型调用异常，异常时返回
-        // {score:0, parseOk:false, error}，不会抛到这里。因此 error 也必须在这里落库，
-        // 否则「审核没跑起来」在数据里仍是一个干净的 0 分，与真实低分无法区分。
-        const reviewerFailure = result.error ? String(result.error).slice(0, 500) : null;
+        // callSingleReviewer 内部用 try/catch 兜住了模型调用异常，不会抛到这里。
+        // 必须把「这次审核到底有没有跑出结果」写进 error 列，否则两类情况在数据里
+        // 都是一条干净的 0 分，无法区分，也无法事后复核：
+        //   a) 模型调用失败（超时/402/网络）；
+        //   b) 调用成功但输出为空或无法解析（实测 reviewer-1 返回 0 字符）。
+        const reviewerFailure = result.error
+          ? String(result.error).slice(0, 500)
+          : (result.parseOk === false
+            ? `审核输出无法解析：${(result.reason || '空输出').slice(0, 400)}`
+            : null);
         await query(
           `INSERT INTO task_review_results (task_id, reviewer_id, reviewer_name, score, veto, passed, attempt, output, error, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
