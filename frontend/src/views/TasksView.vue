@@ -862,19 +862,27 @@ onMounted(() => {
             >
               <div class="review-header">
                 <span class="review-name">{{ review.reviewerName || '审核员 ' + (index + 1) }}</span>
-                <el-tag :type="review.passed && !review.veto ? 'success' : 'danger'" size="small">
+                <!-- 审核智能体自身失败（网关超时/模型不可用）不是产出物的质量问题，
+                     必须与「认真审了给低分」区分显示，否则用户会以为交付物被判不合格 -->
+                <el-tag v-if="review.error" type="warning" size="small">审核异常</el-tag>
+                <el-tag v-else :type="review.passed && !review.veto ? 'success' : 'danger'" size="small">
                   {{ review.veto ? '一票否决' : (review.passed ? '通过' : '未通过') }}
                 </el-tag>
               </div>
-              <div class="review-score">
-                <span class="score-label">评分：</span>
-                <span class="score-value" :class="{ 'score-high': review.score >= 90, 'score-low': review.score < 90 }">
-                  {{ review.score }}分
-                </span>
+              <div v-if="review.error" class="review-feedback">
+                审核智能体未完成（{{ review.error }}），该评分不计入判定。
               </div>
-              <div v-if="review.feedback" class="review-feedback">
-                {{ review.feedback }}
-              </div>
+              <template v-else>
+                <div class="review-score">
+                  <span class="score-label">评分：</span>
+                  <span class="score-value" :class="{ 'score-high': review.score >= 90, 'score-low': review.score < 90 }">
+                    {{ review.score }}分
+                  </span>
+                </div>
+                <div v-if="review.feedback" class="review-feedback">
+                  {{ review.feedback }}
+                </div>
+              </template>
             </div>
           </div>
           <div class="review-summary">

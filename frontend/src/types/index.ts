@@ -29,6 +29,11 @@ export interface ReviewResult {
   passed: boolean
   veto?: boolean  // 一票否决
   feedback?: string
+  // 第几轮审核（后端按 attempt 累积记录，前端只展示最大 attempt 那一轮）
+  attempt?: number
+  // 审核智能体自身失败原因（网关超时/模型不可用）。非空表示该评分不是真实判定，
+  // 后端已将其排除在通过率之外，前端应显示为「审核异常」而非「0 分未通过」。
+  error?: string | null
   dimensions?: {
     factual: number
     logic: number

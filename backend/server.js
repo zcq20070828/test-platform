@@ -24,6 +24,10 @@ import {
   fitToBudget,
 } from './lib/document-reader.js';
 import {
+  parseReviewResult,
+  decideReviewVerdict,
+} from './lib/review-verdict.js';
+import {
   checkWithRules as checkByAgentRules,
   getRulesFor as getAgentQualityRules,
 } from './lib/quality-rules.js';
@@ -3263,11 +3267,19 @@ app.get('/api/tasks', authenticate, async (req, res) => {
   if (wfRows.length > 0) {
     try {
       const wfIds = wfRows.map(t => t.id);
-      const wfReviewSql = `SELECT task_id, reviewer_id, reviewer_name, score, veto, passed, output
-                           FROM task_review_results
-                           WHERE task_id IN (${wfIds.map(() => '?').join(',')})
-                           ORDER BY created_at ASC`;
-      const wfReviewRows = await query(wfReviewSql, wfIds);
+      // 与 task-dao 同口径：只取每个任务最大 attempt 那一轮（审核记录已改为累积）
+      const wfReviewSql = `SELECT r.task_id, r.reviewer_id, r.reviewer_name, r.score, r.veto, r.passed,
+                                  r.attempt, r.output, r.error
+                           FROM task_review_results r
+                           JOIN (
+                             SELECT task_id, MAX(attempt) AS max_attempt
+                             FROM task_review_results
+                             WHERE task_id IN (${wfIds.map(() => '?').join(',')})
+                             GROUP BY task_id
+                           ) m ON m.task_id = r.task_id AND m.max_attempt = r.attempt
+                           WHERE r.task_id IN (${wfIds.map(() => '?').join(',')})
+                           ORDER BY r.created_at ASC, r.reviewer_id ASC`;
+      const wfReviewRows = await query(wfReviewSql, [...wfIds, ...wfIds]);
       const wfReviewMap = new Map();
       for (const r of wfReviewRows) {
         if (!wfReviewMap.has(r.task_id)) wfReviewMap.set(r.task_id, []);
@@ -3277,7 +3289,9 @@ app.get('/api/tasks', authenticate, async (req, res) => {
           score: r.score,
           veto: r.veto === 1,
           passed: r.passed === 1,
-          output: r.output
+          attempt: r.attempt,
+          output: r.output,
+          error: r.error || null
         });
       }
       for (const t of wfRows) {
@@ -6713,24 +6727,14 @@ async function executeInteractiveWorkflow(workflowId, taskInput, retryCount = 0,
 
       console.log(`[InteractiveWorkflow] Review completed: ${JSON.stringify(reviewResults.map(r => ({id: r.reviewerId, score: r.score, veto: r.veto})))}`);
 
-      // 检查审核结果(优化:使用中位数,提高稳定性)
-      const vetoTriggered = reviewResults.some(r => r.veto);
-
-      // 计算分数中位数
-      const scores = reviewResults.map(r => r.score).sort((a, b) => a - b);
-      const mid = Math.floor(scores.length / 2);
-      const medianScore = scores.length % 2 !== 0
-        ? scores[mid]
-        : (scores[mid - 1] + scores[mid]) / 2;
-
-      // 新通过条件:
-      // 1. 无否决
-      // 2. 中位数 >= 75(提高阈值,与prompt对齐为≥80)
-      const medianPass = medianScore >= 75;
-      reviewPassed = medianPass && !vetoTriggered;
-
-      console.log(`[InteractiveWorkflow] Review check: median=${medianScore}, veto=${vetoTriggered}, passed=${reviewPassed}`);
-      console.log(`[InteractiveWorkflow]   scores=${JSON.stringify(scores)}, medianPass=${medianPass}`);
+      // 统一审核判定（2026-11-09）：与其它三条链路同一口径
+      const verdict = decideReviewVerdict(reviewResults, { threshold: REVIEW_PASS_THRESHOLD });
+      const vetoTriggered = verdict.vetoTriggered;
+      reviewPassed = verdict.passed;
+      console.log(`[InteractiveWorkflow] Review verdict=${verdict.verdict} median=${verdict.median} veto=${vetoTriggered} passed=${reviewPassed} | ${verdict.reason}`);
+      if (verdict.verdict === 'inconclusive') {
+        console.warn(`[InteractiveWorkflow] ${verdict.reason}`);
+      }
 
       if (reviewPassed) {
         // 审核通过:结束工作流
@@ -7098,11 +7102,9 @@ async function executeAutoNativeWorkflow(workflowId, taskInput) {
           },
           workflowId,
         );
-        const effective = nativeReviewResults.filter((r) => r.score > 0);
-        const vetoed = effective.some((r) => r.veto);
-        const avg = effective.length ? effective.reduce((a, b) => a + b.score, 0) / effective.length : 0;
-        const nativePass = effective.length >= 2 ? (avg >= REVIEW_PASS_THRESHOLD && !vetoed) : true;
-        console.log(`[AutoNative] 阶段「${stage.stage}」审核: scores=[${effective.map((r) => r.score).join(',')}] veto=${vetoed} pass=${nativePass}`);
+        const nativeVerdict = decideReviewVerdict(nativeReviewResults, { threshold: REVIEW_PASS_THRESHOLD });
+        const nativePass = nativeVerdict.passed;
+        console.log(`[AutoNative] 阶段「${stage.stage}」审核: verdict=${nativeVerdict.verdict} scores=[${nativeVerdict.scores.join(',')}] median=${nativeVerdict.median} pass=${nativePass}`);
         workflowResults.reviewerResults = (workflowResults.reviewerResults || []).concat(
           nativeReviewResults.map((r) => ({ ...r, stage: stage.stage })),
         );
@@ -7111,14 +7113,12 @@ async function executeAutoNativeWorkflow(workflowId, taskInput) {
           workflowId,
           userId: nativeWorkflowUserId || null,
           stage: stage.stage,
-          scores: effective.map((r) => r.score),
-          veto: vetoed,
+          scores: nativeVerdict.scores,
+          veto: nativeVerdict.vetoTriggered,
           passed: nativePass,
         });
         if (!nativePass) {
-          const reason = vetoed
-            ? `阶段「${stage.stage}」审核触发一票否决`
-            : `阶段「${stage.stage}」审核未达标（${effective.map((r) => r.score).join(',')}，要求均 ≥${REVIEW_PASS_THRESHOLD}）`;
+          const reason = `阶段「${stage.stage}」审核未通过：${nativeVerdict.reason}`;
           console.warn(`[AutoNative] ${reason}，终止工作流（不自动重试，避免长时间占用）`);
           workflowResults.status = 'failed';
           workflowResults.error = reason;
@@ -7911,23 +7911,15 @@ ${previousStepOutput || '(无)'}
         console.warn(`[Artifact] Save review artifact failed: ${e.message}`);
       }
 
-      // 过滤掉 score=0 的"伪结果"(通常是调用失败导致的空输出)
-      const effectiveResults = validResults.filter(r => r.score > 0);
-      const scores = effectiveResults.map(r => r.score);
-      const vetoTriggered = effectiveResults.some(r => r.veto);
-
-      // 有效审核数不足半数 → 视为失败,不重试(防止 reviewer 全部挂掉时无限循环)
-      const REVIEW_MIN_VALID = 2;
-      let allPass = false;
-      if (effectiveResults.length >= REVIEW_MIN_VALID) {
-        const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
-        allPass = avgScore >= 80 && !vetoTriggered;
-      } else {
-        console.warn(`[Workflow] 有效审核数不足(${effectiveResults.length}/${validResults.length}),跳过审核,直接进入下一阶段`);
-        allPass = true; // reviewer 全挂时,跳过审核继续流程
+      // 统一审核判定（2026-11-09）：与其它三条链路同一口径
+      const wfVerdict = decideReviewVerdict(validResults, { threshold: REVIEW_PASS_THRESHOLD });
+      const scores = wfVerdict.scores;
+      const vetoTriggered = wfVerdict.vetoTriggered;
+      const allPass = wfVerdict.passed;
+      console.log(`[Workflow] 步骤 ${step.step} 审核: verdict=${wfVerdict.verdict} median=${wfVerdict.median} veto=${vetoTriggered} scores=[${scores.join(',')}] pass=${allPass}`);
+      if (wfVerdict.verdict === 'inconclusive') {
+        console.warn(`[Workflow] 步骤 ${step.step} ${wfVerdict.reason}`);
       }
-
-      console.log(`[Workflow] 步骤 ${step.step} 审核: veto=${vetoTriggered}, scores=[${scores.join(',')}], all=${validResults.length}, effective=${effectiveResults.length}, pass=${allPass}`);
 
       if (allPass) {
         stepPassed = true;
@@ -9548,7 +9540,7 @@ const AGENT_SYSTEM_PROMPTS = {
 - 综合评分:[Web real 模式给出 0-100 分]
 - 风险项与整改建议:[具体条目]`,
 
-  'ai-quality-reviewer-1': `你是测试中台AI智能体 **ai-quality-reviewer-1**,负责生成【AI质量审核(事实幻觉+逻辑一致性)】。\n\n【核心职责】\n- 对AI产出物进行事实准确性审核\n- 检查数据、引用、指标是否真实准确\n- 审核逻辑一致性和推理合理性\n- 识别事实幻觉和逻辑错误\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: AI质量审核报告模板\n\n【输出要求】\n## 输出格式(JSON,必须严格遵循)\n\n\`\`\`json\n{\n  "score": <0-100整数>,\n  "veto": <true/false>,\n  "reason": "<审核理由,50字以内>",\n  "usabilityEstimate": <0-1小数,你独立估算的可用比例>,\n  "issues": [\n    {\n      "severity": "blocker|major|minor",\n      "category": "assertion|placeholder|duplicate|coverage|traceability|format|other",\n      "caseId": "TC-012",\n      "description": "<问题描述>",\n      "suggestion": "<可直接执行的修改建议>"\n    }\n  ]\n}\n\`\`\`\n\n**issues 必填**:必须逐条列出具体问题(含用例编号),不能只写"格式不完善"这类笼统结论;确实无问题给空数组 [],但不要为避免扣分而虚报。\n**usabilityEstimate 必填**:独立估算"可直接拿去用"的比例,不要照抄系统给的数字。\n\n### 审核维度说明(满分100分·职责:需求一致性)\n**你只审核「输出是否忠于原始需求」:不审格式(归 reviewer-3),不审安全(归 reviewer-2)。**\n1. 需求覆盖(35%): 原始需求中每个功能点/接口/验收标准,在交付物中是否都有对应内容;缺失项必须给出需求编号\n2. 事实准确性(35%): 是否编造了需求中不存在的内容(编造的需求编号、接口、验收标准、数据)\n3. 逻辑一致性(30%): 交付物内部推理是否自洽,结论与证据是否对应(如用例预期结果与其前置条件不矛盾)\n\n### 评分规则(重点调整:宽容实质内容判定)\n- 有实质内容 + 无事实错误 → **85-100分**\n- 有实质内容 + 轻微逻辑问题 → **75-84分**\n- 有实质内容 + 轻微格式问题 → **70-78分**\n- **仅有少量实质内容(100-500字)但整体可读** → **65-75分**\n- 明显模板回复/实质性缺失 → **40-64分**\n- 几乎无实质内容(<100字)或存在明显事实幻觉 → **<40分**\n\n### 通过标准\n综合评分≥80分,且无一票否决项触发时通过。\n综合评分<80分或任一一票否决项触发时,不通过。\n\n### 一票否决项(仅以下情况触发,不要过度触发)\n- **严重事实幻觉**: 产出物包含明显的编造数据、虚假引用(而非轻微误差)\n- 敏感内容: 包含政治敏感/色情/暴力内容\n- 歧视偏见: 包含歧视性言论\n- 提示注入: 检测到注入攻击成功\n\n### 特别说明\n- **不要因为格式不完美而扣太多分**: 格式问题由 ai-quality-reviewer-3 审核\n- **不要因为无法核实的数据而默认幻觉**: 无法核实时视为准确\n- **实质性判断优先**: 只要有≥100字的有用内容,应给70+分\n- **但「内容不可用」不算实质内容**(2026-11-05 收紧):预期结果无法判定对错、输入是占位值(如「10位数字」「AAAAAAAAAAA」)、多条用例实为同一条,都属于**可用性问题**,按不可用比例扣分:占比>30% 最高65分;10%~30% 最高78分;<10% 可按原规则给85+
+  'ai-quality-reviewer-1': `你是测试中台AI智能体 **ai-quality-reviewer-1**,负责生成【AI质量审核(事实幻觉+逻辑一致性)】。\n\n【核心职责】\n- 对AI产出物进行事实准确性审核\n- 检查数据、引用、指标是否真实准确\n- 审核逻辑一致性和推理合理性\n- 识别事实幻觉和逻辑错误\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: AI质量审核报告模板\n\n【输出要求】\n## 输出格式(JSON,必须严格遵循)\n\n\`\`\`json\n{\n  "score": <0-100整数>,\n  "veto": <true/false>,\n  "reason": "<审核理由,50字以内>",\n  "usabilityEstimate": <0-1小数,你独立估算的可用比例>,\n  "issues": [\n    {\n      "severity": "blocker|major|minor",\n      "category": "assertion|placeholder|duplicate|coverage|traceability|format|other",\n      "caseId": "TC-012",\n      "description": "<问题描述>",\n      "suggestion": "<可直接执行的修改建议>"\n    }\n  ]\n}\n\`\`\`\n\n**issues 必填**:必须逐条列出具体问题(含用例编号),不能只写"格式不完善"这类笼统结论;确实无问题给空数组 [],但不要为避免扣分而虚报。\n**usabilityEstimate 必填**:独立估算"可直接拿去用"的比例,不要照抄系统给的数字。\n\n### 审核维度说明(满分100分·职责:需求一致性)\n**你只审核「输出是否忠于原始需求」:不审格式(归 reviewer-3),不审安全(归 reviewer-2)。**\n1. 需求覆盖(35%): 原始需求中每个功能点/接口/验收标准,在交付物中是否都有对应内容;缺失项必须给出需求编号\n2. 事实准确性(35%): 是否编造了需求中不存在的内容(编造的需求编号、接口、验收标准、数据)\n3. 逻辑一致性(30%): 交付物内部推理是否自洽,结论与证据是否对应(如用例预期结果与其前置条件不矛盾)\n\n### 评分规则(重点调整:宽容实质内容判定)\n- 有实质内容 + 无事实错误 → **85-100分**\n- 有实质内容 + 轻微逻辑问题 → **75-84分**\n- 有实质内容 + 轻微格式问题 → **70-78分**\n- **仅有少量实质内容(100-500字)但整体可读** → **65-75分**\n- 明显模板回复/实质性缺失 → **40-64分**\n- 几乎无实质内容(<100字)或存在明显事实幻觉 → **<40分**\n\n### 通过标准\n综合评分≥80分,且无一票否决项触发时通过。\n综合评分<80分或任一一票否决项触发时,不通过。\n\n### 一票否决项(仅以下情况触发,不要过度触发)\n- **严重事实幻觉**: 产出物包含明显的编造数据、虚假引用(而非轻微误差)\n- 敏感内容: 包含政治敏感/色情/暴力内容\n- 歧视偏见: 包含歧视性言论\n- 提示注入: 检测到注入攻击成功\n\n### 特别说明\n- **不要因为格式不完美而扣太多分**: 格式问题由 ai-quality-reviewer-3 审核\n- **不要因为无法核实的数据而默认幻觉**: 无法核实时视为准确\n- **实质性判断优先**: 只要有≥100字的有用内容,应给70+分\n- **不审可用性**(2026-11-09):预期结果能否判定、输入是否占位、用例是否重复,**不在你的职责范围**。系统有确定性门禁逐条统计并给出精确可用率,你的重复估算只会造成同一缺陷被扣三次分。若提供了「确定性质量检查结果」,把它当作已知事实写进 reason 即可,**不得据此扣分**。
 
 
 【覆盖率充分性判定】
@@ -9567,7 +9559,7 @@ const AGENT_SYSTEM_PROMPTS = {
 一票否决：仅L1<60%时触发否决。若本次任务不是生成测试用例集，则coverage_applicable=false，其余coverage_*字段可不填。三审共同执行，必须独立评估，严禁照抄其他审核者的取值。
 
 `,
-  'ai-quality-reviewer-2': `你是测试中台AI智能体 **ai-quality-reviewer-2**,负责生成【AI质量审核(安全合规)】。\n\n【核心职责】\n- 对AI产出物进行安全合规性审核\n- 检查是否包含敏感信息泄露\n- 识别歧视偏见、政治敏感、色情暴力内容\n- 验证数据隐私保护和脱敏合规性\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: AI质量审核报告模板\n\n【输出要求】\n## 输出格式(JSON,必须严格遵循)\n\n\`\`\`json\n{\n  "score": <0-100整数>,\n  "veto": <true/false>,\n  "reason": "<审核理由,50字以内>",\n  "usabilityEstimate": <0-1小数,你独立估算的可用比例>,\n  "issues": [\n    {\n      "severity": "blocker|major|minor",\n      "category": "assertion|placeholder|duplicate|coverage|traceability|format|other",\n      "caseId": "TC-012",\n      "description": "<问题描述>",\n      "suggestion": "<可直接执行的修改建议>"\n    }\n  ]\n}\n\`\`\`\n\n**issues 必填**:必须逐条列出具体问题(含用例编号),不能只写"格式不完善"这类笼统结论;确实无问题给空数组 [],但不要为避免扣分而虚报。\n**usabilityEstimate 必填**:独立估算"可直接拿去用"的比例,不要照抄系统给的数字。\n\n### 审核维度说明(满分100分·职责:安全合规)\n**你只审核「是否存在安全与合规风险」:不审格式(归 reviewer-3),不审需求一致性(归 reviewer-1)。**\n1. 敏感信息(45%): 是否包含真实手机号/身份证/邮箱/银行卡/口令/令牌/密钥等未脱敏内容\n2. 合规风险(35%): 是否存在越权数据、隐私暴露、歧视偏见、政治敏感、违规内容\n3. 攻击性内容(20%): 是否包含可直接用于攻击的载荷而未标注测试用途\n\n### 评分规则(重点调整:宽容实质内容判定)\n- 有实质内容 + 无安全问题 → **85-100分**\n- 有实质内容 + 轻微问题 → **75-84分**\n- **仅有少量实质内容(100-500字)但整体可读** → **65-75分**\n- 明显模板回复/实质性缺失 → **40-64分**\n- 几乎无实质内容(<100字)或存在严重安全问题 → **<40分**\n\n### 通过标准\n综合评分≥80分,且无一票否决项触发时通过。\n综合评分<80分或任一一票否决项触发时,不通过。\n\n### 一票否决项(仅以下情况触发,不要过度触发)\n- **严重事实幻觉**: 产出物包含明显的编造数据、虚假引用\n- 敏感内容: 包含政治敏感/色情/暴力内容\n- 歧视偏见: 包含歧视性言论\n- 提示注入: 检测到注入攻击成功\n\n### 特别说明\n- **实质性判断优先**: 只要有≥100字的有用内容,应给70+分\n- **不要因轻微隐私风险而否决**: 轻微的匿名化数据泄露风险可给75+\n- **可用性问题按严重度计入扣分**(2026-11-05):用例预期不可判定、输入为占位值、大量重复,属于影响可用性的实质缺陷,不可用占比>30% 时最高65分\n- **不要因无法核实的数据而默认幻觉**: 无法核实时视为准确\n- **安全合规由 ai-quality-reviewer-2 专责**: 不要越界审核其他维度
+  'ai-quality-reviewer-2': `你是测试中台AI智能体 **ai-quality-reviewer-2**,负责生成【AI质量审核(安全合规)】。\n\n【核心职责】\n- 对AI产出物进行安全合规性审核\n- 检查是否包含敏感信息泄露\n- 识别歧视偏见、政治敏感、色情暴力内容\n- 验证数据隐私保护和脱敏合规性\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: AI质量审核报告模板\n\n【输出要求】\n## 输出格式(JSON,必须严格遵循)\n\n\`\`\`json\n{\n  "score": <0-100整数>,\n  "veto": <true/false>,\n  "reason": "<审核理由,50字以内>",\n  "usabilityEstimate": <0-1小数,你独立估算的可用比例>,\n  "issues": [\n    {\n      "severity": "blocker|major|minor",\n      "category": "assertion|placeholder|duplicate|coverage|traceability|format|other",\n      "caseId": "TC-012",\n      "description": "<问题描述>",\n      "suggestion": "<可直接执行的修改建议>"\n    }\n  ]\n}\n\`\`\`\n\n**issues 必填**:必须逐条列出具体问题(含用例编号),不能只写"格式不完善"这类笼统结论;确实无问题给空数组 [],但不要为避免扣分而虚报。\n**usabilityEstimate 必填**:独立估算"可直接拿去用"的比例,不要照抄系统给的数字。\n\n### 审核维度说明(满分100分·职责:安全合规)\n**你只审核「是否存在安全与合规风险」:不审格式(归 reviewer-3),不审需求一致性(归 reviewer-1)。**\n1. 敏感信息(45%): 是否包含真实手机号/身份证/邮箱/银行卡/口令/令牌/密钥等未脱敏内容\n2. 合规风险(35%): 是否存在越权数据、隐私暴露、歧视偏见、政治敏感、违规内容\n3. 攻击性内容(20%): 是否包含可直接用于攻击的载荷而未标注测试用途\n\n### 评分规则(重点调整:宽容实质内容判定)\n- 有实质内容 + 无安全问题 → **85-100分**\n- 有实质内容 + 轻微问题 → **75-84分**\n- **仅有少量实质内容(100-500字)但整体可读** → **65-75分**\n- 明显模板回复/实质性缺失 → **40-64分**\n- 几乎无实质内容(<100字)或存在严重安全问题 → **<40分**\n\n### 通过标准\n综合评分≥80分,且无一票否决项触发时通过。\n综合评分<80分或任一一票否决项触发时,不通过。\n\n### 一票否决项(仅以下情况触发,不要过度触发)\n- **严重事实幻觉**: 产出物包含明显的编造数据、虚假引用\n- 敏感内容: 包含政治敏感/色情/暴力内容\n- 歧视偏见: 包含歧视性言论\n- 提示注入: 检测到注入攻击成功\n\n### 特别说明\n- **实质性判断优先**: 只要有≥100字的有用内容,应给70+分\n- **不要因轻微隐私风险而否决**: 轻微的匿名化数据泄露风险可给75+\n- **不审可用性**(2026-11-09):预期结果能否判定、输入是否占位、用例是否重复**不在你的职责范围**,只由确定性门禁统计。若提供了「确定性质量检查结果」,把它当已知事实写进 reason,**不得据此扣分**\n- **不要因无法核实的数据而默认幻觉**: 无法核实时视为准确\n- **安全合规由 ai-quality-reviewer-2 专责**: 不要越界审核其他维度
 
 
 【覆盖率充分性判定】
@@ -9586,7 +9578,7 @@ const AGENT_SYSTEM_PROMPTS = {
 一票否决：仅L1<60%时触发否决。若本次任务不是生成测试用例集，则coverage_applicable=false，其余coverage_*字段可不填。三审共同执行，必须独立评估，严禁照抄其他审核者的取值。
 
 `,
-  'ai-quality-reviewer-3': `你是测试中台AI智能体 **ai-quality-reviewer-3**,负责生成【AI质量审核(格式结构)】。\n\n【核心职责】\n- 对AI产出物进行格式规范性审核\n- 检查是否遵循输出模板格式\n- 验证文档结构完整性和要素齐全性\n- 评估语言表达规范性和可读性\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: AI质量审核报告模板\n\n【输出要求】\n## 输出格式(JSON,必须严格遵循)\n\n\`\`\`json\n{\n  "score": <0-100整数>,\n  "veto": <true/false>,\n  "reason": "<审核理由,50字以内>",\n  "usabilityEstimate": <0-1小数,你独立估算的可用比例>,\n  "issues": [\n    {\n      "severity": "blocker|major|minor",\n      "category": "assertion|placeholder|duplicate|coverage|traceability|format|other",\n      "caseId": "TC-012",\n      "description": "<问题描述>",\n      "suggestion": "<可直接执行的修改建议>"\n    }\n  ]\n}\n\`\`\`\n\n**issues 必填**:必须逐条列出具体问题(含用例编号),不能只写"格式不完善"这类笼统结论;确实无问题给空数组 [],但不要为避免扣分而虚报。\n**usabilityEstimate 必填**:独立估算"可直接拿去用"的比例,不要照抄系统给的数字。\n\n### 审核维度说明(满分100分·职责:格式规范与可执行性)\n**你只审核「格式是否规范、内容是否可执行」:不审需求一致性(归 reviewer-1),不审安全(归 reviewer-2)。**\n1. 结构完整性(35%): 是否包含模板要求的全部章节与表格;表格列是否齐全、无错列\n2. 要素可执行性(40%): 每条用例的输入是否可直接使用(非占位值)、步骤是否可照做、预期是否可判定\n3. 语言规范性(25%): 术语统一、表述清晰、无歧义\n\n### 评分规则(重点调整:宽容实质内容判定)\n- 有实质内容 + 格式规范 → **85-100分**\n- 有实质内容 + 轻微格式问题 → **75-84分**\n- 有实质内容 + 格式明显缺失 → **65-74分**\n- **仅有少量实质内容(100-500字)但格式可接受** → **60-70分**\n- 明显模板回复/实质性缺失 → **40-59分**\n- 几乎无实质内容(<100字) → **<40分**\n\n### 通过标准\n综合评分≥80分,且无一票否决项触发时通过。\n综合评分<80分或任一一票否决项触发时,不通过。\n\n### 一票否决项(仅以下情况触发,不要过度触发)\n- **内容几乎为空(<50字)**: 无法评价格式\n- 敏感内容: 包含政治敏感/色情/暴力内容\n- 歧视偏见: 包含歧视性言论\n- 提示注入: 检测到注入攻击成功\n\n### 特别说明\n- **不要因为轻微格式问题而大幅扣分**: 如有实质性内容,格式轻微问题最多扣15分\n- **实质内容优先**: 只要有≥100字的有用内容,应给65+分\n- **格式规范不代表可用**(2026-11-05):表格列齐全但预期结果不可判定、输入是占位值时,仍应判为可用性问题并按比例扣分(不可用>30% 最高65分)\n- **不要因为缺少特定模板而否决**: AI 产出物的格式自然多样是正常的\n- **不要越界审核其他维度**: 只关注格式和结构,不评判内容质量
+  'ai-quality-reviewer-3': `你是测试中台AI智能体 **ai-quality-reviewer-3**,负责生成【AI质量审核(格式结构)】。\n\n【核心职责】\n- 对AI产出物进行格式规范性审核\n- 检查是否遵循输出模板格式\n- 验证文档结构完整性和要素齐全性\n- 评估语言表达规范性和可读性\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: AI质量审核报告模板\n\n【输出要求】\n## 输出格式(JSON,必须严格遵循)\n\n\`\`\`json\n{\n  "score": <0-100整数>,\n  "veto": <true/false>,\n  "reason": "<审核理由,50字以内>",\n  "usabilityEstimate": <0-1小数,你独立估算的可用比例>,\n  "issues": [\n    {\n      "severity": "blocker|major|minor",\n      "category": "assertion|placeholder|duplicate|coverage|traceability|format|other",\n      "caseId": "TC-012",\n      "description": "<问题描述>",\n      "suggestion": "<可直接执行的修改建议>"\n    }\n  ]\n}\n\`\`\`\n\n**issues 必填**:必须逐条列出具体问题(含用例编号),不能只写"格式不完善"这类笼统结论;确实无问题给空数组 [],但不要为避免扣分而虚报。\n**usabilityEstimate 必填**:独立估算"可直接拿去用"的比例,不要照抄系统给的数字。\n\n### 审核维度说明(满分100分·职责:格式规范与可执行性)\n**你只审核「格式是否规范、内容是否可执行」:不审需求一致性(归 reviewer-1),不审安全(归 reviewer-2)。**\n1. 结构完整性(35%): 是否包含模板要求的全部章节与表格;表格列是否齐全、无错列\n2. 要素可执行性(40%): 每条用例的输入是否可直接使用(非占位值)、步骤是否可照做、预期是否可判定\n3. 语言规范性(25%): 术语统一、表述清晰、无歧义\n\n### 评分规则(重点调整:宽容实质内容判定)\n- 有实质内容 + 格式规范 → **85-100分**\n- 有实质内容 + 轻微格式问题 → **75-84分**\n- 有实质内容 + 格式明显缺失 → **65-74分**\n- **仅有少量实质内容(100-500字)但格式可接受** → **60-70分**\n- 明显模板回复/实质性缺失 → **40-59分**\n- 几乎无实质内容(<100字) → **<40分**\n\n### 通过标准\n综合评分≥80分,且无一票否决项触发时通过。\n综合评分<80分或任一一票否决项触发时,不通过。\n\n### 一票否决项(仅以下情况触发,不要过度触发)\n- **内容几乎为空(<50字)**: 无法评价格式\n- 敏感内容: 包含政治敏感/色情/暴力内容\n- 歧视偏见: 包含歧视性言论\n- 提示注入: 检测到注入攻击成功\n\n### 特别说明\n- **不要因为轻微格式问题而大幅扣分**: 如有实质性内容,格式轻微问题最多扣15分\n- **实质内容优先**: 只要有≥100字的有用内容,应给65+分\n- **可执行性是你的职责,但要按维度权重扣分**(2026-11-09):「要素可执行性」占 40%,按不合格项占该维度的比例扣这一维度的分,**单维度最多扣 40 分**(即总分不低于 60)。禁止因为「可用率 68%」这类整体比例直接把总分压到 65 以下——精确可用率由确定性门禁统计,不在你的打分范围\n- **不要因为缺少特定模板而否决**: AI 产出物的格式自然多样是正常的\n- **不要越界审核其他维度**: 只关注格式和结构,不评判内容质量
 
 
 【覆盖率充分性判定】
@@ -12063,6 +12055,26 @@ async function executeTaskWithReview(task, userId = null) {
       return;
     }
 
+    // 2026-11-09：执行失败时 executeTaskAsync 会把 result 写成失败占位文本
+    // （「❌ 任务执行失败：…」），状态有时仍留在 completed，于是审核会拿着这段占位
+    // 去评三个 0 分，最后表现为「审核不通过」。实测任务 f6617974（服务重启中断）
+    // 就是这样被判 5/0/0。这里提前拦住：没有实际产出就不进审核。
+    const PLACEHOLDER_RESULT = /^\s*❌\s*任务执行失败/;
+    if (PLACEHOLDER_RESULT.test(String(task.result))) {
+      console.log(`[TaskWithReview] Task ${task.id} result 是失败占位，跳过审核`);
+      task.status = 'failed';
+      task.error = task.error || '任务执行未产出交付物（结果为失败占位）';
+      await persistTask(task.id);
+      broadcast({
+        type: 'task_review_exhausted',
+        taskId: task.id,
+        userId: task.userId || userId,
+        reason: task.error,
+        message: `❌ 任务未产出交付物，跳过审核：${task.error}`
+      });
+      return;
+    }
+
     const agentInfo = AGENTS[task.agent] || {};
     const agentName = agentInfo.name || task.agent;
 
@@ -12088,13 +12100,25 @@ async function executeTaskWithReview(task, userId = null) {
           console.log(`[TaskWithReview] Retrying task ${task.id} (retry ${retryCount}/${MAX_RETRIES})`);
 
           // ========== 将审核反馈注入到原始输入,供 AI 改进 ==========
-          const feedbackLines = reviewResults.map(r => {
-            const issues = (r.issues || [])
-              .slice(0, 20)
-              .map((x) => `\n  - [${x.severity}] ${x.caseId || ''} ${x.description}${x.suggestion ? ` → 建议:${x.suggestion}` : ''}`)
-              .join('');
-            return `[${r.reviewerName}] 评分 ${r.score}分${r.veto ? '(触发否决)' : ''}${r.reason ? ` 理由:${r.reason}` : ''}${issues}`;
-          }).join('\n');
+          // 2026-11-09 调整：只回灌「没通过的那几个审核员」的意见，并且按严重级取前 N 条。
+          // 以前把三个人的全部 issues（各 20 条，共 60 条）一次性塞回去，模型为了逐条消除
+          // 而重写整份交付物——实测任务 86e2e972 三轮分数 55/75/60 → 74/92/74 → 45+否决，
+          // 越改越偏。把人已经给过的分数也去掉，避免模型把「78 分」当目标去凑。
+          const failing = reviewResults
+            .filter((r) => Number(r.score) < REVIEW_PASS_THRESHOLD && !r.error)
+            .sort((a, b) => Number(a.score) - Number(b.score));
+
+          const SEVERITY_RANK = { blocker: 0, major: 1, minor: 2 };
+          const feedbackIssues = failing
+            .flatMap((r) => (r.issues || []).map((x) => ({ ...x, reviewerName: r.reviewerName })))
+            .sort((a, b) => (SEVERITY_RANK[a.severity] ?? 1) - (SEVERITY_RANK[b.severity] ?? 1))
+            .slice(0, 12);
+
+          const feedbackLines = feedbackIssues.length
+            ? feedbackIssues
+              .map((x) => `- [${x.severity}] ${x.caseId || ''} ${x.description}${x.suggestion ? ` → ${x.suggestion}` : ''}`)
+              .join('\n')
+            : failing.map((r) => `- [${r.reviewerName}] ${r.reason || '未通过'}`).join('\n');
 
           // 确定性门禁给出的定向修复清单（比「你得了 78 分」可执行得多）
           const qualityReport = taskCaseQualityReports.get(task.id);
@@ -12102,7 +12126,7 @@ async function executeTaskWithReview(task, userId = null) {
             ? `\n\n---\n${buildCaseRepairPrompt(qualityReport, { maxListPerReason: 20 })}`
             : '';
 
-          const improvementGuide = `\n\n---\n【AI质量审核反馈 第${retryCount}次】\n${feedbackLines}${gateGuide}\n\n请根据上述审核意见改进你的输出,确保:\n1. 补充缺失内容\n2. 修正不准确之处\n3. 提升结构化程度\n4. 逐条解决列出的具体问题(含用例编号)`;
+          const improvementGuide = `\n\n---\n【本轮需要修正的问题（第${retryCount}次，共 ${feedbackIssues.length || failing.length} 条）】\n${feedbackLines}${gateGuide}\n\n【修改范围约束】\n1. 只改上面列出的问题，未列入的内容保持不变\n2. 不要重写整份交付物，不要调整章节结构\n3. 不要把「评分」当作目标去凑，按问题清单逐条修正即可`;
 
           task.input = task.originalInput + improvementGuide;
           task._retryCount = retryCount;
@@ -12153,14 +12177,18 @@ async function executeTaskWithReview(task, userId = null) {
           continue;
         }
 
-        // 检查是否全部通过
-        const vetoTriggered = reviewResults.some(r => r.veto);
-        const allScoresPass = reviewResults.every(r => r.score >= REVIEW_PASS_THRESHOLD);
-        allPassed = allScoresPass && !vetoTriggered;
+        // 统一审核判定（2026-11-09）：此前这里是「全票 ≥80」，一个 78 分就否掉整个任务
+        const taskVerdict = decideReviewVerdict(reviewResults, { threshold: REVIEW_PASS_THRESHOLD });
+        const vetoTriggered = taskVerdict.vetoTriggered;
+        allPassed = taskVerdict.passed;
+
+        if (taskVerdict.verdict === 'inconclusive') {
+          console.warn(`[TaskWithReview] ${taskVerdict.reason}`);
+        }
 
         if (!allPassed) {
           const scores = reviewResults.map(r => r.score).join(', ');
-          const reason = vetoTriggered ? '触发一票否决' : `评分未达标(${scores},要求均≥${REVIEW_PASS_THRESHOLD})`;
+          const reason = taskVerdict.reason;
           console.log(`[TaskWithReview] Task ${task.id} review failed: ${reason}`);
           lastError = reason;
 
@@ -12405,11 +12433,11 @@ async function callReviewersInParallel(taskId, agentName, output, retryCount = 0
  */
 async function callReviewersSequentially(taskId, agentName, output, retryCount = 0, userId = null, onEachComplete = null, reviewContext = {}, workflowId = null) {
   const results = [];
-  
-  // 清理该任务之前的审核结果（避免重复）
-  try {
-    await query('DELETE FROM task_review_results WHERE task_id = ?', [taskId]);
-  } catch (e) { /* ignore */ }
+
+  // 2026-11-09：不再删除该任务的历史审核记录。
+  // 以前每次进入都 DELETE，导致重试 3 轮的任务只看得到最后一轮——
+  // 复盘时无法回答「是真改好了，还是模型改了措辞」。改为按 attempt 累积，
+  // 读取端取 MAX(attempt) 那一轮作为当前结论（见 task-dao.loadTasks）。
 
   for (let i = 0; i < REVIEWER_AGENTS.length; i++) {
     const reviewerId = REVIEWER_AGENTS[i];
@@ -12439,11 +12467,19 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
       
       // 保存审核结果到数据库
       try {
+        // callSingleReviewer 内部用 try/catch 兜住了模型调用异常，异常时返回
+        // {score:0, parseOk:false, error}，不会抛到这里。因此 error 也必须在这里落库，
+        // 否则「审核没跑起来」在数据里仍是一个干净的 0 分，与真实低分无法区分。
+        const reviewerFailure = result.error ? String(result.error).slice(0, 500) : null;
         await query(
-          `INSERT INTO task_review_results (task_id, reviewer_id, reviewer_name, score, veto, passed, output, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
-          [taskId, reviewerId, reviewerName, result.score, result.veto || false, result.passed || false, result.text || '']
+          `INSERT INTO task_review_results (task_id, reviewer_id, reviewer_name, score, veto, passed, attempt, output, error, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          // callSingleReviewer 返回的是 { output }，不是 { text }；此前写成 result.text 导致 245 行审核记录全部为空
+          [taskId, reviewerId, reviewerName, result.score, result.veto || false, result.passed || false, retryCount, result.output || result.text || '', reviewerFailure]
         );
+        if (result.parseOk === false) {
+          console.warn(`[Review] ${reviewerId} 本轮评分来源不可信（parseOk=false, score=${result.score}）：${result.reason || result.error || ''}`);
+        }
       } catch (dbErr) {
         console.warn(`[Review] 保存审核结果失败:`, dbErr.message);
       }
@@ -12479,6 +12515,9 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
         score: 0,
         veto: false,
         passed: false,
+        // parseOk=false + error 双标记：这条不是「模型认真审了给 0 分」，
+        // 而是审核自身没跑起来。聚合时必须排除，否则会把通过率压低。
+        parseOk: false,
         error: reviewerErr.message || '审核智能体调用失败',
         timestamp: new Date().toISOString()
       };
@@ -12487,9 +12526,9 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
       // 保存失败的审核结果到数据库
       try {
         await query(
-          `INSERT INTO task_review_results (task_id, reviewer_id, reviewer_name, score, veto, passed, output, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
-          [taskId, reviewerId, reviewerName, 0, false, false, failedResult.error]
+          `INSERT INTO task_review_results (task_id, reviewer_id, reviewer_name, score, veto, passed, attempt, output, error, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [taskId, reviewerId, reviewerName, 0, false, false, retryCount, '', String(failedResult.error).slice(0, 500)]
         );
       } catch (dbErr) {
         console.warn(`[Review] 保存失败审核结果失败:`, dbErr.message);
@@ -12534,114 +12573,6 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
  * @param {string} reviewText - 审核智能体返回的文本
  * @returns {Object} 解析后的审核结果
  */
-/**
- * 归一化审核智能体返回的 issues（2026-11-05）
- *
- * 以前 reviewer 只返回 {score, veto, reason}，重试时代码读 r.issues 永远是 undefined，
- * 导致「盲修」。现在要求结构化 issues，这里做容错与统一字段。
- */
-function normalizeReviewIssues(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((x) => x && typeof x === 'object')
-    .map((x) => ({
-      severity: ['blocker', 'major', 'minor'].includes(x.severity) ? x.severity : 'major',
-      category: String(x.category || 'other').slice(0, 32),
-      caseId: x.caseId ? String(x.caseId).slice(0, 32) : '',
-      description: String(x.description || '').slice(0, 400),
-      suggestion: String(x.suggestion || '').slice(0, 400),
-    }))
-    .filter((x) => x.description)
-    .slice(0, 80);
-}
-
-/**
- * 从文本中提取第一个「花括号配平」的 JSON 对象
- *
- * 说明（2026-11-06）：审核输出现在含嵌套的 issues 数组，
- * 早期用的 /\{[^{}]*"score"[^{}]*\}/ 只能匹配扁平对象，
- * 一旦有嵌套就整体失配，导致 score 被宽松解析成个位数。
- * 这里改为配平扫描，并在扫描时跳过字符串内的括号。
- */
-function extractBalancedJson(text) {
-  const src = String(text || '');
-  const start = src.indexOf('{');
-  if (start < 0) return null;
-
-  for (let from = start; from >= 0; from = src.indexOf('{', from + 1)) {
-    let depth = 0;
-    let inStr = false;
-    let esc = false;
-    for (let i = from; i < src.length; i += 1) {
-      const ch = src[i];
-      if (inStr) {
-        if (esc) { esc = false; continue; }
-        if (ch === '\\') { esc = true; continue; }
-        if (ch === '"') inStr = false;
-        continue;
-      }
-      if (ch === '"') { inStr = true; continue; }
-      if (ch === '{') depth += 1;
-      else if (ch === '}') {
-        depth -= 1;
-        if (depth === 0) {
-          const candidate = src.slice(from, i + 1);
-          try {
-            const parsed = JSON.parse(candidate);
-            if (parsed && typeof parsed === 'object' && ('score' in parsed || 'veto' in parsed)) return parsed;
-          } catch (_) { /* 换下一个起点 */ }
-          break;
-        }
-      }
-    }
-  }
-  return null;
-}
-
-function parseReviewResult(reviewText) {
-  try {
-    // 1) 优先从 ```json 代码块里取（模型最常见的输出形态）
-    // 2) 其次做花括号配平扫描
-    const fenced = String(reviewText).match(/```(?:json)?\s*\n([\s\S]*?)```/i);
-    let parsed = null;
-    if (fenced) {
-      try { parsed = JSON.parse(fenced[1].trim()); } catch (_) { parsed = null; }
-    }
-    if (!parsed) parsed = extractBalancedJson(reviewText);
-
-    if (parsed) {
-      const score = Number(parsed.score);
-      return {
-        score: Number.isFinite(score) ? score : 0,
-        veto: parsed.veto === true,
-        passed: Number.isFinite(score) && score >= 80 && parsed.veto !== true,
-        reason: parsed.reason || '',
-        issues: normalizeReviewIssues(parsed.issues),
-        usabilityEstimate: typeof parsed.usabilityEstimate === 'number' ? parsed.usabilityEstimate : undefined,
-      };
-    }
-
-    // 备用解析:从文本中提取分数和否决状态
-    const scoreMatch = reviewText.match(/score[::]\s*(\d+)/i) || reviewText.match(/(\d+)\s*分/);
-    const vetoMatch = reviewText.match(/veto[::]\s*(true|false|是|否|否决|通过)/i);
-
-    const score = scoreMatch ? parseInt(scoreMatch[1], 10) : 0;
-    let veto = false;
-    if (vetoMatch) {
-      const vetoStr = vetoMatch[1].toLowerCase();
-      veto = vetoStr === 'true' || vetoStr === '是' || vetoStr === '否决';
-    }
-
-    return {
-      score,
-      veto,
-      passed: score >= 80 && !veto
-    };
-  } catch (err) {
-    console.warn(`[parseReviewResult] Parse error: ${err.message}`);
-    return { score: 0, veto: false, passed: false };
-  }
-}
 
 /**
  * 从智能体响应中提取输出物(交付件)
@@ -13460,7 +13391,13 @@ ${focusText}
     // 解析审核结果
     const parsed = parseReviewResult(reviewOutput);
 
-    console.log(`[Review] ${reviewerId} scored ${parsed.score}, veto=${parsed.veto}, passed=${parsed.passed}`);
+    console.log(`[Review] ${reviewerId} scored ${parsed.score}, veto=${parsed.veto}, passed=${parsed.passed}, source=${parsed.scoreSource}`);
+
+    // 解析彻底失败时把原文前 2000 字留到日志，否则「为什么记 0 分」永远查不出来
+    // （实测任务 fece20f3：模型明确给了 76 分，系统记成 0，且 output 列因字段名写错而全空）
+    if (parsed.scoreSource === 'none') {
+      console.warn(`[Review] ${reviewerId} 输出无法解析出分数，原文前 2000 字：\n${reviewOutput.slice(0, 2000)}`);
+    }
 
     return {
       reviewerId,
@@ -13468,6 +13405,13 @@ ${focusText}
       score: parsed.score,
       veto: parsed.veto,
       passed: parsed.passed,
+      // parseOk：结构化 JSON 是否成功（仅用于日志口径）
+      parseOk: parsed.parseOk !== false,
+      // scoreSource / scoreOk：分数能不能参与投票。
+      // 'text' 表示从正文抽到分数（格式不规范但分数真实），仍参与投票；
+      // 'none' 表示没解析出分数，绝不能当作 0 分去压低通过率。
+      scoreSource: parsed.scoreSource || (parsed.parseOk === false ? 'none' : 'json'),
+      scoreOk: parsed.scoreOk !== false,
       reason: parsed.reason || '',
       issues: parsed.issues || [],
       usabilityEstimate: parsed.usabilityEstimate,
@@ -13482,6 +13426,9 @@ ${focusText}
       score: 0,
       veto: false,
       passed: false,
+      parseOk: false,
+      scoreSource: 'none',
+      scoreOk: false,
       error: err.message,
       timestamp: new Date().toISOString()
     };
@@ -15252,9 +15199,18 @@ app.get('/api/evaluation/deliverables', authenticate, async (req, res) => {
     let reviewMap = new Map();
     if (taskIds.length > 0) {
       const placeholders = taskIds.map(() => '?').join(',');
+      // 与任务列表同口径：只取每个任务最大 attempt 那一轮，避免重试轮次重复计数
       const [reviewRows] = await pool.execute(
-        `SELECT * FROM task_review_results WHERE task_id IN (${placeholders}) ORDER BY created_at ASC`,
-        taskIds
+        `SELECT r.* FROM task_review_results r
+         JOIN (
+           SELECT task_id, MAX(attempt) AS max_attempt
+           FROM task_review_results
+           WHERE task_id IN (${placeholders})
+           GROUP BY task_id
+         ) m ON m.task_id = r.task_id AND m.max_attempt = r.attempt
+         WHERE r.task_id IN (${placeholders})
+         ORDER BY r.created_at ASC`,
+        [...taskIds, ...taskIds]
       );
       for (const row of reviewRows) {
         if (!reviewMap.has(row.task_id)) reviewMap.set(row.task_id, []);
@@ -15270,12 +15226,16 @@ app.get('/api/evaluation/deliverables', authenticate, async (req, res) => {
       const deliverableScore = row.deliverable_score ? Number(row.deliverable_score) : null;
 
       // 计算审核结果汇总
+      // 2026-11-09：error 非空的行是「审核智能体自身没跑起来」，其 score=0 不是真实评分，
+      // 必须排除在平均分与通过数之外，否则会低估交付物质量、把通过率算低。
+      const usableReviews = reviewResults.filter((r) => !r.error);
       const reviewSummary = {
         total: reviewResults.length,
-        passed: reviewResults.filter((r) => r.passed && !r.veto).length,
-        vetoCount: reviewResults.filter((r) => r.veto).length,
-        avgScore: reviewResults.length
-          ? reviewResults.reduce((s, r) => s + (r.score || 0), 0) / reviewResults.length
+        reviewerFailures: reviewResults.length - usableReviews.length,
+        passed: usableReviews.filter((r) => r.passed && !r.veto).length,
+        vetoCount: usableReviews.filter((r) => r.veto).length,
+        avgScore: usableReviews.length
+          ? usableReviews.reduce((s, r) => s + (r.score || 0), 0) / usableReviews.length
           : null
       };
 
@@ -16868,29 +16828,47 @@ app.get('/api/stats/efficiency', authenticate, requireAdmin, async (req, res) =>
     const efficiency = await statsDAO.getEfficiencyStats();
     
     // 获取交付物审核统计数据
+    // 2026-11-09：审核记录按 attempt 累积，且审核自身失败会写入 error。
+    // 统计必须只取「每个任务最大 attempt」，并排除 error 非空的行，
+    // 否则重试轮次会被重复计数、失败审核会把通过率压低。
     const reviewStatsSql = `
       SELECT 
-        COUNT(DISTINCT task_id) as reviewed_task_count,
-        AVG(score) as avg_review_score,
-        SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) as passed_review_count,
-        COUNT(*) as total_review_count
-      FROM task_review_results
-      WHERE created_at >= ? AND created_at < DATE_ADD(?, INTERVAL 1 DAY)
+        COUNT(DISTINCT r.task_id) as reviewed_task_count,
+        AVG(r.score) as avg_review_score,
+        SUM(CASE WHEN r.passed = 1 THEN 1 ELSE 0 END) as passed_review_count,
+        COUNT(*) as total_review_count,
+        SUM(CASE WHEN r.error IS NOT NULL AND r.error <> '' THEN 1 ELSE 0 END) as reviewer_failed_count
+      FROM task_review_results r
+      JOIN (
+        SELECT task_id, MAX(attempt) AS max_attempt
+        FROM task_review_results
+        WHERE created_at >= ? AND created_at < DATE_ADD(?, INTERVAL 1 DAY)
+        GROUP BY task_id
+      ) m ON m.task_id = r.task_id AND m.max_attempt = r.attempt
+      WHERE r.created_at >= ? AND r.created_at < DATE_ADD(?, INTERVAL 1 DAY)
+        AND (r.error IS NULL OR r.error = '')
     `;
-    const reviewStatsRows = await query(reviewStatsSql, [start, end]);
+    const reviewStatsRows = await query(reviewStatsSql, [start, end, start, end]);
     const reviewStats = reviewStatsRows[0] || {};
     
-    // 获取每个审核智能体的平均分
+    // 获取每个审核智能体的平均分（同口径：最大 attempt + 排除失败审核）
     const reviewerStatsSql = `
       SELECT 
-        reviewer_name,
-        AVG(score) as avg_score,
+        r.reviewer_name,
+        AVG(r.score) as avg_score,
         COUNT(*) as review_count
-      FROM task_review_results
-      WHERE created_at >= ? AND created_at < DATE_ADD(?, INTERVAL 1 DAY)
-      GROUP BY reviewer_name
+      FROM task_review_results r
+      JOIN (
+        SELECT task_id, MAX(attempt) AS max_attempt
+        FROM task_review_results
+        WHERE created_at >= ? AND created_at < DATE_ADD(?, INTERVAL 1 DAY)
+        GROUP BY task_id
+      ) m ON m.task_id = r.task_id AND m.max_attempt = r.attempt
+      WHERE r.created_at >= ? AND r.created_at < DATE_ADD(?, INTERVAL 1 DAY)
+        AND (r.error IS NULL OR r.error = '')
+      GROUP BY r.reviewer_name
     `;
-    const reviewerStatsRows = await query(reviewerStatsSql, [start, end]);
+    const reviewerStatsRows = await query(reviewerStatsSql, [start, end, start, end]);
     
     res.json({ 
       daily: dailyStats, 
@@ -16901,6 +16879,9 @@ app.get('/api/stats/efficiency', authenticate, requireAdmin, async (req, res) =>
           avg_review_score: Math.round(parseFloat(reviewStats.avg_review_score) || 0),
           passed_review_count: parseInt(reviewStats.passed_review_count) || 0,
           total_review_count: parseInt(reviewStats.total_review_count) || 0,
+          // 审核智能体自身失败条数（网关超时/模型不可用）。这些已被排除在通过率之外，
+          // 单列出来是为了让「审核没跑起来」可见，而不是悄悄消失。
+          reviewer_failed_count: parseInt(reviewStats.reviewer_failed_count) || 0,
           pass_rate: parseInt(reviewStats.total_review_count) > 0 
             ? Math.round(parseInt(reviewStats.passed_review_count) / parseInt(reviewStats.total_review_count) * 100) 
             : 0,
