@@ -288,5 +288,56 @@ t('applyInputRepairs 不改动非表格行', () => {
   assert.strictEqual(r.text, md);
 });
 
+
+// ---------------- 长度边界保真（2026-11-10）----------------
+t('长度边界用例：输入长度必须与用例名一致', () => {
+  const r = repairPlaceholderInput('password="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"', '密码31位(max-1) 输入31位密码');
+  const v = r.input.split('=')[1].replace(/"/g, '');
+  assert.strictEqual(v.length, 31, r.input);
+});
+
+t('长度边界用例：33 位密码修完仍是 33 位', () => {
+  const r = repairPlaceholderInput('password=33位字符', '密码33位过长 边界');
+  const v = r.input.split('=')[1].replace(/"/g, '');
+  assert.strictEqual(v.length, 33, r.input);
+});
+
+t('非边界用例：密码修成合规的 8 位真实样例', () => {
+  const r = repairPlaceholderInput('password="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"', '正常登录用例');
+  const v = r.input.split('=')[1].replace(/"/g, '');
+  assert.strictEqual(v.length, 8, r.input);
+});
+
+t('手机号边界：10/11/12 位均保真', () => {
+  for (const [len, ctx] of [[10, '手机号10位过短 边界'], [11, '手机号11位合法值'], [12, '手机号12位过长 边界']]) {
+    const raw = 'phone="' + 'A'.repeat(len) + '"';
+    const r = repairPlaceholderInput(raw, ctx);
+    const v = r.input.split('=')[1].replace(/"/g, '');
+    assert.strictEqual(v.length, len, ctx + ' → ' + r.input);
+  }
+});
+
+t('验证码边界：5/6/7 位均保真', () => {
+  for (const len of [5, 6, 7]) {
+    const raw = 'smsCode="' + 'A'.repeat(len) + '"';
+    const r = repairPlaceholderInput(raw, '验证码' + len + '位 边界');
+    const v = r.input.split('=')[1].replace(/"/g, '');
+    assert.strictEqual(v.length, len, r.input);
+  }
+});
+
+t('邮箱边界仍保留 @ 结构', () => {
+  const r = repairPlaceholderInput('email="AAAAAAAAAAAA"', '邮箱长度边界');
+  assert.ok(r.input.includes('@'), r.input);
+});
+
+t('applyInputRepairs 用整行上下文判断边界', () => {
+  const md = '| TC-013 | 密码31位(max-1) | password="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" | 1.输入31位密码 | 返回 200 |';
+  const out = applyInputRepairs(md);
+  const cell = out.text.split('|')[3].trim();
+  const v = cell.split('=')[1].replace(/"/g, '');
+  assert.strictEqual(v.length, 31, out.text);
+});
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
