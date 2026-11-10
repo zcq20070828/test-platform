@@ -37,6 +37,7 @@ import {
   applyInputRepairs as applyCaseInputRepairs,
   buildSurgicalRepairPrompt,
   spliceRepairedRows,
+  applyLayerColumnRepair as applyCaseLayerRepair,
 } from './lib/case-quality-gate.js';
 import {
   calibrateThreshold as calibrateGateThreshold,
@@ -10170,23 +10171,29 @@ function buildApiTestCaseRows(apis, existingText = '') {
   for (const api of missing) {
     const name = api.name || api.id;
     const base = { apiId: api.id, name, method: api.method };
-    rows.push({ ...base, suffix: '01', type: '正向', priority: '高', dimension: '② 数据 / 等价类划分法',
+    // 层级必须写：门禁把「层级」列为必填，系统自己补的用例不写层级，
+    // 会自己把自己的用例判成不可用（实测任务 590f：39 条全中招，直接拉低 16 个百分点）。
+    rows.push({ ...base, suffix: '01', type: '正向', layer: '正常', priority: '高', dimension: '② 数据 / 等价类划分法',
       pre: '接口已部署；准备合法测试账号/令牌',
-      steps: `按接口文档构造合法请求调用 ${api.method} ${name}`,
-      expect: 'HTTP 2xx；业务成功码；必填返回字段齐全；响应时间符合接口 SLA' });
-    rows.push({ ...base, suffix: '02', type: '鉴权', priority: '高', dimension: '① 用户 / 等价类划分法',
+      steps: `1. 按接口文档构造合法请求\n2. 调用 ${api.method} ${name}\n3. 校验响应体与落库结果`,
+      expect: `HTTP 200；响应体 code=0 且含 data 对象；${name} 返回的必填字段齐全且类型与接口文档一致` });
+    rows.push({ ...base, suffix: '02', type: '鉴权', layer: '异常', priority: '高', dimension: '① 用户 / 错误推测法',
       pre: '未登录或使用无权限账号',
-      steps: `不携带登录态/使用越权账号调用 ${api.method} ${name}`,
-      expect: '返回 401/403 或业务鉴权失败；不返回敏感数据/其他用户数据' });
-    rows.push({ ...base, suffix: '03', type: '参数异常', priority: '中', dimension: '② 数据 / 边界值分析法+错误推测法',
+      steps: `1. 不携带登录态\n2. 调用 ${api.method} ${name}\n3. 换用越权账号再调用一次`,
+      expect: '返回 401 或 403；响应体含错误码 unauthorized；不返回任何业务字段与其他用户数据' });
+    rows.push({ ...base, suffix: '03', type: '参数异常', layer: '异常', priority: '中', dimension: '② 数据 / 边界值分析法+错误推测法',
       pre: '接口已部署',
-      steps: `缺失必填参数、参数类型错误、边界值/超长值调用 ${api.method} ${name}`,
-      expect: '返回 4xx 或业务参数错误码；服务不返回 5xx、不泄露堆栈/数据库信息' });
+      steps: `1. 缺失必填参数调用 ${api.method} ${name}\n2. 参数类型错误再调用\n3. 超长/边界值再调用`,
+      expect: '三次均返回 400 或业务参数错误码 INVALID_PARAM；服务不返回 5xx，响应体不含堆栈或数据库信息' });
+    rows.push({ ...base, suffix: '04', type: '边界', layer: '边界', priority: '中', dimension: '② 数据 / 边界值分析法',
+      pre: '接口已部署；已确定关键数值/长度字段的取值范围',
+      steps: `1. 取关键字段最小值与最大值调用 ${api.method} ${name}\n2. 取最小值-1 与最大值+1 再调用`,
+      expect: '最小值与最大值返回 200 且字段值原样回显；越界值返回 400 并在响应体给出字段名与允许范围' });
     if (api.method === 'POST' || api.method === 'PUT' || api.method === 'PATCH') {
-      rows.push({ ...base, suffix: '04', type: '幂等/重复提交', priority: '中', dimension: '④ 操作 / 错误推测法',
+      rows.push({ ...base, suffix: '05', type: '幂等/重复提交', layer: '异常', priority: '中', dimension: '④ 操作 / 错误推测法',
         pre: '同一用户/同一业务单号',
-        steps: `连续两次提交相同请求调用 ${api.method} ${name}`,
-        expect: '幂等或限流生效；不产生重复派奖/重复扣减/重复写入' });
+        steps: `1. 连续两次提交相同请求调用 ${api.method} ${name}\n2. 查询业务表记录数`,
+        expect: '仅产生 1 条业务记录；第二次请求返回 409 或业务码 DUPLICATE_SUBMIT；不产生重复派奖/扣减' });
     }
   }
   return rows;
@@ -10199,16 +10206,16 @@ function buildApiTestCasesMarkdown(apis, existingText = '') {
   lines.push('');
   lines.push('## 接口测试用例（系统按接口清单补齐）');
   lines.push('');
-  const modelCaseCount = (String(existingText || '').match(/^\|\s*TC-\d+\s*\|/gm) || []).length;
-  lines.push(`> 输入报告的接口清单共 ${apis.length} 个（${apis.map((a) => a.id).join('、')}）。以下用例由系统确定性生成，确保每个接口至少覆盖正向、鉴权、参数异常；POST/PUT/PATCH 额外覆盖幂等/重复提交。具体请求字段、响应结构需接口文档补充后细化。`);
+  const modelCaseCount = (String(existingText || '').match(/^\|\s*[A-Za-z][\w-]*-\d+\s*\|/gm) || []).length;
+  lines.push(`> 输入报告的接口清单共 ${apis.length} 个（${apis.map((a) => a.id).join('、')}）。以下用例由系统确定性生成，每个接口覆盖正向、鉴权、参数异常、边界，POST/PUT/PATCH 额外覆盖幂等/重复提交。具体请求字段、响应结构需接口文档补充后细化。`);
   lines.push('');
-  lines.push(`> 用例统计：原用例集（模型生成）${modelCaseCount} 条；接口用例（系统补齐）${rows.length} 条；合计 ${modelCaseCount + rows.length} 条（均按表格行统计）。`);
+  lines.push(`> 用例统计：原用例集（模型生成）${modelCaseCount} 条；接口用例（系统补齐）${rows.length} 条；合计 ${modelCaseCount + rows.length} 条（均按表格行统计，已含本表）。`);
   lines.push('');
-  lines.push('| 用例编号 | 接口编号 | 接口名称 | 请求方式 | 用例类型 | 维度 | 前置条件 | 测试步骤 | 预期结果 | 优先级 | 关联需求 |');
-  lines.push('|---|---|---|---|---|---|---|---|---|---|---|');
+  lines.push('| 用例编号 | 接口编号 | 接口名称 | 请求方式 | 用例类型 | 维度 | 层级 | 前置条件 | 测试步骤 | 预期结果 | 优先级 | 关联需求 |');
+  lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const r of rows) {
-    const esc = (v) => String(v == null ? '' : v).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
-    lines.push(`| IT-${r.apiId}-${r.suffix} | ${r.apiId} | ${esc(r.name)} | ${r.method} | ${r.type} | ${esc(r.dimension || '')} | ${esc(r.pre)} | ${esc(r.steps)} | ${esc(r.expect)} | ${r.priority} | ${r.apiId} |`);
+    const esc = (v) => String(v == null ? '' : v).replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
+    lines.push(`| IT-${r.apiId}-${r.suffix} | ${r.apiId} | ${esc(r.name)} | ${r.method} | ${r.type} | ${esc(r.dimension || '')} | ${r.layer} | ${esc(r.pre)} | ${esc(r.steps)} | ${esc(r.expect)} | ${r.priority} | ${r.apiId} |`);
   }
   return lines.join('\n');
 }
@@ -10570,6 +10577,15 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             console.log(`[CaseGate] ${agentId} 自动修复占位输入 ${fixed.applied} 处`);
           }
 
+          // 自动补「层级」列（2026-11-10）：层级是机械信息，靠模型补既慢又容易改错。
+          // 实测任务 590f：整张接口用例表缺层级列，39 条用例（含系统自己补的 39 条）
+          // 全部被判不可用，直接拉低 16 个百分点——而这一列完全可以从行文字确定性推断。
+          const layerFixed = applyCaseLayerRepair(text);
+          if (layerFixed.rowsRepaired > 0) {
+            text = layerFixed.text;
+            console.log(`[CaseGate] ${agentId} 自动补层级列 ${layerFixed.rowsRepaired} 行（${layerFixed.tablesRepaired} 张表）`);
+          }
+
           gateReport = checkCaseQuality(text, {
             originalInput: taskInput,
             minUsabilityRate: CASE_QUALITY_MIN_RATE,
@@ -10652,8 +10668,18 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             const REPAIR_CONCURRENCY = Number(process.env.CASE_QUALITY_REPAIR_CONCURRENCY) || 3;
             const REPAIR_TIMEOUT_MS = Number(process.env.CASE_QUALITY_REPAIR_TIMEOUT_MS) || 300000;
             const REPAIR_MAX_BATCHES = Number(process.env.CASE_QUALITY_REPAIR_MAX_BATCHES) || 5;
+            // 能力上限：修复容量 = 每批条数 × 最大批数。实测 40 条容量根本不够——
+            // 任务 590f 待修 121 条，只修了 40 条（33%），修完可用率仍只有 64.3%。
+            // 容量设为 96 条（12 批 × 8 条），覆盖常见交付物的全部待修项；
+            // 超过上限的部分在日志里明确报出「未修复 N 条」，不再静默截断。
+            const REPAIR_CAPACITY = Number(process.env.CASE_QUALITY_REPAIR_CAPACITY) || 96;
+            const effectiveMaxBatches = Math.max(REPAIR_MAX_BATCHES, Math.ceil(REPAIR_CAPACITY / REPAIR_BATCH_SIZE));
 
-            const targets = gateReport.cases.slice(0, REPAIR_BATCH_SIZE * REPAIR_MAX_BATCHES);
+            const targets = gateReport.cases.slice(0, REPAIR_BATCH_SIZE * effectiveMaxBatches);
+            const untouchable = gateReport.cases.length - targets.length;
+            if (untouchable > 0) {
+              console.warn(`[CaseGate] 待修 ${gateReport.cases.length} 条超出修复容量 ${targets.length} 条，剩余 ${untouchable} 条本轮不修（下一轮或人工整改）`);
+            }
             const batches = [];
             for (let b = 0; b < targets.length; b += REPAIR_BATCH_SIZE) {
               batches.push(targets.slice(b, b + REPAIR_BATCH_SIZE));
@@ -12071,7 +12097,10 @@ const CASE_QUALITY_MIN_PROBE_COVERAGE = Number(process.env.CASE_QUALITY_MIN_PROB
 // 是否需要定向修复重试（关掉可只做标注）
 const CASE_QUALITY_AUTO_REPAIR = process.env.CASE_QUALITY_AUTO_REPAIR !== '0';
 // 定向修复最多几轮（每轮一次 LLM 调用）
-const CASE_QUALITY_MAX_REPAIR_ROUNDS = Number(process.env.CASE_QUALITY_MAX_REPAIR_ROUNDS) || 1;
+// 定向修复轮数：1 轮修不完就交付半成品是实测出来的主要问题
+// （任务 590f：一轮修 40/121 条，可用率 49.8%→64.3%，仍不达标）。
+// 设为 2 轮：第一轮修掉大部分机械问题，第二轮收尾，总耗时增加约 3 分钟。
+const CASE_QUALITY_MAX_REPAIR_ROUNDS = Number(process.env.CASE_QUALITY_MAX_REPAIR_ROUNDS) || 2;
 // 需要跑用例门禁的智能体
 const CASE_QUALITY_GATE_AGENTS = new Set(['test-case-generator']);
 // 按智能体规则集做确定性检查（2026-11-06 阶段四 4.3）：

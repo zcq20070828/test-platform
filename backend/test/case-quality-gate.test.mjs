@@ -18,6 +18,7 @@ import {
   checkDeliverable,
   buildRepairPrompt,
   applyInputRepairs,
+  applyLayerColumnRepair,
 } from '../lib/case-quality-gate.js';
 
 let pass = 0;
@@ -451,6 +452,94 @@ t('skippedIds 会出现在报告里（漏检可见）', () => {
   const r = checkDeliverable(md, {});
   assert.ok(Array.isArray(r.skippedIds));
   assert.ok(r.skippedIds.includes('待定'), JSON.stringify(r.skippedIds));
+});
+
+
+// ---------------- 断言识别：中文引号与具体对象（2026-11-10）----------------
+// 实测任务 590f：47 条被判「预期不可判定」的用例中 28 条其实是可判定的，
+// 只因引号是中文弯引号 “ ” 或描述里带具体 UI 对象。误杀会让模型白改一遍。
+t('中文弯引号包裹的具体文案算可判定', () => {
+  assert.strictEqual(inspectAssertion('顶栏显示文案“玩转AI云盘赢豪礼”').verifiable, true);
+  assert.strictEqual(inspectAssertion('任务卡片正常展示“一次性任务”').verifiable, true);
+  assert.strictEqual(inspectAssertion('列表尾部显示“1000+”').verifiable, true);
+});
+
+t('具体 UI 对象 + 可观测变化算可判定', () => {
+  assert.strictEqual(inspectAssertion('登录成功进入活动页，右上角显示掩码手机号').verifiable, true);
+  assert.strictEqual(inspectAssertion('页面出现验证码输入框').verifiable, true);
+});
+
+t('负向可观测结果算可判定（不执行注入/不发放奖品）', () => {
+  assert.strictEqual(inspectAssertion('参数化查询生效，不执行注入语句').verifiable, true);
+  assert.strictEqual(inspectAssertion('纯文本回显，脚本不执行').verifiable, true);
+  assert.strictEqual(inspectAssertion('助力失败，不发放奖励，明细不增加').verifiable, true);
+});
+
+t('「XX 展示正确」仍判为不可判定（有评价词但无判据）', () => {
+  assert.strictEqual(inspectAssertion('未登录态展示正确').verifiable, false);
+  assert.strictEqual(inspectAssertion('功能正常').verifiable, false);
+  assert.strictEqual(inspectAssertion('弱网下功能可用，无状态错乱').verifiable, false);
+});
+
+t('判定顺序：弱描述优先于强断言词', () => {
+  // 「展示」在强断言表里，但整句只剩「展示正确」时必须是弱
+  const r = inspectAssertion('页面展示正确');
+  assert.strictEqual(r.verifiable, false, 'reason=' + r.reason);
+});
+
+// ---------------- 层级列自动补齐（2026-11-10）----------------
+const noLayerTable = [
+  '| 用例编号 | 用例名称 | 维度 | 输入数据 | 执行步骤 | 预期结果 |',
+  '|---|---|---|---|---|---|',
+  '| IT-001-01 | 正向调用 | ② 数据 / 等价类划分法 | id=1 | 1.调用 | 返回 200，含 data 字段 |',
+  '| IT-001-02 | 参数异常 | ② 数据 / 边界值分析法 | id=超长 | 1.调用 | 返回 400 并给出字段名 |',
+  '| IT-001-03 | 边界值 | ② 数据 / 边界值分析法 | id=最大值 | 1.调用 | 返回 200，字段值原样回显 |',
+].join('\n');
+
+t('缺层级列的表被自动补齐，层级插在维度列之后', () => {
+  const r = applyLayerColumnRepair(noLayerTable);
+  assert.strictEqual(r.tablesRepaired, 1);
+  assert.strictEqual(r.rowsRepaired, 3);
+  const header = r.text.split('\n')[0];
+  assert.ok(/维度 \| 层级 \| 输入数据/.test(header), header);
+});
+
+t('层级按行文字确定性推断：异常→边界→正常', () => {
+  const r = applyLayerColumnRepair(noLayerTable);
+  const { cases } = parseCaseTable(r.text);
+  assert.strictEqual(cases[0].layer, '正常', 'arg异常行被误判=' + cases[0].layer);
+  assert.strictEqual(cases[1].layer, '异常');
+  assert.strictEqual(cases[2].layer, '边界');
+});
+
+t('已有层级列的表不改动', () => {
+  const md = [
+    '| 用例编号 | 用例名称 | 维度 | 层级 | 预期结果 |',
+    '|---|---|---|---|---|',
+    '| TC-001 | a | ② 数据 / 等价类划分法 | 边界 | 返回 200 |',
+  ].join('\n');
+  const r = applyLayerColumnRepair(md);
+  assert.strictEqual(r.tablesRepaired, 0);
+  assert.strictEqual(r.text, md);
+});
+
+t('补层级后整份门禁可用率显著提升', () => {
+  const before = checkDeliverable(noLayerTable, { minUsabilityRate: 0.5 });
+  assert.ok(before.byReason.missingLayer >= 3, JSON.stringify(before.byReason));
+  const fixed = applyLayerColumnRepair(noLayerTable);
+  const after = checkDeliverable(fixed.text, { requireDimensionCoverage: false });
+  assert.ok(!after.byReason.missingLayer, JSON.stringify(after.byReason));
+  assert.ok(after.usable > before.usable, `${before.usable} → ${after.usable}`);
+});
+
+t('非用例表（无预期结果列）不补层级', () => {
+  const md = [
+    '| 需求编号 | 覆盖用例数 | 覆盖状态 |',
+    '|---|---|---|',
+    '| FR-001 | 3 | 已覆盖 |',
+  ].join('\n');
+  const r = applyLayerColumnRepair(md);
+  assert.strictEqual(r.tablesRepaired, 0);
 });
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
