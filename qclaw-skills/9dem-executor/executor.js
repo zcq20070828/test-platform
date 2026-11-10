@@ -218,7 +218,12 @@ function generatePairwiseCombinations(factors) {
 
 /**
  * 计算单个维度的穷举结果。
- * data 维度返回自动化计算结果；其余维度返回结构化引导，供 LLM 结合需求补充。
+ *
+ * 2026-11-09 起八个非数据维度不再是「一段关注点 + 指引」：
+ * 每个维度都从九维覆盖矩阵（dimension-probes.js）取出**必测点清单**，
+ * 每个必测点带 layer / action / assertion，可直接展开成可落表的用例。
+ * 门禁用同一份清单判定交付物是否真覆盖，覆盖率因此变成约束而不是标注。
+ *
  * @param {string} dim - 维度键
  * @param {Object} inputSpec - 输入规范
  * @returns {Object}
@@ -226,18 +231,54 @@ function generatePairwiseCombinations(factors) {
 function computeDimension(dim, inputSpec) {
   if (dim === 'data') {
     return {
+      deterministic: true,
       equivalenceClasses: generateEquivalenceClasses(inputSpec),
       boundaryValues: generateBoundaryValues(inputSpec),
-      pairwise: generatePairwiseCombinations(inputSpec)
+      pairwise: generatePairwiseCombinations(inputSpec),
+      probes: probesOf(dim)
     };
   }
   const meta = DIMENSIONS[dim];
+  const probes = probesOf(dim);
   return {
     dimension: dim,
     label: meta ? meta.label : dim,
     focus: meta ? meta.focus : '',
-    guidance: '按九维穷举模型，在该维度下运用等价类划分、边界值分析、状态迁移、场景法、错误推测等方法设计用例，并标注层级（正常/边界/异常）。'
+    deterministic: probes.length > 0,
+    requiredLayers: requiredLayersOf(dim),
+    probeCount: probes.length,
+    probes,
+    guidance: probes.length
+      ? '该维度已给出必测点清单（probes）：每个探针含层级、执行动作与可观测断言，必须展开为具体用例，不得只写关注点。'
+      : '按九维穷举模型，在该维度下运用等价类划分、边界值分析、状态迁移、场景法、错误推测等方法设计用例，并标注层级（正常/边界/异常）。'
   };
+}
+
+/** 从九维覆盖矩阵取某维度的必测点（矩阵缺失时返回空数组） */
+function probesOf(dim) {
+  try {
+    const { DIMENSION_MATRIX } = require('./backend/dimension-probes');
+    const found = DIMENSION_MATRIX.find((d) => d.key === dim);
+    return found ? found.probes.map((p) => ({
+      id: p.id,
+      layer: p.layer,
+      title: p.title,
+      action: p.action,
+      assertion: p.assertion
+    })) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function requiredLayersOf(dim) {
+  try {
+    const { DIMENSION_MATRIX } = require('./backend/dimension-probes');
+    const found = DIMENSION_MATRIX.find((d) => d.key === dim);
+    return found ? found.requiredLayers : ['正常', '边界', '异常'];
+  } catch (_) {
+    return ['正常', '边界', '异常'];
+  }
 }
 
 /**

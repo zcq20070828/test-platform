@@ -192,12 +192,12 @@ t('关联需求不存在被识别', () => {
 // ---------------- 整份门禁 ----------------
 t('全合格交付物通过门禁', () => {
   const md = [
-    '| 用例编号 | 用例名称 | 输入数据 | 执行步骤 | 预期结果 | 关联需求 |',
-    '|---|---|---|---|---|---|',
-    '| TC-001 | a | x=1 | 1.输入 2.提交 | 返回 200，含 token 字段 | FR-001 |',
-    '| TC-002 | b | x=2 | 1.输入 2.提交 | 提示"参数非法" | FR-001 |',
+    '| 用例编号 | 用例名称 | 维度 | 层级 | 输入数据 | 执行步骤 | 预期结果 | 关联需求 |',
+    '|---|---|---|---|---|---|---|---|',
+    '| TC-001 | a | ② 数据 / 等价类划分法 | 正常 | x=1 | 1.输入 2.提交 | 返回 200，含 token 字段 | FR-001 |',
+    '| TC-002 | b | ② 数据 / 边界值分析法 | 边界 | x=2 | 1.输入 2.提交 | 提示"参数非法" | FR-001 |',
   ].join('\n');
-  const r = checkDeliverable(md, { originalInput: 'FR-001', minUsabilityRate: 0.85 });
+  const r = checkDeliverable(md, { originalInput: 'FR-001', minUsabilityRate: 0.85, requireDimensionCoverage: false });
   assert.strictEqual(r.applicable, true);
   assert.strictEqual(r.total, 2);
   assert.strictEqual(r.usabilityRate, 1);
@@ -206,14 +206,14 @@ t('全合格交付物通过门禁', () => {
 
 t('低可用率不通过并给出问题分布', () => {
   const md = [
-    '| 用例编号 | 用例名称 | 输入数据 | 执行步骤 | 预期结果 |',
-    '|---|---|---|---|---|',
-    '| TC-001 | a | x=1 | 1.输入 | 被接受 |',
-    '| TC-002 | b | x=2 | 1.输入 | 校验通过 |',
-    '| TC-003 | c | x=3 | 1.输入 | 正常处理 |',
-    '| TC-004 | d | x=4 | 1.输入 | 返回 200，含 token |',
+    '| 用例编号 | 用例名称 | 维度 | 层级 | 输入数据 | 执行步骤 | 预期结果 |',
+    '|---|---|---|---|---|---|---|',
+    '| TC-001 | a | ② 数据 / 等价类划分法 | 正常 | x=1 | 1.输入 | 被接受 |',
+    '| TC-002 | b | ② 数据 / 等价类划分法 | 正常 | x=2 | 1.输入 | 校验通过 |',
+    '| TC-003 | c | ② 数据 / 等价类划分法 | 正常 | x=3 | 1.输入 | 正常处理 |',
+    '| TC-004 | d | ② 数据 / 等价类划分法 | 正常 | x=4 | 1.输入 | 返回 200，含 token |',
   ].join('\n');
-  const r = checkDeliverable(md, { minUsabilityRate: 0.85 });
+  const r = checkDeliverable(md, { minUsabilityRate: 0.85, requireDimensionCoverage: false });
   assert.strictEqual(r.pass, false);
   assert.strictEqual(r.usable, 1);
   assert.strictEqual(r.usabilityRate, 0.25);
@@ -229,13 +229,14 @@ t('非用例交付物判为不适用且不阻塞', () => {
 
 t('阈值可配置', () => {
   const md = [
-    '| 用例编号 | 用例名称 | 输入数据 | 执行步骤 | 预期结果 |',
-    '|---|---|---|---|---|',
-    '| TC-001 | a | x=1 | 1.输入 | 返回 200 |',
-    '| TC-002 | b | x=2 | 1.输入 | 校验通过 |',
+    '| 用例编号 | 用例名称 | 维度 | 层级 | 输入数据 | 执行步骤 | 预期结果 |',
+    '|---|---|---|---|---|---|---|',
+    '| TC-001 | a | ② 数据 / 等价类划分法 | 正常 | x=1 | 1.输入 | 返回 200 |',
+    '| TC-002 | b | ② 数据 / 等价类划分法 | 正常 | x=2 | 1.输入 | 校验通过 |',
   ].join('\n');
-  assert.strictEqual(checkDeliverable(md, { minUsabilityRate: 0.5 }).pass, true);
-  assert.strictEqual(checkDeliverable(md, { minUsabilityRate: 0.9 }).pass, false);
+  const opts = { requireDimensionCoverage: false };
+  assert.strictEqual(checkDeliverable(md, { ...opts, minUsabilityRate: 0.5 }).pass, true);
+  assert.strictEqual(checkDeliverable(md, { ...opts, minUsabilityRate: 0.9 }).pass, false);
 });
 
 // ---------------- 修复指令 ----------------
@@ -337,6 +338,119 @@ t('applyInputRepairs 用整行上下文判断边界', () => {
   const cell = out.text.split('|')[3].trim();
   const v = cell.split('=')[1].replace(/"/g, '');
   assert.strictEqual(v.length, 31, out.text);
+});
+
+
+// ---------------- 用例编号不再被误跳过（2026-11-09）----------------
+t('真实编号 TC-LOGIN-P0-001 被解析而非跳过', () => {
+  const md = [
+    '| 用例编号 | 用例名称 | 维度 | 层级 | 输入数据 | 执行步骤 | 预期结果 |',
+    '|---|---|---|---|---|---|---|',
+    '| TC-LOGIN-P0-001 | 手机号登录 | ① 用户 / 场景法 | 正常 | phone=13800138000 | 1.输入 2.提交 | 返回 200，含 token 字段 |',
+  ].join('\n');
+  const { cases, skippedIds } = parseCaseTable(md);
+  assert.strictEqual(cases.length, 1, '编号被跳过：' + JSON.stringify(skippedIds));
+  assert.strictEqual(cases[0].id, 'TC-LOGIN-P0-001');
+});
+
+t('CAPTCHA-001 / IT-API-001-Up 都能被解析', () => {
+  const md = [
+    '| 用例编号 | 用例名称 | 维度 | 层级 | 输入数据 | 执行步骤 | 预期结果 |',
+    '|---|---|---|---|---|---|---|',
+    '| CAPTCHA-001 | 图形验证码校验 | ② 数据 / 等价类划分法 | 异常 | code=abcd | 1.输入 2.提交 | 返回 400，提示"验证码错误" |',
+    '| IT-API-001-Up | 接口正向调用 | ② 数据 / 等价类划分法 | 正常 | id=1 | 1.调用 | 返回 200，字段齐全 |',
+  ].join('\n');
+  const { cases } = parseCaseTable(md);
+  assert.strictEqual(cases.length, 2, JSON.stringify(cases.map((c) => c.id)));
+});
+
+t('不是编号的单元格仍被排除（纯文字/日期）', () => {
+  const md = [
+    '| 用例编号 | 用例名称 | 维度 | 层级 | 输入数据 | 执行步骤 | 预期结果 |',
+    '|---|---|---|---|---|---|---|',
+    '| 待确认 | a | ② 数据 / 等价类划分法 | 正常 | x=1 | 1.输入 | 返回 200 |',
+    '| 2026-11-09 | b | ② 数据 / 等价类划分法 | 正常 | x=2 | 1.输入 | 返回 200 |',
+  ].join('\n');
+  const { cases, skippedIds } = parseCaseTable(md);
+  assert.strictEqual(cases.length, 0);
+  assert.ok(skippedIds.length >= 2, JSON.stringify(skippedIds));
+});
+
+// ---------------- 维度列成为约束（2026-11-09）----------------
+t('维度列为空判为不可用且属 blocker', () => {
+  const r = inspectCase(
+    { id: 'TC-001', name: 'n', steps: '1.输入 2.提交', expected: '返回 200，含 token 字段', input: 'a=1', dimension: '', layer: '正常' },
+    { requireDimension: true },
+  );
+  assert.strictEqual(r.usable, false);
+  assert.ok(r.reasons.includes('missingDimension'), JSON.stringify(r.reasons));
+  assert.strictEqual(r.severity, 'blocker');
+});
+
+t('维度写了但没有设计方法判为 missingMethod', () => {
+  const r = inspectCase(
+    { id: 'TC-001', name: 'n', steps: '1.输入', expected: '返回 200', input: 'a=1', dimension: '② 数据', layer: '正常' },
+    { requireDimension: true },
+  );
+  assert.ok(r.reasons.includes('missingMethod'), JSON.stringify(r.reasons));
+});
+
+t('层级缺失判为 missingLayer', () => {
+  const r = inspectCase(
+    { id: 'TC-001', name: 'n', steps: '1.输入', expected: '返回 200', input: 'a=1', dimension: '② 数据 / 等价类划分法', layer: '' },
+    { requireDimension: true },
+  );
+  assert.ok(r.reasons.includes('missingLayer'), JSON.stringify(r.reasons));
+});
+
+t('维度/方法/层级齐全通过该项检查', () => {
+  const r = inspectCase(
+    { id: 'TC-001', name: 'n', steps: '1.输入', expected: '返回 200', input: 'a=1', dimension: '② 数据 / 等价类划分法', layer: '边界' },
+    { requireDimension: true },
+  );
+  assert.strictEqual(r.usable, true, r.detail);
+});
+
+// ---------------- 九维覆盖成为 pass 的前置条件（2026-11-09）----------------
+t('九维只覆盖数据维 → 维度判定不通过', () => {
+  const md = [
+    '| 用例编号 | 用例名称 | 维度 | 层级 | 输入数据 | 执行步骤 | 预期结果 |',
+    '|---|---|---|---|---|---|---|',
+    '| TC-001 | a | ② 数据 / 等价类划分法 | 正常 | x=1 | 1.输入 2.提交 | 返回 200，含 token 字段 |',
+  ].join('\n');
+  const r = checkDeliverable(md, { minUsabilityRate: 0.85 });
+  assert.strictEqual(r.usabilityPass, true, r.summary.text);
+  assert.strictEqual(r.dimensionPass, false);
+  assert.strictEqual(r.pass, false, '九维未覆盖时不得通过');
+  assert.ok(r.dimensions.missingDimensions.length >= 7, r.dimensions.text);
+});
+
+t('豁免声明中的维度不再算漏测', () => {
+  const md = [
+    '| 用例编号 | 用例名称 | 维度 | 层级 | 输入数据 | 执行步骤 | 预期结果 |',
+    '|---|---|---|---|---|---|---|',
+    '| TC-001 | a | ② 数据 / 等价类划分法 | 正常 | x=1 | 1.输入 2.提交 | 返回 200，含 token 字段 |',
+    '',
+    '### 豁免声明',
+    '| 维度/方法 | 不适用原因 | 风险影响 | 声明人 |',
+    '| --- | --- | --- | --- |',
+    '| ⑤ 安全 | 本次为纯离线工具，无网络入口 | 无 | AI |',
+  ].join('\n');
+  const r = checkDeliverable(md, {});
+  assert.ok(r.dimensions.waived.includes('security'), JSON.stringify(r.dimensions.waived));
+  assert.ok(!r.dimensions.missingDimensions.includes('security'));
+});
+
+t('skippedIds 会出现在报告里（漏检可见）', () => {
+  const md = [
+    '| 用例编号 | 用例名称 | 维度 | 层级 | 输入数据 | 执行步骤 | 预期结果 |',
+    '|---|---|---|---|---|---|---|',
+    '| 待定 | a | ② 数据 / 等价类划分法 | 正常 | x=1 | 1.输入 | 返回 200 |',
+    '| TC-001 | b | ② 数据 / 等价类划分法 | 正常 | x=2 | 1.输入 2.提交 | 返回 200 |',
+  ].join('\n');
+  const r = checkDeliverable(md, {});
+  assert.ok(Array.isArray(r.skippedIds));
+  assert.ok(r.skippedIds.includes('待定'), JSON.stringify(r.skippedIds));
 });
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

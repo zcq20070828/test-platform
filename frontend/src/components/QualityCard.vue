@@ -20,6 +20,16 @@ interface QualityInfo {
   byReason: Record<string, number>
   autoRepairs: number
   repairRounds: number
+  /** 九维必测点覆盖率（0~1），null 表示本次未做维度判定 */
+  dimensionCoverage?: number | null
+  /** 完全没有用例的维度键 */
+  dimensionMissing?: string[]
+  /** 声明豁免的维度键 */
+  dimensionWaived?: string[]
+  /** 编号非法、未纳入检查的行数 */
+  skippedRows?: number
+  /** 单条可用率是否达标（与九维覆盖分开判定） */
+  usabilityPass?: boolean | null
 }
 
 interface FeedbackItem {
@@ -70,6 +80,57 @@ const humanRate = computed(() => {
 
 const markedCount = computed(() => Object.keys(feedback.value).length)
 
+const dimensionRate = computed(() => {
+  const r = quality.value?.dimensionCoverage
+  return r == null ? '—' : `${(r * 100).toFixed(0)}%`
+})
+
+const missingDimensionsText = computed(() => {
+  const list = quality.value?.dimensionMissing || []
+  if (!list.length) return ''
+  return list.map((k) => DIMENSION_LABELS[k] || k).join('、')
+})
+
+const waivedDimensionsText = computed(() => {
+  const list = quality.value?.dimensionWaived || []
+  if (!list.length) return ''
+  return list.map((k) => DIMENSION_LABELS[k] || k).join('、')
+})
+
+/** 未达标原因：可用率 / 九维覆盖分别说清楚，避免用户不知道去补什么 */
+const failReasons = computed(() => {
+  const q = quality.value
+  if (!q || q.gatePassed) return []
+  const out: string[] = []
+  if (q.usabilityPass === false) out.push('单条可用率不达标')
+  if (q.dimensionCoverage != null && q.dimensionCoverage < 0.75) out.push('九维必测点覆盖不足')
+  if (missingDimensionsText.value) out.push(`缺维度：${missingDimensionsText.value}`)
+  if (q.skippedRows) out.push(`${q.skippedRows} 行编号非法未纳入检查`)
+  return out
+})
+
+/** 判定单元格是否像用例编号（与 backend/lib/case-quality-gate.js 的 looksLikeCaseId 一致） */
+function looksLikeCaseId(raw: string): boolean {
+  const v = String(raw || '').trim().replace(/^[`*_\s]+|[`*_\s]+$/g, '')
+  if (!v || v.length > 40) return false
+  if (!/[0-9]/.test(v)) return false
+  if (!/^[A-Za-z0-9][A-Za-z0-9._\-/#+\s]*$/.test(v)) return false
+  if (/^(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(v)) return false
+  return true
+}
+
+const DIMENSION_LABELS: Record<string, string> = {
+  user: '① 用户',
+  data: '② 数据',
+  process: '③ 流程',
+  operation: '④ 操作',
+  security: '⑤ 安全',
+  performance: '⑥ 性能',
+  network: '⑦ 网络环境',
+  terminal: '⑧ 终端环境',
+  compatibility: '⑨ 兼容性',
+}
+
 /** 从 Markdown 用例表里抽出编号 */
 function extractCaseIds(text: string): string[] {
   const ids: string[] = []
@@ -78,7 +139,9 @@ function extractCaseIds(text: string): string[] {
     if (!/^\s*\|/.test(line)) continue
     const cells = line.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim())
     const first = cells[0] || ''
-    if (/^[A-Za-z]{0,6}-?\d+$/.test(first) && !seen.has(first)) {
+    // 与后端 looksLikeCaseId 对齐：TC-LOGIN-P0-001 / CAPTCHA-001 / IT-API-001-Up 都要能勾选，
+    // 否则这些用例在人工复核面板里根本不显示，等于无法被判定。
+    if (looksLikeCaseId(first) && !seen.has(first)) {
       seen.add(first)
       ids.push(first)
     }
@@ -186,12 +249,20 @@ async function submit() {
         <div class="qc-sub">已标记 {{ markedCount }} 条</div>
       </div>
       <div class="qc-metric">
+        <div class="qc-label">九维必测点覆盖</div>
+        <div class="qc-value">{{ dimensionRate }}</div>
+        <div class="qc-sub">
+          {{ waivedDimensionsText ? `已豁免 ${waivedDimensionsText}` : '下限 75%' }}
+        </div>
+      </div>
+      <div class="qc-metric">
         <div class="qc-label">自动修复</div>
         <div class="qc-value">{{ quality.autoRepairs }}</div>
         <div class="qc-sub">定向修复 {{ quality.repairRounds }} 轮</div>
       </div>
     </div>
 
+    <div v-if="failReasons.length" class="qc-fails">未达标原因：{{ failReasons.join('；') }}</div>
     <div v-if="reasonText" class="qc-reasons">问题分布：{{ reasonText }}</div>
 
     <div v-if="showPanel" class="qc-panel">
@@ -268,6 +339,11 @@ async function submit() {
   margin-top: 10px;
   font-size: 13px;
   color: var(--el-text-color-regular);
+}
+.qc-fails {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--el-color-warning);
 }
 .qc-panel {
   margin-top: 14px;

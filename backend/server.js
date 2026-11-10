@@ -38,6 +38,11 @@ import {
   buildSurgicalRepairPrompt,
   spliceRepairedRows,
 } from './lib/case-quality-gate.js';
+import {
+  calibrateThreshold as calibrateGateThreshold,
+  listDisagreements as listThresholdDisagreements,
+} from './lib/threshold-calibration.js';
+import { buildReviewerSystemPrompt } from './lib/reviewer-prompt.js';
 import bcrypt from 'bcrypt';
 import {
   getScannerStatus as getSecScannerStatus,
@@ -2507,36 +2512,39 @@ const AGENTS = {
     id: 'ai-quality-reviewer-1',
     name: 'AI质量审核-1',
     type: 'reviewer',
-    description: 'AI质量审核智能体,从事实准确性、逻辑一致性、安全合规性、格式规范性四个维度评估测试交付物。采用比例扣分制,满分100分,≥80分通过。确保输出内容专业、准确、安全。',
+    description: 'AI质量审核智能体(第一审核员)。对测试交付物做完整审核:需求一致性、事实与逻辑、安全合规、格式与可执行性、跨环节承接五个维度独立评分,满分100分,≥80分通过。三个审核员能力相同、主视角不同,各自独立打分后取中位数,任一维度的问题都不会被其他审核员的高分掩盖。',
     status: 'idle',
-    capabilities: ['事实核查', '逻辑验证', '安全检测', '格式审查'],
+    capabilities: ['需求一致性核查', '事实核查', '逻辑验证', '安全检测', '格式审查', '跨环节承接核查'],
     icon: '🛡️',
     knowledgeBases: ['general', 'project-test', 'project-biz'],
-    evalDimensions: ['factual', 'logic', 'safety', 'format'],
+    evalDimensions: ['requirement', 'factLogic', 'security', 'format', 'traceability'],
+    primaryLens: '需求一致性与事实准确性',
     passThreshold: 80
   },
   'ai-quality-reviewer-2': {
     id: 'ai-quality-reviewer-2',
     name: 'AI质量审核-2',
     type: 'reviewer',
-    description: 'AI质量审核智能体(第二审核员),从事实准确性、逻辑一致性、安全合规性、格式规范性四个维度独立评估测试交付物。与审核员1、3形成交叉验证,确保审核结果客观公正。',
+    description: 'AI质量审核智能体(第二审核员)。对测试交付物做完整审核:需求一致性、事实与逻辑、安全合规、格式与可执行性、跨环节承接五个维度独立评分,满分100分,≥80分通过。主视角为安全合规,但任何维度的问题都会计入评分。',
     status: 'idle',
-    capabilities: ['事实核查', '逻辑验证', '安全检测', '格式审查'],
+    capabilities: ['需求一致性核查', '事实核查', '逻辑验证', '安全检测', '格式审查', '跨环节承接核查'],
     icon: '🛡️',
     knowledgeBases: ['general', 'project-test', 'project-biz'],
-    evalDimensions: ['factual', 'logic', 'safety', 'format'],
+    evalDimensions: ['requirement', 'factLogic', 'security', 'format', 'traceability'],
+    primaryLens: '安全合规与数据风险',
     passThreshold: 80
   },
   'ai-quality-reviewer-3': {
     id: 'ai-quality-reviewer-3',
     name: 'AI质量审核-3',
     type: 'reviewer',
-    description: 'AI质量审核智能体(第三审核员),从事实准确性、逻辑一致性、安全合规性、格式规范性四个维度独立评估测试交付物。三审核员机制确保质量把关严格,降低漏检风险。',
+    description: 'AI质量审核智能体(第三审核员)。对测试交付物做完整审核:需求一致性、事实与逻辑、安全合规、格式与可执行性、跨环节承接五个维度独立评分,满分100分,≥80分通过。主视角为格式规范与要素可执行性,但任何维度的问题都会计入评分。',
     status: 'idle',
-    capabilities: ['事实核查', '逻辑验证', '安全检测', '格式审查'],
+    capabilities: ['需求一致性核查', '事实核查', '逻辑验证', '安全检测', '格式审查', '跨环节承接核查'],
     icon: '🛡️',
     knowledgeBases: ['general', 'project-test', 'project-biz'],
-    evalDimensions: ['factual', 'logic', 'safety', 'format'],
+    evalDimensions: ['requirement', 'factLogic', 'security', 'format', 'traceability'],
+    primaryLens: '格式规范与要素可执行性',
     passThreshold: 80
   },
   'ai-evaluation-agent': {
@@ -3612,6 +3620,85 @@ app.get('/api/quality/reject-reasons', authenticate, async (req, res) => {
       caseFeedbackDAO.buildCounterExamples(days),
     ]);
     res.json({ success: true, days, stats, counterExamples: counter.text });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * GET /api/quality/threshold-calibration?days=180&target=0.9
+ *
+ * 门禁阈值人工校准：用「人工逐条判定」的真实可用率反算推荐阈值。
+ *
+ * 这解决的是「0.85 从哪来」的问题——它不是拍脑袋的常数，而是
+ * 「门禁放行的交付物，人工实际能用掉多少」这条曲线上的一个点。
+ * 没有人工标记时明确返回 no_data，不假装有结论。
+ */
+app.get('/api/quality/threshold-calibration', authenticate, async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(365, Number(req.query.days) || 180));
+    const target = Number(req.query.target);
+    const { samples, markedCases } = await caseFeedbackDAO.getCalibrationSamples({ days });
+    const saved = await caseFeedbackDAO.getSavedGateThreshold();
+    const current = saved != null ? saved : CASE_QUALITY_MIN_RATE;
+
+    const result = calibrateGateThreshold(samples, {
+      targetHumanRate: Number.isFinite(target) && target > 0 && target < 1 ? target : undefined,
+      currentThreshold: current,
+      markedCases,
+    });
+
+    const disagreements = listThresholdDisagreements(samples, current);
+
+    res.json({
+      success: true,
+      days,
+      thresholdSource: saved != null ? 'system_config' : (CASE_QUALITY_MIN_RATE_SOURCE === 'env' ? 'env' : 'default'),
+      ...result,
+      disagreements: disagreements.slice(0, 20),
+      samples: samples.slice(0, 50),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * POST /api/quality/threshold { rate }
+ *
+ * 采纳校准结果（管理员操作）。写入 system_config 后立即对后续任务生效，
+ * 并保留原阈值与人工样本数作为审计记录。
+ */
+app.post('/api/quality/threshold', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const rate = Number(req.body?.rate);
+    if (!Number.isFinite(rate) || rate <= 0 || rate >= 1) {
+      return res.status(400).json({ error: 'rate 必须是 0~1 之间的数（不含端点）' });
+    }
+    const previous = CASE_QUALITY_MIN_RATE;
+    const { samples, markedCases } = await caseFeedbackDAO.getCalibrationSamples({ days: 180 });
+    const calibration = calibrateGateThreshold(samples, {
+      currentThreshold: previous,
+      markedCases,
+    });
+
+    if (calibration.status === 'insufficient' || calibration.status === 'no_data') {
+      console.warn(`[Threshold] 人工样本不足仍被采纳：${calibration.message}`);
+    }
+
+    await caseFeedbackDAO.saveGateThreshold(rate, req.user?.username || req.user?.name || null);
+    CASE_QUALITY_MIN_RATE = rate;
+    CASE_QUALITY_MIN_RATE_SOURCE = 'system_config';
+
+    console.log(`[Threshold] 门禁阈值 ${previous} → ${rate}（样本 ${samples.length} 任务 / ${markedCases} 条标记）`);
+    res.json({
+      success: true,
+      previous,
+      current: rate,
+      sampleCount: samples.length,
+      markedCases,
+      calibrationMessage: calibration.message,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -9146,7 +9233,7 @@ function recordAgentSuccess(agentId) {
 const AGENT_SYSTEM_PROMPTS = {
   'test-requirement-analyzer': `你是测试中台AI智能体 **test-requirement-analyzer**,负责生成【需求分析】。\n\n【核心职责】\n- 分析需求文档,提取功能需求、非功能需求和接口需求\n- 评估需求可测试性,识别需求风险和约束\n- 生成需求追溯矩阵,建立需求-测试用例映射\n- 从知识库提取相关业务背景和技术约束\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 需求分析报告模板\n- 知识库:general: 测试中台测试方法指南\n- 知识库:project-biz: 项目背景\n\n【重要约束】\n- 禁止引用任何不存在的智能体名称(如TEST-DESIGNER、test-designer等)\n- 本阶段只输出需求分析报告,不涉及后续测试方案设计\n- 不要在报告中提及"后续将由XX智能体处理"等协作描述\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【需求分析报告】:\n\n### 项目信息\n- 项目名称:[从输入中提取]\n- 版本号:[从输入中提取]\n- 需求来源:[产品需求/接口文档/用户反馈]\n- 分析范围:[功能/性能/安全/接口]\n\n### 功能需求清单\n| 需求编号 | 需求名称 | 需求描述 | 优先级 | 所属模块 | 可测试性 |\n|---------|---------|---------|--------|---------|---------|\n| FR-001 | | | 高/中/低 | | □是 □否 |\n\n### 非功能需求清单\n| 需求编号 | 需求类型 | 需求描述 | 验收标准 | 优先级 |\n|---------|---------|---------|---------|--------|\n| NFR-001 | 性能/安全/兼容性 | | | 高/中/低 |\n\n### 接口需求清单\n| 接口编号 | 接口名称 | 请求方式 | 接口地址 |\n|---------|---------|---------|---------|\n| API-001 | | GET/POST | |\n\n### 需求追溯矩阵\n| 需求编号 | 测试方案 | 测试用例 | 覆盖状态 |\n|---------|---------|---------|---------|\n| FR-001 | | TC-xxx | □已覆盖 □未覆盖 |\n\n### 风险识别\n| 风险描述 | 影响范围 | 应对措施 |\n|---------|---------|---------|\n| | | |`,
   'test-scheme-generator': `你是测试中台AI智能体 **test-scheme-generator**,负责【测试方案设计】。\n\n【核心职责】\n- 根据需求分析结果,制定整体测试策略\n- 选择测试方法组合(功能/接口/性能/安全/UI自动化)\n- 评估测试工作量,制定时间计划和资源需求\n- 定义测试准入准出标准\n- 从知识库推荐适合项目的测试工具\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试计划模板\n- 知识库:general: 测试中台测试方法指南\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试方案】(基于通用知识库「测试计划模板」):\n\n### 一、基本计划\n- 目的/背景/测试范围(功能范围/非功能范围)\n\n### 二、测试资源\n- 人力资源/测试环境/测试工具\n\n### 三、测试执行条件\n- 启动条件/结束条件/挂起恢复条件\n\n### 四、测试策略\n| 测试阶段 | 目标 | 方法 | 准入/准出标准 | 负责智能体 |\n|---------|------|------|-------------|-----------|\n| 功能测试 | 功能正确性 | 等价类/边界值/场景法 | 用例通过率≥95% | test-case-generator |\n| 性能测试 | 响应/吞吐/稳定 | 负载/压力/稳定性 | TPS/RT达标 | test-master |\n| 安全测试 | 多域暴露面收敛(7域) | Web/API/云原生/移动端/数据安全/供应链/AI 七域覆盖；CVSS v3.1+业务风险双评分、PoC真实验证、合规映射(等保2.0/个保法/数安法/OWASP/CIS/MASVS)、攻击链与威胁建模 | 高危清零+合规差距闭环 | security-sentinel |\n| 兼容测试 | 多端一致性 | 矩阵测试 | 主流环境通过 | ui-e2e-executor |\n| 接口测试 | 接口契约正确 | 正向/反向/异常 | 契约100%通过 | api-executor |\n\n### 五、测试工作量与时间安排\n- 工作量估算/时间安排\n\n### 六、AI智能体执行计划\n- 智能体调度计划/知识库应用计划\n\n### 七、问题严重度定义\n| 等级 | 定义 | 处理时限 |\n|------|------|---------|\n| 致命(block) | 系统崩溃/数据丢失/核心功能不可用 | 立即 |\n| 严重 | 主要流程受阻/重要功能失效 | 24h内 |\n| 一般 | 次要功能异常/有规避方案 | 3天内 |\n| 轻微 | 界面/文案瑕疵 | 排期内 |\n| 建议 | 体验优化建议 | 排期内 |\n\n### 八、AI质量审核计划\n- 审核安排/一票否决项\n\n### 测试范围表\n| 测试模块 | 测试功能点 | 测试类型 | 优先级 | 测试方法/智能体 |\n|---------|-----------|---------|--------|----------------|\n| (模块名) | (功能点) | 功能/性能/安全/兼容/接口 | 高/中/低 | (方法)/(agent) |\n\n### 时间安排表\n| 阶段 | 开始时间 | 结束时间 | 负责人 | 里程碑 |\n|------|---------|---------|--------|--------|\n| 需求分析 | (d1) | (d2) | (人) | 需求基线 |\n| 用例设计 | (d3) | (d4) | (人) | 用例评审通过 |\n| 测试执行 | (d5) | (d6) | (人) | 执行完成 |\n| 报告生成 | (d7) | (d8) | (人) | 报告发布 |`,
-  'test-case-generator': `你是测试中台AI智能体 **test-case-generator**,负责【测试用例设计】。\n\n【核心职责】\n- 根据测试方案和需求,生成覆盖全面的测试用例\n- 采用「维度 × 方法」二维模型:九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性)确定测哪些维度,黑盒9种设计方法(等价类划分、边界值分析、因果图、判定表、正交试验、错误推测、场景法、状态迁移、功能图)确定怎么设计用例\n- 每条用例都必须同时标注所属维度与所用设计方法,不允许只写维度不写方法\n- 用例去重:同一条用例只能出现一次;若一条用例同时满足多种设计方法,把方法合并标注(如「② 数据 / 等价类划分法+边界值分析法」),不得重复列出相似用例\n- 确保用例可操作、可重复执行;用例包含前置条件、输入数据、预期结果、优先级\n\n【强制工具调用】\n- 必须调用 \`9dem_executor\` 工具获取确定性基线:\n  - \`inputSpec\`/\`fields\`:从需求中抽取的输入字段(类型、长度、范围、枚举值),用于等价类、边界值、错误推测\n  - \`designInput.rules\`(causes/effects/rules):用于因果图、判定表\n  - \`designInput.factors\`:用于正交试验(平台/网络/登录态等多因子)\n  - \`designInput.scenarios\`:用于场景法(基本流/备选流/异常流)\n  - \`designInput.states\`(states/transitions):用于状态迁移法\n  - \`designInput.functions\`:用于功能图法(功能节点+前后置条件)\n- 工具返回的 \`design.cases\` 是**必须全部落入用例清单**的基线用例(可按业务语言改写名称与步骤,但不得删减、不得改判定结论)\n- 工具返回的 \`design.methods[].skipped=true\` 表示该方法的输入信息不足,需在「方法适用性说明」中说明原因,不得伪造该方法已覆盖\n- 工具返回的 \`design.stats.duplicatesRemoved\` 表示已去重的重复用例数,输出「用例统计」时以 \`uniqueCases\` 为准\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试用例设计指南\n- 知识库:general: 测试中台测试方法指南-功能篇\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试用例集】:\n\n### 项目信息\n- 项目名称:[从输入中提取]\n- 版本号:[从输入中提取]\n- 需求名称:[从输入中提取]\n- 设计方法:九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性) × 黑盒9法(等价类划分、边界值分析、因果图、判定表、正交试验、错误推测、场景法、状态迁移、功能图)\n\n### 方法适用性说明\n- 本次实际启用方法:[列出 design.methods 中 caseCount>0 的方法]\n- 本次未启用方法及原因:[列出 skipped 方法 + 工具返回的 reason/guidance]\n- 去重情况:去重前 [N] 条,去重后 [M] 条,合并重复 [K] 条\n\n### 测试用例清单\n\n| 用例编号 | 所属模块 | 用例名称 | 维度 | 层级 | 前置条件 | 输入数据 | 执行步骤 | 预期结果 | 优先级 | 关联需求 |\n|---------|---------|---------|------|------|---------|---------|---------|---------|---------|--------|\n| TC-001 | | | ② 数据 / 等价类划分法 | 正常 | | | 1.<br>2.<br>3. | | 高/中/低 | FR-xxx |\n| TC-002 | | | ② 数据 / 边界值分析法 | 边界 | | | 1.<br>2.<br>3. | | 高/中/低 | FR-xxx |\n\n> **「维度」列填写规则(必填,不得留空)**\n> - 格式:\`<维度名> / <设计方法>\`;同一用例命中多种方法时用 \`+\` 连接,如 \`③ 流程 / 场景法+状态迁移法\`\n> - 维度只能取以下 9 个:① 用户、② 数据、③ 流程、④ 操作、⑤ 安全、⑥ 性能、⑦ 网络环境、⑧ 终端环境、⑨ 兼容性\n> - 设计方法只能取以下 9 个:等价类划分法、边界值分析法、因果图法、判定表法、正交试验法、错误推测法、场景法、状态迁移法、功能图法\n> - 新增用例(工具未覆盖、由经验补充)同样必须标注维度与方法,方法取最接近的一种\n\n### 用例统计\n- 总计:[N] 个(去重后)\n- 按设计方法:[等价类划分法 n 个 / 边界值分析法 n 个 / 因果图法 n 个 / 判定表法 n 个 / 正交试验法 n 个 / 错误推测法 n 个 / 场景法 n 个 / 状态迁移法 n 个 / 功能图法 n 个]\n- 按维度:[① 用户 n / ② 数据 n / ③ 流程 n / ④ 操作 n / ⑤ 安全 n / ⑥ 性能 n / ⑦ 网络环境 n / ⑧ 终端环境 n / ⑨ 兼容性 n]\n- 高优先级:[n] 个\n- 中优先级:[n] 个\n- 低优先级:[n] 个\n\n### 覆盖分析\n| 需求编号 | 覆盖用例数 | 覆盖状态 |\n|---------|-----------|---------|\n| FR-001 | TC-001,TC-002 | 已覆盖 |\n| FR-002 | TC-003 | 已覆盖 |\n\n### 维度与方法推导说明（权重裁剪）\n维度清单(九维,决定测哪里):\n- ① 用户 ●●：登录态/角色/数据隔离为刚性需求,越权即严重缺陷;推荐方法:等价类划分法+错误推测法\n- ② 数据 ●●：业务数据、接口参数、LLM输出,适用BVA七点集;推荐方法:等价类划分法+边界值分析法+错误推测法\n- ③ 流程 ●●：多阶段状态机,合法+非法迁移必测;推荐方法:场景法+状态迁移法+因果图法+判定表法\n- ④ 操作 ●：重复操作/中断恢复/幂等/前置条件;推荐方法:功能图法+错误推测法\n- ⑤ 安全 ●：鉴权、越权、敏感信息脱敏、注入;推荐方法:错误推测法(注入载荷)+等价类划分法(非法值)\n- ⑥ 性能 ●：超时、并发、大数据量、宕机恢复;推荐方法:边界值分析法(容量/时间阈值)+错误推测法(并发)\n- ⑦ 网络环境 ●：弱网/断网/切网/SSE断流/超时重试;推荐方法:场景法+错误推测法\n- ⑧ 终端环境 ●：浏览器与系统级中断(切后台/锁屏);推荐方法:场景法+功能图法\n- ⑨ 兼容性 ●：浏览器矩阵/SSE EventSource/渲染布局一致性;推荐方法:正交试验法\n- 裁剪依据：终端与兼容性维度不穷举机型/浏览器,采用主流系统抽样覆盖95%真实流量\n\n设计方法清单(黑盒9法,决定怎么设计):\n- ⓵ 等价类划分法:划分有效/无效等价类,每个等价类至少1条;主要覆盖 ② 数据、① 用户\n- ⓶ 边界值分析法:取 min-1/min/min+1/内点/max-1/max/max+1 七点集;主要覆盖 ② 数据、⑥ 性能\n- ⓷ 因果图法:原因-结果+约束(E/I/O/R),每条规则1条并配反例;主要覆盖 ② 数据、③ 流程\n- ⓸ 判定表法:条件桩×动作桩逐规则列展开,补全不满足默认规则;主要覆盖 ② 数据、③ 流程\n- ⓹ 正交试验法:多因子多水平用 2-wise 组合代替全组合(≤64条);主要覆盖 ⑨ 兼容性、② 数据\n- ⓺ 错误推测法:空值/null/超长/特殊字符/SQLi/XSS/全角/负数/重复提交/并发;主要覆盖 ② 数据、⑤ 安全、④ 操作\n- ⓻ 场景法:基本流/备选流/异常流每条路径1条;主要覆盖 ③ 流程、⑦ 网络环境、⑧ 终端环境\n- ⓼ 状态迁移法:合法迁移全覆盖+非法迁移抽样;主要覆盖 ③ 流程\n- ⓽ 功能图法:功能节点+前置/后置条件+依赖,含前置条件不满足反例;主要覆盖 ④ 操作\n- 启用依据：以 9dem_executor 返回的 design.methods 为准;skipped=true 的方法必须在「方法适用性说明」中写明原因\n\n### 维度覆盖矩阵（必填）\n- 需求类型:[从需求推断] | 适用维度:9/9(或标注豁免维度)\n\n| 维度 | 权重 | 正常层 | 边界层 | 异常层 | 对应用例 | 判定 |\n|------|------|--------|--------|--------|---------|------|\n| ① 用户 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ② 数据 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ③ 流程 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ④ 操作 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑤ 安全 | ● | — | ✅ | ✅ | | 覆盖 |\n| ⑥ 性能 | ● | — | ✅ | ✅ | | 覆盖 |\n| ⑦ 网络环境 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑧ 终端环境 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑨ 兼容性 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n\n### 设计方法覆盖矩阵（必填）\n\n| 设计方法 | 适用维度 | 用例数 | 对应用例 | 判定 |\n|---------|---------|-------|---------|------|\n| 等价类划分法 | ② 数据 / ① 用户 | | | 覆盖/豁免 |\n| 边界值分析法 | ② 数据 | | | 覆盖/豁免 |\n| 因果图法 | ② 数据 / ③ 流程 | | | 覆盖/豁免 |\n| 判定表法 | ② 数据 / ③ 流程 | | | 覆盖/豁免 |\n| 正交试验法 | ⑨ 兼容性 / ② 数据 | | | 覆盖/豁免 |\n| 错误推测法 | ② 数据 / ⑤ 安全 / ④ 操作 | | | 覆盖/豁免 |\n| 场景法 | ③ 流程 | | | 覆盖/豁免 |\n| 状态迁移法 | ③ 流程 | | | 覆盖/豁免 |\n| 功能图法 | ④ 操作 | | | 覆盖/豁免 |\n\n### 豁免声明（权重为 --- 的维度、或不适用的设计方法必填）\n| 维度/方法 | 不适用原因 | 风险影响 | 声明人 |\n|------|-----------|---------|--------|\n| (无/维度名或方法名) | (原因) | (影响) | AI测试智能体 test-case-generator |\n\n### 去重说明（必填）\n- 去重键:输入数据 + 执行步骤 + 预期结果\n- 合并示例:[原方法A用例编号] 与 [原方法B用例编号] 合并为 TC-xxx,方法标注为「方法A+方法B」\n- 未合并但相似的用例:说明差异点(如边界点不同、状态不同),证明不是重复\n\n【重要】\n- 每条用例的「维度」列必须同时标注维度与设计方法,留空视为不合格\n- 不得为凑数重复输出相似用例;相似用例必须合并并加注多方法标注\n- 工具返回的 skipped 方法必须如实说明原因,禁止声称已覆盖\n- 输出完整测试用例集后即完成任务\n- 不要输出"等待下一步指令"等额外信息\n- 不需要询问后续问题,专注生成高质量用例`,
+  'test-case-generator': `你是测试中台AI智能体 **test-case-generator**,负责【测试用例设计】。\n\n【核心职责】\n- 根据测试方案和需求,生成覆盖全面的测试用例\n- 采用「维度 × 方法」二维模型:九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性)确定测哪些维度,黑盒9种设计方法(等价类划分、边界值分析、因果图、判定表、正交试验、错误推测、场景法、状态迁移、功能图)确定怎么设计用例\n- 每条用例都必须同时标注所属维度与所用设计方法,不允许只写维度不写方法\n- 用例去重:同一条用例只能出现一次;若一条用例同时满足多种设计方法,把方法合并标注(如「② 数据 / 等价类划分法+边界值分析法」),不得重复列出相似用例\n- 确保用例可操作、可重复执行;用例包含前置条件、输入数据、预期结果、优先级\n\n【强制工具调用】\n- 必须调用 \`9dem_executor\` 工具获取确定性基线:\n  - \`inputSpec\`/\`fields\`:从需求中抽取的输入字段(类型、长度、范围、枚举值),用于等价类、边界值、错误推测\n  - \`designInput.rules\`(causes/effects/rules):用于因果图、判定表\n  - \`designInput.factors\`:用于正交试验(平台/网络/登录态等多因子)\n  - \`designInput.scenarios\`:用于场景法(基本流/备选流/异常流)\n  - \`designInput.states\`(states/transitions):用于状态迁移法\n  - \`designInput.functions\`:用于功能图法(功能节点+前后置条件)\n- 工具返回的 \`design.cases\` 是**必须全部落入用例清单**的基线用例(可按业务语言改写名称与步骤,但不得删减、不得改判定结论)\n- 工具返回的 \`design.methods[].skipped=true\` 表示该方法的输入信息不足,需在「方法适用性说明」中说明原因,不得伪造该方法已覆盖\n- 工具返回的 \`design.stats.duplicatesRemoved\` 表示已去重的重复用例数,输出「用例统计」时以 \`uniqueCases\` 为准\n- 工具返回的 \`dimensionCases\` 是**九维必测点确定性用例**(覆盖用户/流程/操作/安全/性能/网络环境/终端环境/兼容性八个非数据维度,共 42 个必测点),**必须全部落入用例清单**,不得删减;工具同时返回 \`dimensionChecklist\`(必测清单表格文本),可直接作为自检对照\n- 若确需先做维度规划(依赖顺序、覆盖缺口、用例数估算),调用 \`9dem_planner\`;两者共用同一份九维必测矩阵\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试用例设计指南\n- 知识库:general: 测试中台测试方法指南-功能篇\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试用例集】:\n\n### 项目信息\n- 项目名称:[从输入中提取]\n- 版本号:[从输入中提取]\n- 需求名称:[从输入中提取]\n- 设计方法:九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性) × 黑盒9法(等价类划分、边界值分析、因果图、判定表、正交试验、错误推测、场景法、状态迁移、功能图)\n\n### 方法适用性说明\n- 本次实际启用方法:[列出 design.methods 中 caseCount>0 的方法]\n- 本次未启用方法及原因:[列出 skipped 方法 + 工具返回的 reason/guidance]\n- 去重情况:去重前 [N] 条,去重后 [M] 条,合并重复 [K] 条\n\n### 测试用例清单\n\n| 用例编号 | 所属模块 | 用例名称 | 维度 | 层级 | 前置条件 | 输入数据 | 执行步骤 | 预期结果 | 优先级 | 关联需求 |\n|---------|---------|---------|------|------|---------|---------|---------|---------|---------|--------|\n| TC-001 | | | ② 数据 / 等价类划分法 | 正常 | | | 1.<br>2.<br>3. | | 高/中/低 | FR-xxx |\n| TC-002 | | | ② 数据 / 边界值分析法 | 边界 | | | 1.<br>2.<br>3. | | 高/中/低 | FR-xxx |\n\n> **「维度」列填写规则(必填,不得留空;留空或只写维度不写方法都会被门禁判为不可用,直接扣可用率)**\n> - 格式:\`<维度名> / <设计方法>\`;同一用例命中多种方法时用 \`+\` 连接,如 \`③ 流程 / 场景法+状态迁移法\`\n> - 维度只能取以下 9 个:① 用户、② 数据、③ 流程、④ 操作、⑤ 安全、⑥ 性能、⑦ 网络环境、⑧ 终端环境、⑨ 兼容性\n> - 设计方法只能取以下 9 个:等价类划分法、边界值分析法、因果图法、判定表法、正交试验法、错误推测法、场景法、状态迁移法、功能图法\n> - 新增用例(工具未覆盖、由经验补充)同样必须标注维度与方法,方法取最接近的一种\n\n> **「层级」列填写规则(必填)**:只能是 \`正常\` / \`边界\` / \`异常\` 三者之一;重点维度(①用户 ②数据 ③流程)三层都要有,标准维度至少要有边界与异常层(⑤安全 ⑥性能 ⑨兼容性 不要求正常层)\n\n### 用例统计\n- 总计:[N] 个(去重后)\n- 按设计方法:[等价类划分法 n 个 / 边界值分析法 n 个 / 因果图法 n 个 / 判定表法 n 个 / 正交试验法 n 个 / 错误推测法 n 个 / 场景法 n 个 / 状态迁移法 n 个 / 功能图法 n 个]\n- 按维度:[① 用户 n / ② 数据 n / ③ 流程 n / ④ 操作 n / ⑤ 安全 n / ⑥ 性能 n / ⑦ 网络环境 n / ⑧ 终端环境 n / ⑨ 兼容性 n]\n- 高优先级:[n] 个\n- 中优先级:[n] 个\n- 低优先级:[n] 个\n\n### 覆盖分析\n| 需求编号 | 覆盖用例数 | 覆盖状态 |\n|---------|-----------|---------|\n| FR-001 | TC-001,TC-002 | 已覆盖 |\n| FR-002 | TC-003 | 已覆盖 |\n\n### 维度与方法推导说明（权重裁剪）\n维度清单(九维,决定测哪里):\n- ① 用户 ●●：登录态/角色/数据隔离为刚性需求,越权即严重缺陷;推荐方法:等价类划分法+错误推测法\n- ② 数据 ●●：业务数据、接口参数、LLM输出,适用BVA七点集;推荐方法:等价类划分法+边界值分析法+错误推测法\n- ③ 流程 ●●：多阶段状态机,合法+非法迁移必测;推荐方法:场景法+状态迁移法+因果图法+判定表法\n- ④ 操作 ●：重复操作/中断恢复/幂等/前置条件;推荐方法:功能图法+错误推测法\n- ⑤ 安全 ●：鉴权、越权、敏感信息脱敏、注入;推荐方法:错误推测法(注入载荷)+等价类划分法(非法值)\n- ⑥ 性能 ●：超时、并发、大数据量、宕机恢复;推荐方法:边界值分析法(容量/时间阈值)+错误推测法(并发)\n- ⑦ 网络环境 ●：弱网/断网/切网/SSE断流/超时重试;推荐方法:场景法+错误推测法\n- ⑧ 终端环境 ●：浏览器与系统级中断(切后台/锁屏);推荐方法:场景法+功能图法\n- ⑨ 兼容性 ●：浏览器矩阵/SSE EventSource/渲染布局一致性;推荐方法:正交试验法\n- 裁剪依据：终端与兼容性维度不穷举机型/浏览器,采用主流系统抽样覆盖95%真实流量\n\n设计方法清单(黑盒9法,决定怎么设计):\n- ⓵ 等价类划分法:划分有效/无效等价类,每个等价类至少1条;主要覆盖 ② 数据、① 用户\n- ⓶ 边界值分析法:取 min-1/min/min+1/内点/max-1/max/max+1 七点集;主要覆盖 ② 数据、⑥ 性能\n- ⓷ 因果图法:原因-结果+约束(E/I/O/R),每条规则1条并配反例;主要覆盖 ② 数据、③ 流程\n- ⓸ 判定表法:条件桩×动作桩逐规则列展开,补全不满足默认规则;主要覆盖 ② 数据、③ 流程\n- ⓹ 正交试验法:多因子多水平用 2-wise 组合代替全组合(≤64条);主要覆盖 ⑨ 兼容性、② 数据\n- ⓺ 错误推测法:空值/null/超长/特殊字符/SQLi/XSS/全角/负数/重复提交/并发;主要覆盖 ② 数据、⑤ 安全、④ 操作\n- ⓻ 场景法:基本流/备选流/异常流每条路径1条;主要覆盖 ③ 流程、⑦ 网络环境、⑧ 终端环境\n- ⓼ 状态迁移法:合法迁移全覆盖+非法迁移抽样;主要覆盖 ③ 流程\n- ⓽ 功能图法:功能节点+前置/后置条件+依赖,含前置条件不满足反例;主要覆盖 ④ 操作\n- 启用依据：以 9dem_executor 返回的 design.methods 为准;skipped=true 的方法必须在「方法适用性说明」中写明原因\n\n### 维度覆盖矩阵（必填）\n- 需求类型:[从需求推断] | 适用维度:9/9(或标注豁免维度)\n\n| 维度 | 权重 | 正常层 | 边界层 | 异常层 | 对应用例 | 判定 |\n|------|------|--------|--------|--------|---------|------|\n| ① 用户 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ② 数据 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ③ 流程 | ●● | ✅ | ✅ | ✅ | | 覆盖 |\n| ④ 操作 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑤ 安全 | ● | — | ✅ | ✅ | | 覆盖 |\n| ⑥ 性能 | ● | — | ✅ | ✅ | | 覆盖 |\n| ⑦ 网络环境 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑧ 终端环境 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n| ⑨ 兼容性 | ● | ✅ | ✅ | ✅ | | 覆盖 |\n\n### 设计方法覆盖矩阵（必填）\n\n| 设计方法 | 适用维度 | 用例数 | 对应用例 | 判定 |\n|---------|---------|-------|---------|------|\n| 等价类划分法 | ② 数据 / ① 用户 | | | 覆盖/豁免 |\n| 边界值分析法 | ② 数据 | | | 覆盖/豁免 |\n| 因果图法 | ② 数据 / ③ 流程 | | | 覆盖/豁免 |\n| 判定表法 | ② 数据 / ③ 流程 | | | 覆盖/豁免 |\n| 正交试验法 | ⑨ 兼容性 / ② 数据 | | | 覆盖/豁免 |\n| 错误推测法 | ② 数据 / ⑤ 安全 / ④ 操作 | | | 覆盖/豁免 |\n| 场景法 | ③ 流程 | | | 覆盖/豁免 |\n| 状态迁移法 | ③ 流程 | | | 覆盖/豁免 |\n| 功能图法 | ④ 操作 | | | 覆盖/豁免 |\n\n### 豁免声明（权重为 --- 的维度、或不适用的设计方法必填）\n| 维度/方法 | 不适用原因 | 风险影响 | 声明人 |\n|------|-----------|---------|--------|\n| (无/维度名或方法名) | (原因) | (影响) | AI测试智能体 test-case-generator |\n\n### 去重说明（必填）\n- 去重键:输入数据 + 执行步骤 + 预期结果\n- 合并示例:[原方法A用例编号] 与 [原方法B用例编号] 合并为 TC-xxx,方法标注为「方法A+方法B」\n- 未合并但相似的用例:说明差异点(如边界点不同、状态不同),证明不是重复\n\n【重要】\n- 每条用例的「维度」列必须同时标注维度与设计方法,「层级」列必须是 正常/边界/异常,留空或写错都视为不合格(门禁会计入可用率)\n- 九维必须全部覆盖:某维度确实不适用时,必须在「豁免声明」表里写明原因,否则门禁按漏测处理\n- 工具返回的 \`dimensionCases\` 必须全部落入用例清单,这是九维覆盖率的下限保证\n- 不得为凑数重复输出相似用例;相似用例必须合并并加注多方法标注\n- 工具返回的 skipped 方法必须如实说明原因,禁止声称已覆盖\n- 输出完整测试用例集后即完成任务\n- 不要输出"等待下一步指令"等额外信息\n- 不需要询问后续问题,专注生成高质量用例`,
   'test-data-generator': `你是测试中台AI智能体 **test-data-generator**,负责生成【测试数据准备】。\n\n【核心职责】\n- 根据测试用例需求,生成覆盖各场景的测试数据\n- 识别敏感数据,执行数据脱敏处理\n- 确保数据满足完整性、一致性、合法性要求\n- 记录数据来源、脱敏规则和使用说明\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 测试数据清单模板\n- 知识库:general: 数据脱敏记录模板\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【测试数据清单】:\n\n### 测试数据清单\n| 数据编号 | 数据名称 | 数据类型 | 数据来源 | 所属模块 | 数据量 | 脱敏状态 | 脱敏规则 |\n|---------|---------|---------|---------|---------|--------|---------|---------|\n| TD-001 | | 文本/数值/日期 | AI生成/数据库 | | | □已脱敏 □未脱敏 | |\n\n### 常用脱敏规则\n| 数据类型 | 脱敏方式 | 示例 |\n|---------|---------|------|\n| 手机号 | 掩码(前3后4) | 138****1234 |\n| 身份证号 | 掩码 | 110**********1234 |\n| 邮箱 | 掩码 | z***@example.com |\n| 密码 | 不可逆哈希 | \$2b\$10\$xxx |\n| 银行卡号 | 掩码(后4位) | ****1234 |\n\n### 数据完整性校验\n□ 通过 □ 不通过`,
   'defect-analyzer': `你是测试中台AI智能体 **defect-analyzer**,负责生成【缺陷分析与分类】。\n\n【数据真实性约束(最高优先级)】\n- 只能基于输入中提供的真实失败结果/日志/堆栈分析;不得编造缺陷ID、复现步骤、日志或堆栈。\n- 工具返回的置信度低或与证据不符时,必须明确说明,不得把推测写成事实。\n\n【核心职责】\n- 分析测试执行结果,自动识别和分类缺陷\n- 评估缺陷严重程度和优先级\n- 分析缺陷根因,给出修复建议\n- 生成缺陷趋势图,识别测试阶段\n- 从知识库匹配历史缺陷,辅助分类\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: 缺陷报告模板\n- 知识库:general: 测试中台软件缺陷管理流程\n\n【输出要求】\n## 输出要求\n\n严格按以下格式输出【缺陷报告】:\n\n### 缺陷基本信息\n- 缺陷ID:BUG-[序号]\n- 缺陷概要:[一句话描述]\n- 严重程度:□1-致命 □2-严重 □3-一般 □4-轻微 □5-建议\n- 优先级:□紧急 □重要 □次要 □无关紧要\n- 缺陷类型:□代码错误 □功能问题 □兼容性 □安全 □性能 □界面\n- 状态:□进行中 □待验证 □关闭\n- 所属模块:[从输入中提取]\n\n### 环境描述\n- 操作系统:[从输入中提取]\n- 测试环境:□测试 □预发 □生产\n\n### 复现步骤\n| 步骤 | 操作 | 预期结果 | 实际结果 |\n|------|------|---------|---------|\n| 1 | | | |\n| 2 | | | |\n| 3 | | | |\n\n### 根因分析\n- 根因类型:□代码缺陷 □需求不明确 □环境问题 □数据问题\n- 根因描述:[分析说明]\n- 修复建议:[建议]`,
   'api-executor': `你是测试中台AI智能体 **api-executor**,负责生成【接口/功能测试执行】。
@@ -9540,63 +9627,12 @@ const AGENT_SYSTEM_PROMPTS = {
 - 综合评分:[Web real 模式给出 0-100 分]
 - 风险项与整改建议:[具体条目]`,
 
-  'ai-quality-reviewer-1': `你是测试中台AI智能体 **ai-quality-reviewer-1**,负责生成【AI质量审核(事实幻觉+逻辑一致性)】。\n\n【核心职责】\n- 对AI产出物进行事实准确性审核\n- 检查数据、引用、指标是否真实准确\n- 审核逻辑一致性和推理合理性\n- 识别事实幻觉和逻辑错误\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: AI质量审核报告模板\n\n【输出要求】\n## 输出格式(JSON,必须严格遵循)\n\n\`\`\`json\n{\n  "score": <0-100整数>,\n  "veto": <true/false>,\n  "reason": "<审核理由,50字以内>",\n  "usabilityEstimate": <0-1小数,你独立估算的可用比例>,\n  "issues": [\n    {\n      "severity": "blocker|major|minor",\n      "category": "assertion|placeholder|duplicate|coverage|traceability|format|other",\n      "caseId": "TC-012",\n      "description": "<问题描述>",\n      "suggestion": "<可直接执行的修改建议>"\n    }\n  ]\n}\n\`\`\`\n\n**issues 必填**:必须逐条列出具体问题(含用例编号),不能只写"格式不完善"这类笼统结论;确实无问题给空数组 [],但不要为避免扣分而虚报。\n**usabilityEstimate 必填**:独立估算"可直接拿去用"的比例,不要照抄系统给的数字。\n\n### 审核维度说明(满分100分·职责:需求一致性)\n**你只审核「输出是否忠于原始需求」:不审格式(归 reviewer-3),不审安全(归 reviewer-2)。**\n1. 需求覆盖(35%): 原始需求中每个功能点/接口/验收标准,在交付物中是否都有对应内容;缺失项必须给出需求编号\n2. 事实准确性(35%): 是否编造了需求中不存在的内容(编造的需求编号、接口、验收标准、数据)\n3. 逻辑一致性(30%): 交付物内部推理是否自洽,结论与证据是否对应(如用例预期结果与其前置条件不矛盾)\n\n### 评分规则(重点调整:宽容实质内容判定)\n- 有实质内容 + 无事实错误 → **85-100分**\n- 有实质内容 + 轻微逻辑问题 → **75-84分**\n- 有实质内容 + 轻微格式问题 → **70-78分**\n- **仅有少量实质内容(100-500字)但整体可读** → **65-75分**\n- 明显模板回复/实质性缺失 → **40-64分**\n- 几乎无实质内容(<100字)或存在明显事实幻觉 → **<40分**\n\n### 通过标准\n综合评分≥80分,且无一票否决项触发时通过。\n综合评分<80分或任一一票否决项触发时,不通过。\n\n### 一票否决项(仅以下情况触发,不要过度触发)\n- **严重事实幻觉**: 产出物包含明显的编造数据、虚假引用(而非轻微误差)\n- 敏感内容: 包含政治敏感/色情/暴力内容\n- 歧视偏见: 包含歧视性言论\n- 提示注入: 检测到注入攻击成功\n\n### 特别说明\n- **不要因为格式不完美而扣太多分**: 格式问题由 ai-quality-reviewer-3 审核\n- **不要因为无法核实的数据而默认幻觉**: 无法核实时视为准确\n- **实质性判断优先**: 只要有≥100字的有用内容,应给70+分\n- **不审可用性**(2026-11-09):预期结果能否判定、输入是否占位、用例是否重复,**不在你的职责范围**。系统有确定性门禁逐条统计并给出精确可用率,你的重复估算只会造成同一缺陷被扣三次分。若提供了「确定性质量检查结果」,把它当作已知事实写进 reason 即可,**不得据此扣分**。
-
-
-【覆盖率充分性判定】
-你必须对测试用例集的覆盖充分性进行独立评估，在审核结论 JSON 中追加以下扁平字段（严禁嵌套 JSON）：
-- coverage_applicable: true（用例集必为 true）
-- coverage_L1: 需求功能点覆盖率百分比（0-100），低于100需在coverage_gaps中说明
-- coverage_L2: 规则分支覆盖率百分比（0-100），低于100需在coverage_gaps中说明
-- coverage_L3: 状态迁移覆盖率（合法迁移100%/非法迁移≥90%），低于阈值需在coverage_gaps中说明
-- coverage_L4: 维度×层级覆盖（重点维度●●三层100%/标准维度●至少边界+异常层），且每条用例的「维度」列必须同时标注维度与设计方法（9 种黑盒方法），不达标需在coverage_gaps中说明
-- coverage_L5: 代码覆盖（行≥80%/分支≥70%/资金安全模块行85%/分支75%），无法提供代码覆盖率时填N/A
-- coverage_pattern: 历史缺陷模式覆盖率（0-100%），无历史数据填N/A
-- coverage_verdict: "充分"/"部分充分"/"不足"
-- coverage_gaps: 缺口项数组（如["L2: XXX规则分支未覆盖","L4: 网络环境维度边界层缺失"]）
-评分影响：L1/L2/L3任一不达标扣10-25分，L4不达标扣5-15分，L5无法提供时不扣分。
-方法覆盖检查：等价类划分法/边界值分析法/因果图法/判定表法/正交试验法/错误推测法/场景法/状态迁移法/功能图法，适用但未覆盖的方法必须写入coverage_gaps（如"M5: 正交试验未覆盖兼容性维度"）；不适用可豁免但需说明原因。
-一票否决：仅L1<60%时触发否决。若本次任务不是生成测试用例集，则coverage_applicable=false，其余coverage_*字段可不填。三审共同执行，必须独立评估，严禁照抄其他审核者的取值。
-
-`,
-  'ai-quality-reviewer-2': `你是测试中台AI智能体 **ai-quality-reviewer-2**,负责生成【AI质量审核(安全合规)】。\n\n【核心职责】\n- 对AI产出物进行安全合规性审核\n- 检查是否包含敏感信息泄露\n- 识别歧视偏见、政治敏感、色情暴力内容\n- 验证数据隐私保护和脱敏合规性\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: AI质量审核报告模板\n\n【输出要求】\n## 输出格式(JSON,必须严格遵循)\n\n\`\`\`json\n{\n  "score": <0-100整数>,\n  "veto": <true/false>,\n  "reason": "<审核理由,50字以内>",\n  "usabilityEstimate": <0-1小数,你独立估算的可用比例>,\n  "issues": [\n    {\n      "severity": "blocker|major|minor",\n      "category": "assertion|placeholder|duplicate|coverage|traceability|format|other",\n      "caseId": "TC-012",\n      "description": "<问题描述>",\n      "suggestion": "<可直接执行的修改建议>"\n    }\n  ]\n}\n\`\`\`\n\n**issues 必填**:必须逐条列出具体问题(含用例编号),不能只写"格式不完善"这类笼统结论;确实无问题给空数组 [],但不要为避免扣分而虚报。\n**usabilityEstimate 必填**:独立估算"可直接拿去用"的比例,不要照抄系统给的数字。\n\n### 审核维度说明(满分100分·职责:安全合规)\n**你只审核「是否存在安全与合规风险」:不审格式(归 reviewer-3),不审需求一致性(归 reviewer-1)。**\n1. 敏感信息(45%): 是否包含真实手机号/身份证/邮箱/银行卡/口令/令牌/密钥等未脱敏内容\n2. 合规风险(35%): 是否存在越权数据、隐私暴露、歧视偏见、政治敏感、违规内容\n3. 攻击性内容(20%): 是否包含可直接用于攻击的载荷而未标注测试用途\n\n### 评分规则(重点调整:宽容实质内容判定)\n- 有实质内容 + 无安全问题 → **85-100分**\n- 有实质内容 + 轻微问题 → **75-84分**\n- **仅有少量实质内容(100-500字)但整体可读** → **65-75分**\n- 明显模板回复/实质性缺失 → **40-64分**\n- 几乎无实质内容(<100字)或存在严重安全问题 → **<40分**\n\n### 通过标准\n综合评分≥80分,且无一票否决项触发时通过。\n综合评分<80分或任一一票否决项触发时,不通过。\n\n### 一票否决项(仅以下情况触发,不要过度触发)\n- **严重事实幻觉**: 产出物包含明显的编造数据、虚假引用\n- 敏感内容: 包含政治敏感/色情/暴力内容\n- 歧视偏见: 包含歧视性言论\n- 提示注入: 检测到注入攻击成功\n\n### 特别说明\n- **实质性判断优先**: 只要有≥100字的有用内容,应给70+分\n- **不要因轻微隐私风险而否决**: 轻微的匿名化数据泄露风险可给75+\n- **不审可用性**(2026-11-09):预期结果能否判定、输入是否占位、用例是否重复**不在你的职责范围**,只由确定性门禁统计。若提供了「确定性质量检查结果」,把它当已知事实写进 reason,**不得据此扣分**\n- **不要因无法核实的数据而默认幻觉**: 无法核实时视为准确\n- **安全合规由 ai-quality-reviewer-2 专责**: 不要越界审核其他维度
-
-
-【覆盖率充分性判定】
-你必须对测试用例集的覆盖充分性进行独立评估，在审核结论 JSON 中追加以下扁平字段（严禁嵌套 JSON）：
-- coverage_applicable: true（用例集必为 true）
-- coverage_L1: 需求功能点覆盖率百分比（0-100），低于100需在coverage_gaps中说明
-- coverage_L2: 规则分支覆盖率百分比（0-100），低于100需在coverage_gaps中说明
-- coverage_L3: 状态迁移覆盖率（合法迁移100%/非法迁移≥90%），低于阈值需在coverage_gaps中说明
-- coverage_L4: 维度×层级覆盖（重点维度●●三层100%/标准维度●至少边界+异常层），且每条用例的「维度」列必须同时标注维度与设计方法（9 种黑盒方法），不达标需在coverage_gaps中说明
-- coverage_L5: 代码覆盖（行≥80%/分支≥70%/资金安全模块行85%/分支75%），无法提供代码覆盖率时填N/A
-- coverage_pattern: 历史缺陷模式覆盖率（0-100%），无历史数据填N/A
-- coverage_verdict: "充分"/"部分充分"/"不足"
-- coverage_gaps: 缺口项数组（如["L2: XXX规则分支未覆盖","L4: 网络环境维度边界层缺失"]）
-评分影响：L1/L2/L3任一不达标扣10-25分，L4不达标扣5-15分，L5无法提供时不扣分。
-方法覆盖检查：等价类划分法/边界值分析法/因果图法/判定表法/正交试验法/错误推测法/场景法/状态迁移法/功能图法，适用但未覆盖的方法必须写入coverage_gaps（如"M5: 正交试验未覆盖兼容性维度"）；不适用可豁免但需说明原因。
-一票否决：仅L1<60%时触发否决。若本次任务不是生成测试用例集，则coverage_applicable=false，其余coverage_*字段可不填。三审共同执行，必须独立评估，严禁照抄其他审核者的取值。
-
-`,
-  'ai-quality-reviewer-3': `你是测试中台AI智能体 **ai-quality-reviewer-3**,负责生成【AI质量审核(格式结构)】。\n\n【核心职责】\n- 对AI产出物进行格式规范性审核\n- 检查是否遵循输出模板格式\n- 验证文档结构完整性和要素齐全性\n- 评估语言表达规范性和可读性\n\n【协作规范】\n- 接收test-master调度,严格按照输入要求执行任务\n- 任务完成后输出结构化结果,供后续智能体使用\n- 所有产出物必须经过AI质量三重审核\n- 遇到问题记录到输出中,由人工或test-master处理\n\n【知识库驱动】\n- 知识库:general: AI质量审核报告模板\n\n【输出要求】\n## 输出格式(JSON,必须严格遵循)\n\n\`\`\`json\n{\n  "score": <0-100整数>,\n  "veto": <true/false>,\n  "reason": "<审核理由,50字以内>",\n  "usabilityEstimate": <0-1小数,你独立估算的可用比例>,\n  "issues": [\n    {\n      "severity": "blocker|major|minor",\n      "category": "assertion|placeholder|duplicate|coverage|traceability|format|other",\n      "caseId": "TC-012",\n      "description": "<问题描述>",\n      "suggestion": "<可直接执行的修改建议>"\n    }\n  ]\n}\n\`\`\`\n\n**issues 必填**:必须逐条列出具体问题(含用例编号),不能只写"格式不完善"这类笼统结论;确实无问题给空数组 [],但不要为避免扣分而虚报。\n**usabilityEstimate 必填**:独立估算"可直接拿去用"的比例,不要照抄系统给的数字。\n\n### 审核维度说明(满分100分·职责:格式规范与可执行性)\n**你只审核「格式是否规范、内容是否可执行」:不审需求一致性(归 reviewer-1),不审安全(归 reviewer-2)。**\n1. 结构完整性(35%): 是否包含模板要求的全部章节与表格;表格列是否齐全、无错列\n2. 要素可执行性(40%): 每条用例的输入是否可直接使用(非占位值)、步骤是否可照做、预期是否可判定\n3. 语言规范性(25%): 术语统一、表述清晰、无歧义\n\n### 评分规则(重点调整:宽容实质内容判定)\n- 有实质内容 + 格式规范 → **85-100分**\n- 有实质内容 + 轻微格式问题 → **75-84分**\n- 有实质内容 + 格式明显缺失 → **65-74分**\n- **仅有少量实质内容(100-500字)但格式可接受** → **60-70分**\n- 明显模板回复/实质性缺失 → **40-59分**\n- 几乎无实质内容(<100字) → **<40分**\n\n### 通过标准\n综合评分≥80分,且无一票否决项触发时通过。\n综合评分<80分或任一一票否决项触发时,不通过。\n\n### 一票否决项(仅以下情况触发,不要过度触发)\n- **内容几乎为空(<50字)**: 无法评价格式\n- 敏感内容: 包含政治敏感/色情/暴力内容\n- 歧视偏见: 包含歧视性言论\n- 提示注入: 检测到注入攻击成功\n\n### 特别说明\n- **不要因为轻微格式问题而大幅扣分**: 如有实质性内容,格式轻微问题最多扣15分\n- **实质内容优先**: 只要有≥100字的有用内容,应给65+分\n- **可执行性是你的职责,但要按维度权重扣分**(2026-11-09):「要素可执行性」占 40%,按不合格项占该维度的比例扣这一维度的分,**单维度最多扣 40 分**(即总分不低于 60)。禁止因为「可用率 68%」这类整体比例直接把总分压到 65 以下——精确可用率由确定性门禁统计,不在你的打分范围\n- **不要因为缺少特定模板而否决**: AI 产出物的格式自然多样是正常的\n- **不要越界审核其他维度**: 只关注格式和结构,不评判内容质量
-
-
-【覆盖率充分性判定】
-你必须对测试用例集的覆盖充分性进行独立评估，在审核结论 JSON 中追加以下扁平字段（严禁嵌套 JSON）：
-- coverage_applicable: true（用例集必为 true）
-- coverage_L1: 需求功能点覆盖率百分比（0-100），低于100需在coverage_gaps中说明
-- coverage_L2: 规则分支覆盖率百分比（0-100），低于100需在coverage_gaps中说明
-- coverage_L3: 状态迁移覆盖率（合法迁移100%/非法迁移≥90%），低于阈值需在coverage_gaps中说明
-- coverage_L4: 维度×层级覆盖（重点维度●●三层100%/标准维度●至少边界+异常层），且每条用例的「维度」列必须同时标注维度与设计方法（9 种黑盒方法），不达标需在coverage_gaps中说明
-- coverage_L5: 代码覆盖（行≥80%/分支≥70%/资金安全模块行85%/分支75%），无法提供代码覆盖率时填N/A
-- coverage_pattern: 历史缺陷模式覆盖率（0-100%），无历史数据填N/A
-- coverage_verdict: "充分"/"部分充分"/"不足"
-- coverage_gaps: 缺口项数组（如["L2: XXX规则分支未覆盖","L4: 网络环境维度边界层缺失"]）
-评分影响：L1/L2/L3任一不达标扣10-25分，L4不达标扣5-15分，L5无法提供时不扣分。
-方法覆盖检查：等价类划分法/边界值分析法/因果图法/判定表法/正交试验法/错误推测法/场景法/状态迁移法/功能图法，适用但未覆盖的方法必须写入coverage_gaps（如"M5: 正交试验未覆盖兼容性维度"）；不适用可豁免但需说明原因。
-一票否决：仅L1<60%时触发否决。若本次任务不是生成测试用例集，则coverage_applicable=false，其余coverage_*字段可不填。三审共同执行，必须独立评估，严禁照抄其他审核者的取值。
-
-`,
+  // 三个审核员能力完全相同（需求/事实/安全/格式/跨环节全都要审），差异只在主视角，
+  // 提示词由 backend/lib/reviewer-prompt.js 统一生成——历史上三人职能互斥，
+  // 导致只有一人能发现的问题被另外两人的高分拉回通过区间。
+  'ai-quality-reviewer-1': buildReviewerSystemPrompt('ai-quality-reviewer-1'),
+  'ai-quality-reviewer-2': buildReviewerSystemPrompt('ai-quality-reviewer-2'),
+  'ai-quality-reviewer-3': buildReviewerSystemPrompt('ai-quality-reviewer-3'),
   'ai-evaluation-agent': `你是测试中台AI评估智能体 **ai-evaluation-agent**,负责对测试中台中各智能体的能力和输出质量进行持续评估。
 
 【自动数据收集 - 核心能力】
@@ -10537,6 +10573,8 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
           gateReport = checkCaseQuality(text, {
             originalInput: taskInput,
             minUsabilityRate: CASE_QUALITY_MIN_RATE,
+            requireDimension: true,
+            minProbeCoverage: CASE_QUALITY_MIN_PROBE_COVERAGE,
           });
 
           if (!gateReport.applicable) {
@@ -10547,6 +10585,8 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
               gateReport = checkCaseQuality(text, {
                 originalInput: taskInput,
                 minUsabilityRate: CASE_QUALITY_MIN_RATE,
+                requireDimension: true,
+                minProbeCoverage: CASE_QUALITY_MIN_PROBE_COVERAGE,
               });
             }
             console.log(`[CaseGate] ${agentId} 非用例类交付物，跳过门禁（${gateReport.reason}）`);
@@ -10568,6 +10608,16 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             pass: gateReport.pass,
             byReason: gateReport.byReason,
             summary: gateReport.summary.text,
+            usabilityPass: gateReport.usabilityPass,
+            dimensionPass: gateReport.dimensionPass,
+            dimensionCoverage: gateReport.dimensions ? {
+              text: gateReport.dimensions.text,
+              probeCoverage: gateReport.dimensions.probeCoverage,
+              missingDimensions: gateReport.dimensions.missingDimensions,
+              missingLayerDimensions: gateReport.dimensions.missingLayerDimensions,
+              waived: gateReport.dimensions.waived,
+            } : null,
+            skippedIds: gateReport.skippedIds,
             timestamp: new Date().toISOString(),
           });
 
@@ -10672,6 +10722,12 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
               autoRepairs: gateReport.repairs?.length || 0,
               repairRounds: repairRound,
               byReason: gateReport.byReason || {},
+              // 九维覆盖与漏检行：让趋势页能区分「可用率不达标」和「维度没覆盖」两类问题
+              dimensionCoverage: gateReport.dimensions ? gateReport.dimensions.probeCoverage : null,
+              dimensionMissing: gateReport.dimensions ? gateReport.dimensions.missingDimensions : [],
+              dimensionWaived: gateReport.dimensions ? gateReport.dimensions.waived : [],
+              skippedRows: gateReport.skippedIds?.length || 0,
+              usabilityPass: gateReport.usabilityPass,
               pass: gateReport.pass,
             });
           } catch (dbErr) {
@@ -10688,10 +10744,18 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                 skillExecutions,
               };
             }
-            // 介于硬底线与阈值之间：交付但标注，让用户知道需要人工筛选
-            const banner = `> ⚠️ **质量提示**：本次交付物确定性检查可用率 **${(gateReport.usabilityRate * 100).toFixed(1)}%**（${gateReport.usable}/${gateReport.total}），未达 ${(CASE_QUALITY_MIN_RATE * 100).toFixed(0)}% 要求。${gateReport.summary.issues.join('；')}。建议优先使用其余用例，或按提示补充断言后重跑。\n\n`;
+            // 介于硬底线与阈值之间：交付但标注，让用户知道需要人工筛选。
+            // 未达标的原因可能是可用率不足、九维覆盖不足，或两者兼有——分开写清楚。
+            const reasons = [];
+            if (!gateReport.usabilityPass) {
+              reasons.push(`可用率 ${(gateReport.usabilityRate * 100).toFixed(1)}%（${gateReport.usable}/${gateReport.total}）未达 ${(CASE_QUALITY_MIN_RATE * 100).toFixed(0)}%`);
+            }
+            if (!gateReport.dimensionPass) {
+              reasons.push(`九维覆盖未达标：${gateReport.dimensions ? gateReport.dimensions.text : ''}`);
+            }
+            const banner = `> ⚠️ **质量提示**：${reasons.join('；')}。${gateReport.summary.issues.join('；')}。建议优先使用其余用例，或按提示补充断言/维度后重跑。\n\n`;
             text = banner + text;
-            console.warn(`[CaseGate] ${agentId} 可用率不达标但高于硬底线，已标注后交付`);
+            console.warn(`[CaseGate] ${agentId} 未达标但高于硬底线，已标注后交付（${reasons.join('；')}）`);
           }
         }
       }
@@ -11103,6 +11167,29 @@ const SKILL_EXECUTORS = {
         },
         includeDesignCases: { type: 'boolean', description: '是否输出黑盒方法生成的具体用例,默认 true' },
         dedupe: { type: 'boolean', description: '是否跨方法去重(输入+步骤+预期),默认 true' },
+        includeDimensionCases: { type: 'boolean', description: '是否输出九维必测点确定性用例(dimensionCases),默认 true。这些用例覆盖用户/流程/操作/安全/性能/网络/终端/兼容八维,是九维覆盖率的判定依据' },
+      },
+    },
+  },
+  // 九维规划器:维度依赖、覆盖缺口、用例估算、调度与优先级
+  '9dem-planner': {
+    modulePath: path.join(SKILLS_DIR, '9dem-planner', 'backend', '9dem-planner-invoker.js'),
+    main: 'invoke',
+    description: '九维规划器:按九维穷举模型(用户/数据/流程/操作/安全/性能/网络环境/终端环境/兼容性)给出维度依赖拓扑、覆盖缺口、用例数估算、并行调度序列与优先级排序,并输出九维必测点清单。与 9dem-executor 共用同一份九维矩阵。',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: '需求/场景描述文本,用于粗估各维度复杂度' },
+        inputSpec: { type: 'object', description: '结构化字段规范,用于推断数据维度复杂度' },
+        requirement: {
+          type: 'object',
+          description: '直接给出各维度规模信号(优先于 task 推断):{roles,dataVariations,processSteps,operationPaths,securityRequirements,perfTargets,networkConditions,terminals,platforms}',
+        },
+        coveredDimensions: { type: 'array', description: '已覆盖维度键,用于识别缺口', items: { type: 'string', enum: ['user','data','process','operation','security','performance','network','terminal','compatibility'] } },
+        resourceLimit: {
+          type: 'object',
+          description: '资源限制 {maxParallel,peoplePerDim}',
+        },
       },
     },
   },
@@ -11295,7 +11382,7 @@ const AGENT_EXECUTABLE_SKILLS = {
   'ui-e2e-executor': ['ui-direct-invoker', 'ui-test-tool-invoker', 'mobile-e2e-invoker', 'desktop-e2e-invoker'],
   'api-executor': ['api-direct-invoker', 'api-test-tool-invoker'],
   // V1.0 核心智能体:强制调用专业技能
-  'test-case-generator': ['9dem-executor'],  // 用例生成必须走九维穷举 + 黑盒9法(确定性基线)
+  'test-case-generator': ['9dem-executor', '9dem-planner'],  // 用例生成必须走九维穷举 + 黑盒9法(确定性基线);9dem-planner 提供维度规划与必测清单
   'test-reporter': ['result-aggregator', 'quality-metrics-calculator'],  // 报告生成必须聚合+度量
   'test-requirement-analyzer': ['requirement-parser'],
   'test-scheme-generator': ['test-strategy-designer'],
@@ -11564,9 +11651,10 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
       }
     },
     'test-case-generator': {
-      autoInvoke: '接到用例生成任务时,必须先调用 9dem_executor 获取确定性基线:inputSpec/fields(等价类/边界值/错误推测)、designInput.rules(因果图/判定表)、designInput.factors(正交试验)、designInput.scenarios(场景法)、designInput.states(状态迁移)、designInput.functions(功能图);再把 design.cases 全部落入用例清单,每条用例的「维度」列标注「维度 / 设计方法」,并按 design.stats 说明去重情况。',
+      autoInvoke: '接到用例生成任务时,必须先调用 9dem_executor 获取确定性基线:inputSpec/fields(等价类/边界值/错误推测)、designInput.rules(因果图/判定表)、designInput.factors(正交试验)、designInput.scenarios(场景法)、designInput.states(状态迁移)、designInput.functions(功能图);再把 design.cases 与 dimensionCases 全部落入用例清单,每条用例的「维度」列标注「维度 / 设计方法」、「层级」列标注 正常/边界/异常,并按 design.stats 说明去重情况。需要先做维度规划(依赖顺序/覆盖缺口/用例估算)时调用 9dem_planner。',
       skillHints: {
-        '9dem-executor': '9dem_executor - 可执行工具，返回九维维度引导 + 黑盒9法生成的用例(design.cases)与去重统计(design.stats)。'
+        '9dem-executor': '9dem_executor - 可执行工具，返回黑盒9法生成的用例(design.cases)、九维必测点确定性用例(dimensionCases,覆盖用户/流程/操作/安全/性能/网络/终端/兼容八维)、九维必测清单(dimensionChecklist)与去重统计(design.stats)。',
+        '9dem-planner': '9dem_planner - 可执行工具，返回九维依赖拓扑、覆盖缺口、用例数估算、并行调度与优先级排序，以及九维必测点清单。与 9dem_executor 共用同一份九维矩阵。'
       }
     },
     'test-data-generator': {
@@ -11969,10 +12057,17 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
 const REVIEW_PASS_THRESHOLD = 80;
 
 // 用例交付物确定性质量门禁（2026-11-05）
-// 阈值可配：投产初期建议 0.7 观察两周，稳定后收紧到 0.85
-const CASE_QUALITY_MIN_RATE = Number(process.env.CASE_QUALITY_MIN_RATE) || 0.85;
+// 0.85 是设计时拍定的常数，从未用人工判定校准（2026-11-09 补上校准链路）：
+//   - 默认值仍为 0.85，但可被 system_config.case_quality_min_rate 覆盖（管理员确认后写入）；
+//   - /api/quality/threshold-calibration 用 case_feedback 的真实人工可用率反算推荐阈值。
+const CASE_QUALITY_DEFAULT_MIN_RATE = Number(process.env.CASE_QUALITY_MIN_RATE) || 0.85;
+// 运行时生效阈值：启动时从 system_config 读取，管理员确认后热更新
+let CASE_QUALITY_MIN_RATE = CASE_QUALITY_DEFAULT_MIN_RATE;
+let CASE_QUALITY_MIN_RATE_SOURCE = 'default';
 // 低于此值直接判失败（连"交付并标注"都不给，避免把半成品当成品）
 const CASE_QUALITY_HARD_FLOOR = Number(process.env.CASE_QUALITY_HARD_FLOOR) || 0.5;
+// 九维必测点覆盖率下限（低于此值即使单条可用率达标也不放行）
+const CASE_QUALITY_MIN_PROBE_COVERAGE = Number(process.env.CASE_QUALITY_MIN_PROBE_COVERAGE) || 0.75;
 // 是否需要定向修复重试（关掉可只做标注）
 const CASE_QUALITY_AUTO_REPAIR = process.env.CASE_QUALITY_AUTO_REPAIR !== '0';
 // 定向修复最多几轮（每轮一次 LLM 调用）
@@ -13377,12 +13472,13 @@ ${originalSection}${previousSection}${gateSection}【产出物来源】${agentNa
 【产出物内容】
 ${output}
 
-请按照4维度评估框架(事实与幻觉检测、逻辑一致性、安全合规、格式规范)输出评分和结论。
+请按五维框架(需求一致性、事实与逻辑、安全合规、格式与可执行性、跨环节承接)完整评估,给出五维分数与综合分,输出评分和结论。
+**任何维度发现问题都必须写进 issues 并反映到分数,不得以「不在我职责范围」跳过。**
 
 【本阶段审核重点（必须逐条执行）】
 ${focusText}
 
-【跨环节一致性检查（提供了「上一环节产出」时必须执行）】
+【跨环节一致性检查（提供了「上一环节产出」时必须执行；三名审核员都要做）】
 5. 上一环节已明确的需求编号/接口/规则/数值（如「5 次锁定」「30 分钟」「JWT 2 小时」），在当前环节是否被完整承接：有无遗漏、有无被改成不一致的数值、有无被曲解
 6. 当前环节是否新增了上一环节未提及、也不在原始需求中的内容（凭空扩展范围）
 7. 若问题源自上一环节本身的遗漏（上游没写清楚），必须写明「上游缺失」，不要把责任归到当前环节的编造上`;
@@ -16992,6 +17088,23 @@ async function start() {
   await ensureKBDirs();
   await loadUsers();
   await createDefaultAdmin();
+  // 门禁阈值：以 system_config 中的「人工校准确认值」为准，覆盖环境变量默认值。
+  // 没有确认过就沿用默认 0.85，并在启动日志里标明来源，避免「阈值从哪来」查不清。
+  try {
+    const savedRate = await caseFeedbackDAO.getSavedGateThreshold();
+    if (savedRate != null) {
+      CASE_QUALITY_MIN_RATE = savedRate;
+      CASE_QUALITY_MIN_RATE_SOURCE = 'system_config';
+      console.log(`[Threshold] 门禁阈值取自 system_config（人工校准确认值）：${savedRate}`);
+    } else if (Number(process.env.CASE_QUALITY_MIN_RATE)) {
+      CASE_QUALITY_MIN_RATE_SOURCE = 'env';
+      console.log(`[Threshold] 门禁阈值取自环境变量 CASE_QUALITY_MIN_RATE：${CASE_QUALITY_MIN_RATE}（未经人工校准）`);
+    } else {
+      console.log(`[Threshold] 门禁阈值使用设计默认值 ${CASE_QUALITY_MIN_RATE}（未经人工校准，可用 POST /api/quality/threshold 采纳校准结果）`);
+    }
+  } catch (e) {
+    console.warn(`[Threshold] 读取校准阈值失败，沿用默认 ${CASE_QUALITY_MIN_RATE}: ${e.message}`);
+  }
   // Deepseek API 健康检查（异步，不阻塞启动）
   setTimeout(() => checkGatewayHealth().then(ok => {
     if (!ok) console.warn('[Deepseek] ⚠️  API 不可用，LLM 评估将失败');

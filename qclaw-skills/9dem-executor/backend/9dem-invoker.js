@@ -13,6 +13,7 @@ const {
 } = require('../executor');
 
 const { executeDesignMethods, METHODS: DESIGN_METHODS, METHOD_KEYS: DESIGN_METHOD_KEYS } = require('./design-methods');
+const { generateDimensionCases, renderChecklist } = require('./dimension-cases');
 
 /**
  * 从 task 文本构建 inputSpec（宽松推断）
@@ -93,7 +94,8 @@ function buildInputSpecFromFields(fields) {
  * @param {Object} [params.designInput] - 设计方法的结构化输入（causes/effects/rules/factors/scenarios/states/transitions/functions）
  * @param {boolean} [params.includeDesignCases=true] - 是否输出黑盒方法生成的具体用例
  * @param {boolean} [params.dedupe=true] - 是否跨方法去重
- * @param {Object} [params.options] - 扩展选项
+ * @param {boolean} [params.includeDimensionCases=true] - 是否输出九维必测点确定性用例（默认输出）
+ * @param {Object} [params.options] - 扩展选项（module/target/maxPerDimension）
  * @returns {Object} 执行结果
  */
 async function invoke(params) {
@@ -106,6 +108,7 @@ async function invoke(params) {
     designInput = {},
     includeDesignCases = true,
     dedupe = true,
+    includeDimensionCases = true,
     options = {}
   } = params || {};
 
@@ -141,6 +144,22 @@ async function invoke(params) {
     }
 
     const designStats = design ? design.stats : null;
+
+    // 九维必测点 → 确定性用例（2026-11-09）
+    // 过去只有「数据」维是确定性计算的，其余八维只回一段「关注点 + 指引」，模型写不写没人管，
+    // 「九维覆盖率」因此只是标注。这里把九维必测点直接展开成可落表用例，
+    // 门禁用同一份探针清单判定，覆盖率成为约束。
+    // 注意：无论调用方请求了哪几个维度，必测点一律九维全量——
+    // 门禁是按九维判定的，少生成一维就等于少一维无法通过。
+    const dimensionGen = includeDimensionCases
+      ? generateDimensionCases({
+        task,
+        module: options.module || options.target,
+        inputSpec: spec,
+        maxPerDimension: options.maxPerDimension,
+      })
+      : { cases: [], checklist: [], stats: { total: 0, dimensionCount: 0, byDimension: {} } };
+
     const pairwise = result.data?.pairwise;
     const pairwiseMeta = pairwise ? {
       mode: pairwise.mode || 'full',
@@ -196,8 +215,15 @@ async function invoke(params) {
         designMethodCoverage: designStats ? designStats.methodCoverage : 0,
         designUniqueCases: designStats ? designStats.uniqueCases : 0,
         designDuplicatesRemoved: designStats ? designStats.duplicatesRemoved : 0,
+        dimensionProbeCount: dimensionGen.stats.total,
+        dimensionCoveredCount: dimensionGen.stats.dimensionCount,
+        dimensionCasesByDimension: dimensionGen.stats.byDimension,
+        totalDeterministicCases: (designStats ? designStats.uniqueCases : 0) + dimensionGen.stats.total,
       },
       design,
+      dimensionCases: dimensionGen.cases,
+      dimensionChecklist: dimensionGen.checklist,
+      dimensionChecklistText: renderChecklist(dimensionGen.checklist),
       dimensionsResult: resultForOutput,
       ...resultForOutput
     };

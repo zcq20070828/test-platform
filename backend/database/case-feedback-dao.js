@@ -132,8 +132,9 @@ export async function upsertTaskQuality(m) {
   await query(
     `INSERT INTO task_quality_metrics
        (id, task_id, agent_id, total_cases, usable_cases, usability_gate, blocker_count,
-        major_count, auto_repairs, repair_rounds, by_reason, gate_passed)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        major_count, auto_repairs, repair_rounds, by_reason, dimension_coverage,
+        dimension_missing, dimension_waived, skipped_rows, usability_pass, gate_passed)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON DUPLICATE KEY UPDATE
        total_cases = VALUES(total_cases),
        usable_cases = VALUES(usable_cases),
@@ -143,6 +144,11 @@ export async function upsertTaskQuality(m) {
        auto_repairs = VALUES(auto_repairs),
        repair_rounds = VALUES(repair_rounds),
        by_reason = VALUES(by_reason),
+       dimension_coverage = VALUES(dimension_coverage),
+       dimension_missing = VALUES(dimension_missing),
+       dimension_waived = VALUES(dimension_waived),
+       skipped_rows = VALUES(skipped_rows),
+       usability_pass = VALUES(usability_pass),
        gate_passed = VALUES(gate_passed)`,
     [
       uuidv4(),
@@ -156,6 +162,11 @@ export async function upsertTaskQuality(m) {
       m.autoRepairs || 0,
       m.repairRounds || 0,
       JSON.stringify(m.byReason || {}),
+      typeof m.dimensionCoverage === 'number' ? m.dimensionCoverage : null,
+      Array.isArray(m.dimensionMissing) && m.dimensionMissing.length ? m.dimensionMissing.join(',').slice(0, 255) : null,
+      Array.isArray(m.dimensionWaived) && m.dimensionWaived.length ? m.dimensionWaived.join(',').slice(0, 255) : null,
+      Number(m.skippedRows) || 0,
+      typeof m.usabilityPass === 'boolean' ? (m.usabilityPass ? 1 : 0) : null,
       m.pass ? 1 : 0,
     ],
   );
@@ -215,6 +226,11 @@ export async function getTaskQuality(taskId) {
     autoRepairs: r.auto_repairs,
     repairRounds: r.repair_rounds,
     byReason,
+    dimensionCoverage: r.dimension_coverage === null || r.dimension_coverage === undefined ? null : Number(r.dimension_coverage),
+    dimensionMissing: r.dimension_missing ? String(r.dimension_missing).split(',').filter(Boolean) : [],
+    dimensionWaived: r.dimension_waived ? String(r.dimension_waived).split(',').filter(Boolean) : [],
+    skippedRows: Number(r.skipped_rows) || 0,
+    usabilityPass: r.usability_pass === null || r.usability_pass === undefined ? null : r.usability_pass === 1,
     gatePassed: r.gate_passed === 1,
     createdAt: r.created_at,
   };
@@ -225,8 +241,7 @@ export async function getTaskQuality(taskId) {
  * 输出可直接注入提示词的文本块
  * @param {number} [days=30]
  * @returns {Promise<{text:string, samples:Array}>}
- */
-export async function buildCounterExamples(days = 30) {
+ */export async function buildCounterExamples(days = 30) {
   const rows = await query(
     `SELECT reject_reason, COUNT(*) AS cnt
        FROM case_feedback
@@ -255,6 +270,80 @@ export async function buildCounterExamples(days = 30) {
   return { text: lines.join('\n'), samples: rows.map((r) => ({ reason: r.reject_reason, count: Number(r.cnt) })) };
 }
 
+// ============================================================
+// 阈值校准（2026-11-09）
+// ============================================================
+
+/**
+ * 取阈值校准样本：每个任务的门禁可用率 + 人工可用率
+ *
+ * 只有**同时**具备两者、且人工标记数够的任务才是有效样本——
+ * 没有人工判定的任务无法回答「85% 对应的人感是多少」。
+ *
+ * @param {Object} [options]
+ * @param {number} [options.days=180]
+ * @param {string} [options.agentId='test-case-generator']
+ * @returns {Promise<{samples:Array, markedCases:number}>}
+ */
+export async function getCalibrationSamples({ days = 180, agentId = 'test-case-generator' } = {}) {
+  const rows = await query(
+    `SELECT m.task_id,
+            m.usability_gate,
+            m.usability_human,
+            (SELECT COUNT(*) FROM case_feedback f WHERE f.task_id = m.task_id) AS marked
+       FROM task_quality_metrics m
+      WHERE m.usability_gate IS NOT NULL
+        AND m.usability_human IS NOT NULL
+        AND m.agent_id = ?
+        AND m.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      ORDER BY m.created_at DESC
+      LIMIT 500`,
+    [String(agentId), Number(days) || 180],
+  );
+
+  const samples = rows.map((r) => ({
+    taskId: r.task_id,
+    gateRate: r.usability_gate === null ? null : Number(r.usability_gate),
+    humanRate: r.usability_human === null ? null : Number(r.usability_human),
+    marked: Number(r.marked) || 0,
+  }));
+
+  return { samples, markedCases: samples.reduce((sum, s) => sum + s.marked, 0) };
+}
+
+/** 读取已保存的门禁阈值（system_config 覆盖环境变量） */
+export async function getSavedGateThreshold() {
+  try {
+    const rows = await query('SELECT config_value FROM system_config WHERE config_key = ? LIMIT 1', ['case_quality_min_rate']);
+    if (!rows.length) return null;
+    const v = Number(rows[0].config_value);
+    return Number.isFinite(v) && v > 0 && v < 1 ? v : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * 保存门禁阈值（管理员确认后生效）
+ * @param {number} rate - 0~1
+ * @param {string} [updatedBy]
+ */
+export async function saveGateThreshold(rate, updatedBy = null) {
+  const v = Number(rate);
+  if (!Number.isFinite(v) || v <= 0 || v >= 1) throw new Error('阈值必须在 0~1 之间（不含端点）');
+  await query(
+    `INSERT INTO system_config (config_key, config_value, description)
+     VALUES (?,?,?)
+     ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), description = VALUES(description)`,
+    [
+      'case_quality_min_rate',
+      String(v),
+      `用例交付物可用率阈值（人工校准后确认）${updatedBy ? `，确认人 ${updatedBy}` : ''}`,
+    ],
+  );
+  return v;
+}
+
 export default {
   upsertCaseFeedback,
   bulkUpsertCaseFeedback,
@@ -266,4 +355,7 @@ export default {
   getQualityTrend,
   getTaskQuality,
   buildCounterExamples,
+  getCalibrationSamples,
+  saveGateThreshold,
+  getSavedGateThreshold,
 };
