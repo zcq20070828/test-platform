@@ -12,6 +12,13 @@
  * 缺断言的一律标 needsAssertion 交给模型定向补。
  */
 
+import {
+  extractDimensions,
+  normalizeLayer,
+  checkDimensionCoverage,
+  listUncoveredProbes,
+} from './dimension-matrix.js';
+
 // ============================================================
 // 1. 断言识别：预期结果是否可判定
 // ============================================================
@@ -287,6 +294,7 @@ function mapHeader(cells) {
 export function parseCaseTable(text) {
   const lines = String(text || '').split(/\r?\n/);
   const cases = [];
+  const skippedIds = [];
   let firstHeaderMap = null;
   const tables = [];
 
@@ -321,7 +329,17 @@ export function parseCaseTable(text) {
       if (/^[-:\s|]+$/.test(cells.join(''))) continue;
       const get = (key) => (map[key] !== undefined ? (cells[map[key]] || '') : '');
       const id = get('id');
-      if (!id || !/^[A-Za-z]{0,6}-?\d+$/.test(id)) continue;
+      if (!id) {
+        skippedIds.push('(空编号)');
+        continue;
+      }
+      // 编号形状：历史上只认「≤6 个字母 + 可选连字符 + 数字」，导致
+      // TC-LOGIN-P0-001 / CAPTCHA-001 / IT-API-001-Up 这类真实编号整行被跳过——
+      // 跳过的行等于没被检查就被默认为合格，这是覆盖漏洞，不是格式洁癖。
+      if (!looksLikeCaseId(id)) {
+        skippedIds.push(id);
+        continue;
+      }
 
       cases.push({
         id,
@@ -339,7 +357,32 @@ export function parseCaseTable(text) {
     }
   }
 
-  return { cases, headerFound: !!firstHeaderMap, headerMap: firstHeaderMap || {}, tableCount: tables.length };
+  return {
+    cases,
+    headerFound: !!firstHeaderMap,
+    headerMap: firstHeaderMap || {},
+    tableCount: tables.length,
+    skippedIds,
+  };
+}
+
+/**
+ * 判定一个单元格是否像用例编号
+ *
+ * 目标不是「严格校验格式」，而是「不把用例漏掉」：只要能确认这一行是一条用例，
+ * 就必须让它进入检查范围。允许字母/数字/连字符/下划线/点/斜杠/井号，
+ * 要求含数字，长度 2~40，排除纯日期（避免把表格里的日期列当编号）。
+ *
+ * @param {string} raw
+ * @returns {boolean}
+ */
+export function looksLikeCaseId(raw) {
+  const v = String(raw || '').trim().replace(/^[`*_\s]+|[`*_\s]+$/g, '');
+  if (!v || v.length > 40) return false;
+  if (!/[0-9]/.test(v)) return false;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._\-/#+\s]*$/.test(v)) return false;
+  if (/^(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(v)) return false;
+  return true;
 }
 
 // ============================================================
@@ -352,7 +395,7 @@ const ACTION_VERB_RE = /(输入|填写|点击|提交|上传|选择|打开|访问
 /**
  * 单条用例检查
  * @param {object} c - parseCaseTable 的条目
- * @param {object} ctx - { requirementIds: Set<string>, seenKeys: Map }
+ * @param {object} ctx - { requirementIds: Set<string>, seenKeys: Map, requireDimension: boolean }
  * @returns {{ id:string, usable:boolean, reasons:string[], detail:string, repairs:Array }}
  */
 export function inspectCase(c, ctx = {}) {
@@ -368,14 +411,32 @@ export function inspectCase(c, ctx = {}) {
     details.push(`缺少 ${missing.join('/')}`);
   }
 
-  // 2) 断言可判定性
+  // 2) 维度与层级标注（提示词把「维度」列为必填，过去门禁解析了却从不判定，
+  //    结果是「九维覆盖率」只是交付物里的一张自证表：不写维度也能通过）
+  if (ctx.requireDimension) {
+    const dims = extractDimensions(c.dimension);
+    if (!dims.length) {
+      reasons.push('missingDimension');
+      details.push('「维度」列为空或无法识别');
+    } else if (dims.includes('data') && !String(c.dimension).includes('/') && !String(c.dimension).includes('法')) {
+      // 只写了维度没写设计方法：提示词要求「维度 / 设计方法」
+      reasons.push('missingMethod');
+      details.push(`「维度」列只写了维度（${c.dimension}），未标注设计方法`);
+    }
+    if (!normalizeLayer(c.layer)) {
+      reasons.push('missingLayer');
+      details.push('「层级」列缺失或不是 正常/边界/异常');
+    }
+  }
+
+  // 3) 断言可判定性
   const assertion = inspectAssertion(c.expected);
   if (!assertion.verifiable) {
     reasons.push('weakAssertion');
     details.push(assertion.reason);
   }
 
-  // 3) 输入真实性
+  // 4) 输入真实性
   if (String(c.input || '').trim()) {
     const rep = repairPlaceholderInput(c.input);
     if (rep.repaired) {
@@ -395,7 +456,7 @@ export function inspectCase(c, ctx = {}) {
     details.push('输入与前置条件均为空');
   }
 
-  // 4) 步骤可执行性
+  // 5) 步骤可执行性
   const steps = String(c.steps || '');
   if (steps) {
     const hasOrder = /(?:^|\s)\d+[.、)]|<br/i.test(steps);
@@ -409,7 +470,7 @@ export function inspectCase(c, ctx = {}) {
     }
   }
 
-  // 5) 需求可达性
+  // 6) 需求可达性
   const req = String(c.requirement || '').trim();
   if (ctx.requirementIds && ctx.requirementIds.size > 0 && req) {
     const ids = req.split(/[\/,，、;；\s]+/).filter(Boolean);
@@ -420,7 +481,7 @@ export function inspectCase(c, ctx = {}) {
     }
   }
 
-  // 6) 重复检测
+  // 7) 重复检测
   if (ctx.seenKeys) {
     const key = [c.module, c.name, c.input, c.expected].map((x) => String(x || '').replace(/\s+/g, '').toLowerCase()).join('|');
     if (ctx.seenKeys.has(key)) {
@@ -431,8 +492,8 @@ export function inspectCase(c, ctx = {}) {
     }
   }
 
-  // 严重度：结构/占位/重复属硬伤，弱断言属主要问题
-  const blockerReasons = new Set(['missingField', 'placeholderInput', 'duplicate', 'orphanRequirement']);
+  // 严重度：结构/占位/重复/漏标维度属硬伤，弱断言属主要问题
+  const blockerReasons = new Set(['missingField', 'placeholderInput', 'duplicate', 'orphanRequirement', 'missingDimension']);
   const severity = reasons.some((r) => blockerReasons.has(r)) ? 'blocker'
     : reasons.length ? 'major' : 'none';
 
@@ -458,11 +519,17 @@ export function inspectCase(c, ctx = {}) {
  * @param {Object} [options]
  * @param {string} [options.originalInput] - 原始任务输入（用于提取需求编号集合）
  * @param {number} [options.minUsabilityRate=0.85]
+ * @param {boolean} [options.requireDimension=true] - 是否强制标注维度/层级（用例类交付物应为 true）
+ * @param {number} [options.minProbeCoverage=0.75] - 九维必测点覆盖率下限
+ * @param {boolean} [options.requireDimensionCoverage=true] - 是否把九维覆盖情况纳入 pass 判定
  * @returns {Object}
  */
 export function checkDeliverable(text, options = {}) {
   const minRate = Number(options.minUsabilityRate ?? 0.85);
   const original = String(options.originalInput || '');
+  const requireDimension = options.requireDimension !== false;
+  const requireDimensionCoverage = options.requireDimensionCoverage !== false;
+  const minProbeCoverage = Number(options.minProbeCoverage ?? 0.75);
 
   // 从原始需求里提取需求编号（FR-001 / NFR-002 / API-001）
   const requirementIds = new Set();
@@ -470,7 +537,7 @@ export function checkDeliverable(text, options = {}) {
     requirementIds.add(m[1].toUpperCase());
   }
 
-  const { cases, headerFound } = parseCaseTable(text);
+  const { cases, headerFound, skippedIds } = parseCaseTable(text);
 
   if (!cases.length) {
     return {
@@ -485,16 +552,23 @@ export function checkDeliverable(text, options = {}) {
       cases: [],
       repairs: [],
       needsAssertion: [],
+      skippedIds: skippedIds || [],
       summary: { reason: '不适用' },
     };
   }
 
   const seenKeys = new Map();
-  const ctx = { requirementIds, seenKeys };
+  const ctx = { requirementIds, seenKeys, requireDimension };
   const results = cases.map((c) => ({ ...inspectCase(c, ctx), caseRef: c }));
 
   const usable = results.filter((r) => r.usable).length;
   const usabilityRate = Math.round((usable / results.length) * 1000) / 1000;
+
+  // 九维覆盖：与生成侧共用同一份必测矩阵，让「九维覆盖率」成为约束而不是标注
+  const dimensions = requireDimension
+    ? checkDimensionCoverage(cases, { text, minProbeCoverage })
+    : null;
+  const uncoveredProbes = dimensions ? listUncoveredProbes(dimensions) : [];
 
   const bySeverity = { blocker: 0, major: 0, minor: 0 };
   for (const r of results) {
@@ -514,19 +588,36 @@ export function checkDeliverable(text, options = {}) {
     for (const reason of r.reasons) byReason[reason] = (byReason[reason] || 0) + 1;
   }
 
+  const usabilityPass = usabilityRate >= minRate;
+  const dimensionPass = !dimensions || !requireDimensionCoverage || dimensions.pass;
+
   return {
     applicable: true,
     total: results.length,
     usable,
     usabilityRate,
-    pass: usabilityRate >= minRate,
+    pass: usabilityPass && dimensionPass,
+    usabilityPass,
+    dimensionPass,
     minUsabilityRate: minRate,
     bySeverity,
     byReason,
     cases: results.filter((r) => !r.usable),
     repairs: allRepairs,
     needsAssertion,
-    summary: buildSummary({ total: results.length, usable, usabilityRate, byReason, minRate }),
+    // 编号被跳过（未进入检查）的行：这类行过去是「漏检即合格」，现在单独暴露出来
+    skippedIds: skippedIds || [],
+    dimensions,
+    uncoveredProbes,
+    summary: buildSummary({
+      total: results.length,
+      usable,
+      usabilityRate,
+      byReason,
+      minRate,
+      dimensions,
+      uncoveredProbes,
+    }),
   };
 }
 
@@ -537,19 +628,28 @@ const REASON_LABELS = {
   missingField: '必填字段缺失',
   badSteps: '步骤不可执行',
   orphanRequirement: '关联需求不存在',
+  missingDimension: '维度未标注',
+  missingMethod: '设计方法未标注',
+  missingLayer: '层级未标注',
 };
 
-function buildSummary({ total, usable, usabilityRate, byReason, minRate }) {
+function buildSummary({ total, usable, usabilityRate, byReason, minRate, dimensions, uncoveredProbes }) {
   const parts = Object.entries(byReason)
     .sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `${REASON_LABELS[k] || k} ${v} 条`);
   const verdict = usabilityRate >= minRate
     ? `可用率 ${(usabilityRate * 100).toFixed(1)}% 达标（阈值 ${(minRate * 100).toFixed(0)}%）`
     : `可用率 ${(usabilityRate * 100).toFixed(1)}% 未达标（阈值 ${(minRate * 100).toFixed(0)}%）`;
+  const dimText = dimensions ? `维度覆盖：${dimensions.text}` : '';
   return {
-    text: `${verdict}：${usable}/${total} 条可直接使用${parts.length ? `；问题分布：${parts.join('、')}` : ''}`,
+    text: [
+      `${verdict}：${usable}/${total} 条可直接使用${parts.length ? `；问题分布：${parts.join('、')}` : ''}`,
+      dimText,
+      uncoveredProbes && uncoveredProbes.length ? `未覆盖必测点 ${uncoveredProbes.length} 个` : '',
+    ].filter(Boolean).join('；'),
     verdict,
     issues: parts,
+    dimensionText: dimText,
   };
 }
 
@@ -623,9 +723,51 @@ export function buildRepairPrompt(report, options = {}) {
     }
   }
 
+  const noDim = groupOf('missingDimension');
+  if (noDim.length) {
+    lines.push('');
+    lines.push(`7. 维度未标注（${noDim.length} 条）：「维度」列必填，格式为 \`<维度> / <设计方法>\`，如 \`② 数据 / 边界值分析法\`。`);
+    lines.push(`   - ${noDim.slice(0, maxList).map((c) => c.id).join('、')}`);
+  }
+
+  const noMethod = groupOf('missingMethod');
+  if (noMethod.length) {
+    lines.push('');
+    lines.push(`8. 设计方法未标注（${noMethod.length} 条）：只写了维度、没写设计方法，请补成 \`<维度> / <设计方法>\`。`);
+    lines.push(`   - ${noMethod.slice(0, maxList).map((c) => `${c.id}（现为「${c.caseRef.dimension}」）`).join('、')}`);
+  }
+
+  const noLayer = groupOf('missingLayer');
+  if (noLayer.length) {
+    lines.push('');
+    lines.push(`9. 层级未标注（${noLayer.length} 条）：「层级」列只能是 正常 / 边界 / 异常 三者之一。`);
+    lines.push(`   - ${noLayer.slice(0, maxList).map((c) => c.id).join('、')}`);
+  }
+
+  const uncovered = report.uncoveredProbes || [];
+  const missingDims = report.dimensions ? report.dimensions.missingDimensions : [];
+  if (missingDims.length || uncovered.length) {
+    lines.push('');
+    lines.push('10. 九维覆盖不达标：必须补齐下列维度的必测点（每条都要有独立用例，并标注维度 / 设计方法 / 层级）。');
+    if (missingDims.length) {
+      const labelOf = (key) => (report.dimensions.dimensions.find((d) => d.key === key) || {}).label || key;
+      lines.push(`   - 完全没有用例的维度：${missingDims.map(labelOf).join('、')}`);
+    }
+    for (const p of uncovered.slice(0, 20)) {
+      lines.push(`   - ${p.label} ${p.layer ? `[${p.layer}]` : ''} ${p.title}`);
+    }
+    if (uncovered.length > 20) lines.push(`   - ……其余 ${uncovered.length - 20} 个必测点，请按九维必测清单补齐`);
+  }
+
+  if (report.skippedIds?.length) {
+    lines.push('');
+    lines.push(`11. 有 ${report.skippedIds.length} 行「用例编号」不是有效编号，未纳入检查：${report.skippedIds.slice(0, 10).join('、')}`);
+    lines.push('   请为每条用例填写唯一编号（如 TC-模块-序号），否则这些用例等于没被检查。');
+  }
+
   if (report.repairs?.length) {
     lines.push('');
-    lines.push(`7. 已由系统自动修复的占位输入（${report.repairs.length} 处，无需再处理，仅供核对）：`);
+    lines.push(`12. 已由系统自动修复的占位输入（${report.repairs.length} 处，无需再处理，仅供核对）：`);
     for (const r of report.repairs.slice(0, 10)) {
       lines.push(`   - ${r.caseId} ${r.field}: ${r.from} → ${r.to}`);
     }
@@ -700,8 +842,14 @@ export function buildSurgicalRepairPrompt(report, options = {}) {
     if (c.reasons.includes('weakAssertion')) needs.push('预期结果');
     if (c.reasons.includes('badSteps')) needs.push('执行步骤');
     if (c.reasons.includes('missingField')) needs.push('缺失字段');
-    return `| ${c.id} | ${ref.name || ''} | ${ref.expected || ''} | ${ref.steps || ''} | ${needs.join('+')} |`;
+    if (c.reasons.includes('missingDimension')) needs.push('维度');
+    if (c.reasons.includes('missingMethod')) needs.push('设计方法');
+    if (c.reasons.includes('missingLayer')) needs.push('层级');
+    return `| ${c.id} | ${ref.name || ''} | ${ref.dimension || ''} | ${ref.layer || ''} | ${ref.expected || ''} | ${ref.steps || ''} | ${needs.join('+')} |`;
   });
+
+  const needsDimension = targets.some((c) => c.reasons.some((r) => ['missingDimension', 'missingMethod'].includes(r)));
+  const needsLayer = targets.some((c) => c.reasons.includes('missingLayer'));
 
   return [
     '【只修复下列用例，不要输出整份文档】',
@@ -711,11 +859,13 @@ export function buildSurgicalRepairPrompt(report, options = {}) {
     '要求：',
     '1. 预期结果必须可判定，至少包含其一：HTTP 状态码 / 具体字段名与值 / 引号包裹的原文案 / 跳转目标 / 数值或计数变化 / 数据库状态。',
     '2. 执行步骤需「操作对象 + 动作 + 数据」，用 1. 2. 3. 分步。',
-    '3. **只输出一个 Markdown 表格**，表头必须是：`| 用例编号 | 预期结果 | 执行步骤 |`，每个待修用例一行。',
-    '4. 不要输出解释、说明、前言或结语；不要重复未列出的用例。',
+    ...(needsDimension ? ['3. 「维度」列必须是 `<维度> / <设计方法>`，如 `② 数据 / 边界值分析法`；维度取 ① 用户/② 数据/③ 流程/④ 操作/⑤ 安全/⑥ 性能/⑦ 网络环境/⑧ 终端环境/⑨ 兼容性，方法取 等价类划分法/边界值分析法/因果图法/判定表法/正交试验法/错误推测法/场景法/状态迁移法/功能图法。'] : []),
+    ...(needsLayer ? ['4. 「层级」列只能是 正常 / 边界 / 异常 三者之一。'] : []),
+    '5. **只输出一个 Markdown 表格**，表头必须是：`| 用例编号 | 维度 | 层级 | 预期结果 | 执行步骤 |`，每个待修用例一行。',
+    '6. 不要输出解释、说明、前言或结语；不要重复未列出的用例。',
     '',
-    '| 用例编号 | 用例名称 | 现有预期结果 | 现有执行步骤 | 需修复 |',
-    '| --- | --- | --- | --- | --- |',
+    '| 用例编号 | 用例名称 | 现有维度 | 现有层级 | 现有预期结果 | 现有执行步骤 | 需修复 |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
     ...rows,
     '',
     `（共 ${targets.length} 条${report.cases.length > maxItems ? `，其余 ${report.cases.length - maxItems} 条同类问题请自行按同规则整改` : ''}）`,
@@ -747,13 +897,8 @@ export function spliceRepairedRows(originalText, repairedMarkdown) {
     const cells = line.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
 
     if (!headerMap) {
-      const map = {};
-      cells.forEach((c, ci) => {
-        if (/^用例编号$/.test(c)) map.id = ci;
-        else if (/^(预期结果|期望结果)$/.test(c)) map.expected = ci;
-        else if (/^(执行步骤|测试步骤|操作步骤)$/.test(c)) map.steps = ci;
-      });
-      if (map.id !== undefined && (map.expected !== undefined || map.steps !== undefined)) headerMap = map;
+      headerMap = mapPatchHeader(cells);
+      if (headerMap) continue;
       continue;
     }
 
@@ -763,13 +908,11 @@ export function spliceRepairedRows(originalText, repairedMarkdown) {
 
     const fix = patch.get(id);
     let changed = false;
-    if (fix.expected && headerMap.expected !== undefined) {
-      cells[headerMap.expected] = fix.expected.replace(/\|/g, '\\|');
-      changed = true;
-    }
-    if (fix.steps && headerMap.steps !== undefined) {
-      cells[headerMap.steps] = fix.steps.replace(/\|/g, '\\|');
-      changed = true;
+    for (const key of ['dimension', 'layer', 'expected', 'steps']) {
+      if (fix[key] && headerMap[key] !== undefined) {
+        cells[headerMap[key]] = fix[key].replace(/\|/g, '\\|');
+        changed = true;
+      }
     }
     if (changed) {
       lines[i] = `| ${cells.join(' | ')} |`;
@@ -782,7 +925,22 @@ export function spliceRepairedRows(originalText, repairedMarkdown) {
   return { text: lines.join('\n'), replaced, skipped };
 }
 
-/** 解析模型返回的补丁表 → Map<id, {expected, steps}> */
+/** 补丁表表头映射（用例外/维度/层级/预期/步骤） */
+function mapPatchHeader(cells) {
+  const m = {};
+  cells.forEach((c, ci) => {
+    if (/^(用例编号|编号)$/.test(c)) m.id = ci;
+    else if (/^(预期结果|期望结果)$/.test(c)) m.expected = ci;
+    else if (/^(执行步骤|测试步骤|操作步骤)$/.test(c)) m.steps = ci;
+    else if (/^维度$/.test(c)) m.dimension = ci;
+    else if (/^层级$/.test(c)) m.layer = ci;
+  });
+  if (m.id === undefined) return null;
+  if (m.expected === undefined && m.steps === undefined && m.dimension === undefined && m.layer === undefined) return null;
+  return m;
+}
+
+/** 解析模型返回的补丁表 → Map<id, {dimension, layer, expected, steps}> */
 function parseRepairPatch(markdown) {
   const out = new Map();
   const lines = String(markdown || '').split(/\r?\n/);
@@ -793,13 +951,7 @@ function parseRepairPatch(markdown) {
     const cells = line.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
 
     if (!map) {
-      const m = {};
-      cells.forEach((c, ci) => {
-        if (/^用例编号$/.test(c)) m.id = ci;
-        else if (/^(预期结果|期望结果)$/.test(c)) m.expected = ci;
-        else if (/^(执行步骤|测试步骤|操作步骤)$/.test(c)) m.steps = ci;
-      });
-      if (m.id !== undefined && (m.expected !== undefined || m.steps !== undefined)) map = m;
+      map = mapPatchHeader(cells);
       continue;
     }
     if (/^[-:\s|]+$/.test(cells.join(''))) continue;
@@ -807,8 +959,10 @@ function parseRepairPatch(markdown) {
     if (!id) continue;
     const expected = map.expected !== undefined ? cells[map.expected] || '' : '';
     const steps = map.steps !== undefined ? cells[map.steps] || '' : '';
-    if (!expected && !steps) continue;
-    out.set(id, { expected, steps });
+    const dimension = map.dimension !== undefined ? cells[map.dimension] || '' : '';
+    const layer = map.layer !== undefined ? cells[map.layer] || '' : '';
+    if (!expected && !steps && !dimension && !layer) continue;
+    out.set(id, { expected, steps, dimension, layer });
   }
   return out;
 }

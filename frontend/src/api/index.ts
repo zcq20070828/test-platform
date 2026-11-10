@@ -1171,4 +1171,17 @@ export const qualityApi = {
   async submitCaseFeedback(taskId: string, items: Array<{ caseId: string; usable: boolean; rejectReason?: string | null; comment?: string | null }>) {
     return request(`/api/tasks/${taskId}/case-feedback`, { method: 'POST', body: JSON.stringify({ items }) })
   },
+  /**
+   * 门禁阈值人工校准（2026-11-09）
+   * 用人工逐条判定的真实可用率反算「门禁该卡在哪」，回答 0.85 从哪来的问题。
+   */
+  async thresholdCalibration(days = 180, target?: number): Promise<ApiResponse<any>> {
+    const qs = new URLSearchParams({ days: String(days) })
+    if (target != null) qs.set('target', String(target))
+    return request(`/api/quality/threshold-calibration?${qs.toString()}`)
+  },
+  /** 采纳校准结果（管理员） */
+  async adoptThreshold(rate: number): Promise<ApiResponse<any>> {
+    return request('/api/quality/threshold', { method: 'POST', body: JSON.stringify({ rate }) })
+  },
 }

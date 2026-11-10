@@ -188,6 +188,12 @@
             </el-table-column>
           </el-table>
         </el-tab-pane>
+
+        <!-- Tab3: 阈值校准（2026-11-09） -->
+        <el-tab-pane name="calibration">
+          <template #label><span class="tab-label"><MsIcon name="tune" :size="18" /> 阈值校准</span></template>
+          <ThresholdCalibrationCard v-if="activeTab === 'calibration'" />
+        </el-tab-pane>
       </el-tabs>
     </el-card>
 
@@ -311,6 +317,7 @@ import { useRouter } from 'vue-router'
 import { request } from '@/api'
 import { ElMessage } from 'element-plus'
 import MsIcon from '@/components/MsIcon.vue'
+import ThresholdCalibrationCard from '@/components/ThresholdCalibrationCard.vue'
 
 const router = useRouter()
 
