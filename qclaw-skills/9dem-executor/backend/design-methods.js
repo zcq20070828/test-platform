@@ -540,6 +540,58 @@ function buildCoveringArray(levels, maxCases) {
   return { rows, mode: 'pairwise' };
 }
 
+/**
+ * 把一个因子水平翻译成可观测的判定结论
+ *
+ * 正交用例过去统一写「组合场景下功能行为一致，无异常报错与状态错乱」——典型弱断言：
+ * 不管什么组合都写同一句，执行时无法判断对错，门禁只能判它不可用
+ * （实测任务 590f：18 条正交用例全被这句拖垮，占全部不可用的近四成）。
+ *
+ * 这里按「因子名 + 水平值」给每个组合生成具体判据，并保留兜底分支
+ * （回落到页面可访问 + 无 5xx 这类仍可判定的结论）。
+ *
+ * @param {string} factorName
+ * @param {string|number|boolean} value
+ * @param {{loggedOut?: boolean}} [ctx] - 同一组合里是否含「未登录」，避免拼出自相矛盾的结论
+ */
+function expectedForLevel(factorName, value, ctx = {}) {
+  const f = String(factorName);
+  const v = String(value);
+  const isTrue = /^(?:true|是|已登录|开启|启用|有权限)$/i.test(v);
+  const isFalse = /^(?:false|否|未登录|关闭|禁用|无权限)$/i.test(v);
+
+  // 登录态
+  if (/登录态|登录状态|认证|login|auth/i.test(f)) {
+    if (isFalse) return '页面跳转至登录页且地址含 /login，接口返回 401 且响应体不含业务数据';
+    return '页面停留在目标页不跳转登录，接口返回 200 且响应体 code=0';
+  }
+  // 角色 / 权限
+  if (/角色|权限|role|perm/i.test(f)) {
+    if (/只读|访客|无权限/.test(v)) return `以「${v}」身份调用写接口返回 403，页面不展示写操作按钮`;
+    return `以「${v}」身份访问返回 200，列表仅出现授权范围内的数据行`;
+  }
+  // 网络
+  if (/网络|network|信号|带宽/i.test(f)) {
+    if (/弱网|3g|2g|低带宽|限速/.test(v)) return '请求在 30 秒内完成并返回 200，加载期间显示 loading，超时提示可重试';
+    if (/断网|离线|offline/.test(v)) return '请求失败并提示网络异常，恢复网络后重试返回 200';
+    return `在「${v}」下请求返回 200 且响应体 code=0，无 5xx`;
+  }
+  // 端 / 平台 / 浏览器
+  if (/平台|端|系统|浏览器|设备|机型|分辨率|platform|browser|device|os/i.test(f)) {
+    if (ctx.loggedOut) {
+      // 未登录时页面本来就该跳登录页，不能要求「目标页加载成功」——那会拼出自相矛盾的结论
+      return `${v} 端跳转登录页后页面加载返回 HTTP 200，登录页元素可见可点击，控制台无 JS 报错`;
+    }
+    return `${v} 端页面加载返回 HTTP 200，关键操作按钮可见可点击，控制台无 JS 报错`;
+  }
+  // 布尔开关
+  if (isTrue) return `开启「${f}」后接口返回 200，受该开关控制的字段/入口出现在响应中`;
+  if (isFalse) return `关闭「${f}」后接口返回 200，受该开关控制的字段/入口不出现或返回 403`;
+
+  // 兜底：仍然可判定
+  return `${f}=${v} 组合下页面加载返回 200 且关键元素可见，接口无 5xx`;
+}
+
 function genOrthogonal(input) {
   let factors = input.factors;
   if (Array.isArray(factors)) {
@@ -567,13 +619,17 @@ function genOrthogonal(input) {
   const { rows, mode } = buildCoveringArray(levels, Math.min(MAX_COMBINATIONS, MAX_CASES_PER_METHOD));
   const compatFactor = names.some((n) => /平台|系统|浏览器|设备|终端|版本|分辨率|机型|platform|browser|device|os/i.test(n));
   const cases = rows.map((row, idx) => {
-    const inputText = names.map((n, i) => `${n}=${levels[i][row[i]]}`).join(', ');
+    const combo = names.map((n, i) => `${n}=${levels[i][row[i]]}`);
+    // 同一组合内是否有「未登录」，决定端侧判据要不要换成登录页
+    const loggedOut = names.some((n, i) => /登录态|登录状态|认证|login|auth/i.test(n)
+      && /^(?:false|否|未登录)$/i.test(String(levels[i][row[i]])));
+    const expectations = names.map((n, i) => expectedForLevel(n, levels[i][row[i]], { loggedOut }));
     return makeCase('orthogonal', {
       dimension: compatFactor ? '⑨ 兼容性' : '② 数据',
       name: `正交组合-${String(idx + 1).padStart(2, '0')}(${mode})`,
       layer: '正常',
-      input: inputText,
-      expected: '组合场景下功能行为一致，无异常报错与状态错乱',
+      input: combo.join(', '),
+      expected: expectations.join('；'),
       priority: '中',
       trace: `正交覆盖 ${mode}，因子 ${names.join('/')}`,
     });

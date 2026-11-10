@@ -23,6 +23,19 @@ import {
 // 1. 断言识别：预期结果是否可判定
 // ============================================================
 
+/**
+ * 引号包裹的具体文案：中英文各种引号都要认
+ *
+ * 实测教训（2026-11-10，任务 590f）：47 条被判定「预期结果不可判定」的用例里，
+ * 10 条是「顶栏显示文案“玩转AI云盘赢豪礼”」这种**带具体原文**的可判定断言，
+ * 只因引号用的是中文弯引号 “ ” 而没被识别。误杀会让模型白改一遍、用户白等，
+ * 更糟的是把「本已合格」的用例报成缺陷，审核也跟着重复扣分。
+ */
+const QUOTED_TEXT = /[“”「」『』"'‘’][^“”「」『』"'‘’\s]{2,}[“”「」『』"'‘’]/;
+
+/** 具体 UI / 页面对象（与「正常」「正确」这类评价词区分开） */
+const UI_OBJECT = /(?:手机号|掩码|验证码|二维码|输入框|下拉框|复选框|按钮|图标|列表|榜单|卡片|弹窗|浮窗|蒙层|骨架屏|进度条|分页|标签页|面包屑|提示条|文案|toast|loading|加载中)/i;
+
 /** 强断言：出现任一即认为「可判定」 */
 const ASSERTION_PATTERNS = [
   { type: 'status', re: /\b(?:HTTP\s*)?[1-5]\d{2}\b/ },                       // 200 / 401 / HTTP 500
@@ -32,13 +45,24 @@ const ASSERTION_PATTERNS = [
   { type: 'numeric', re: /\d+\s*(?:次|条|个|分钟|秒|小时|ms|元|%|QPS|TPS)(?![\d])/ }, // 5 次 / 30 分钟
   { type: 'numeric', re: /(?:等于|等于为|>=|<=|≥|≤|大于|小于|超过|不超过)\s*\d/ },
   { type: 'redirect', re: /跳转|重定向|返回首页|回到登录页|刷新页面/ },
-  { type: 'ui', re: /提示[「"']|弹窗|toast|蒙层|按钮|文案[「"']|显示[「"']|置灰|不可点击/i },
+  // 引号包裹的具体原文：最硬的证据，任何引号体系都算
+  { type: 'quoted', re: QUOTED_TEXT },
+  // 具体 UI 元素 + 出现/消失/置灰等可观测变化
+  { type: 'ui', re: /(?:显示|展示|出现|呈现|回显|渲染|隐藏|消失|置灰|高亮|可点击|不可点击|可滑动|居中|对齐)/ },
   { type: 'db', re: /数据库|落库|写入|记录数|计数|状态变为|状态更新为/ },
   // 负向结果：拒绝/拦截/报错本身就是可观测的（能判断「有没有被挡住」）
   { type: 'reject', re: /拒绝|拦截|阻断|不允许|禁止|不通过|报错|失败并|抛出|无法(?:登录|提交|进入)/ },
+  // 「不产生副作用」这类负向可观测结果（注入不执行、不重复写入、不泄露明文）
+  { type: 'reject', re: /不(?:执行|弹窗|注入|增加|减少|泄露|发放|重复|回显明文|越权|串号|超卖)/ },
 ];
 
-/** 弱描述：只描述「通过/正常」而没有可观测证据 */
+/**
+ * 弱描述：只描述「通过/正常」而没有可观测证据
+ *
+ * 这里的模式**优先于**强断言：像「未登录态展示正确」同时含「展示」（强断言词）
+ * 和「正确」（评价词），必须先判弱——「正确」是什么没人知道，不能因为出现
+ * 「展示」就放行。所以 inspectAssertion 先跑 WEAK 再跑强断言。
+ */
 const WEAK_PATTERNS = [
   /^(?:功能)?(?:正常|正确|成功)(?:处理|返回|执行)?[。.]?$/,
   /(?:被)?(?:接受|认可)(?:，|,)?(?:进入|继续)/,
@@ -47,10 +71,18 @@ const WEAK_PATTERNS = [
   /符合预期[。.]?$/,
   /无异常[。.]?$/,
   /按预期(?:执行|返回|处理)[。.]?$/,
+  // 「XX 展示正确 / 显示正常 / 功能可用」：有评价词但没有可观测目标
+  /^(?:未登录态|登录态|页面|功能|状态|结果)?(?:展示|显示|呈现|表现|运行)?(?:正常|正确|无误|可用|良好|顺畅)[。.]?$/,
+  // 整句只剩「XX 可用，无 YY 错乱」这种没有具体判据的描述
+  /(?:功能|页面|流程)?可用[,，]?(?:无|没有)(?:状态)?(?:错乱|异常|报错)[。.]?$/,
 ];
 
 /**
  * 判定预期结果是否可验证
+ *
+ * 判定顺序：**先弱后强**。「未登录态展示正确」既含强断言词「展示」又含评价词「正确」，
+ * 先判弱才不会误放行；反过来「显示文案“xxx”」不含评价词，正常走强断言。
+ *
  * @param {string} expected
  * @returns {{ verifiable: boolean, assertionType: string|null, reason: string }}
  */
@@ -58,14 +90,18 @@ export function inspectAssertion(expected) {
   const text = String(expected || '').trim();
   if (!text) return { verifiable: false, assertionType: null, reason: '预期结果为空' };
 
-  for (const p of ASSERTION_PATTERNS) {
-    if (p.re.test(text)) return { verifiable: true, assertionType: p.type, reason: '' };
-  }
   for (const w of WEAK_PATTERNS) {
     if (w.test(text)) return { verifiable: false, assertionType: null, reason: '仅描述「正常/通过」，无可观测证据' };
   }
-  // 兜底：长度 >= 12 且含具体名词（引号内容、括号内枚举）也视为可判定
-  if (text.length >= 12 && /[「"'（(]/.test(text)) {
+  // 弱模式只覆盖整句；句中叠了具体判据（引号原文/状态码/UI 元素）说明是可判定的
+  const hasConcrete = QUOTED_TEXT.test(text) || /\b(?:HTTP\s*)?[1-5]\d{2}\b/.test(text) || UI_OBJECT.test(text);
+
+  for (const p of ASSERTION_PATTERNS) {
+    if (p.re.test(text)) return { verifiable: true, assertionType: p.type, reason: '' };
+  }
+  if (hasConcrete) return { verifiable: true, assertionType: 'text', reason: '' };
+  // 兜底：长度 >= 12 且含具体名词（括号内枚举）也视为可判定
+  if (text.length >= 12 && /[（(]/.test(text)) {
     return { verifiable: true, assertionType: 'text', reason: '' };
   }
   return { verifiable: false, assertionType: null, reason: '未命中任何可验证断言模式' };
@@ -809,6 +845,73 @@ export function applyInputRepairs(text) {
   return { text: out.join('\n'), applied };
 }
 
+/** 从整行文字推断层级（确定性，不猜业务语义） */
+function inferLayerFromRow(rowText) {
+  const t = String(rowText || '');
+  // 异常优先：负向词最多，先判它避免「异常流程正常返回」这类被算成正常
+  if (/异常|非法|失败|拒绝|越权|超时|断网|重复提交|幂等|错误|无效|不合法|缺省|乱序|被拦截/.test(t)) return '异常';
+  if (/边界|临界|最大|最小|超长|过短|上限|下限|max|min|极限|\d+\s*位/.test(t)) return '边界';
+  return '正常';
+}
+
+/**
+ * 自动补「层级」列
+ *
+ * 门禁把层级列为必填（层级决定九维覆盖判定），但实测里层级缺失是最常见的结构问题：
+ * 任务 590f 有 39 条用例因为整张表没有层级列而全部被判不可用，其中 39 条
+ * 还是**系统自己补的接口用例**（模板漏了这一列）。让模型去补一列机械信息
+ * 既慢又容易被改错，这里直接按行文字确定性推断。
+ *
+ * 只在「表里有预期结果列但没有层级列」时动手，不改已有层级。
+ *
+ * @param {string} text
+ * @returns {{ text: string, tablesRepaired: number, rowsRepaired: number }}
+ */
+export function applyLayerColumnRepair(text) {
+  const lines = String(text || '').split('\n');
+  let tablesRepaired = 0;
+  let rowsRepaired = 0;
+
+  let i = 0;
+  while (i < lines.length) {
+    if (!/^\s*\|.*\|\s*$/.test(lines[i])) { i += 1; continue; }
+
+    // 收集连续表格块
+    const start = i;
+    while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) i += 1;
+    const blockEnd = i;
+
+    const headerCells = lines[start].trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+    const map = mapHeader(headerCells);
+    // 只处理用例表：要有预期结果列，且确实缺层级列
+    if (map.expected === undefined || map.layer !== undefined) continue;
+
+    // 层级的插入位置：维度列之后；没有维度列就放预期结果之前
+    const insertAt = map.dimension !== undefined ? map.dimension + 1 : map.expected;
+    const newHeader = [...headerCells];
+    newHeader.splice(insertAt, 0, '层级');
+    lines[start] = `| ${newHeader.join(' | ')} |`;
+
+    for (let r = start + 1; r < blockEnd; r += 1) {
+      const cells = lines[r].trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+      if (/^[-:\s|]+$/.test(cells.join(''))) {
+        // 分隔行也要插一格
+        const sep = [...cells];
+        sep.splice(insertAt, 0, '---');
+        lines[r] = `| ${sep.join(' | ')} |`;
+        continue;
+      }
+      const newCells = [...cells];
+      newCells.splice(insertAt, 0, inferLayerFromRow(cells.join(' ')));
+      lines[r] = `| ${newCells.join(' | ')} |`;
+      rowsRepaired += 1;
+    }
+    tablesRepaired += 1;
+  }
+
+  return { text: lines.join('\n'), tablesRepaired, rowsRepaired };
+}
+
 export default {
   inspectAssertion,
   repairPlaceholderInput,
@@ -819,6 +922,7 @@ export default {
   buildSurgicalRepairPrompt,
   spliceRepairedRows,
   applyInputRepairs,
+  applyLayerColumnRepair,
 };
 
 // ============================================================
