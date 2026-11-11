@@ -10751,6 +10751,31 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             console.log(`[CaseGate] 定向修复分 ${batches.length} 批（每批 ≤${REPAIR_BATCH_SIZE} 条，并发 ${REPAIR_CONCURRENCY}，单批超时 ${REPAIR_TIMEOUT_MS / 1000}s）`);
 
             const requestContext = truncateForReview(taskInput, 4000);
+            // 每批完成就广播一次进度。实测 10 批要跑 7~8 分钟，
+            // 原来只在全部结束时发一条事件，中间完全静默，用户会以为卡死。
+            let batchesDone = 0;
+            let batchesFailed = 0;
+            const reportBatchProgress = (bi, ok) => {
+              batchesDone += 1;
+              if (!ok) batchesFailed += 1;
+              try {
+                broadcast({
+                  type: 'case_quality_repair_progress',
+                  agentId,
+                  userId: userId || null,
+                  taskId,
+                  round: repairRound,
+                  done: batchesDone,
+                  total: batches.length,
+                  failedBatches: batchesFailed,
+                  batchIndex: bi + 1,
+                  ok,
+                  message: `定向修复进度 ${batchesDone}/${batches.length} 批${ok ? '' : '（本批失败）'}`,
+                  timestamp: new Date().toISOString(),
+                });
+              } catch (_) {}
+            };
+
             const runBatch = async (batch, bi) => {
               const batchReport = { ...gateReport, cases: batch };
               const prompt = buildSurgicalRepairPrompt(batchReport, { maxItems: batch.length });
@@ -10760,9 +10785,11 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                   { role: 'user', content: `${prompt}\n\n【原始需求（改写预期结果时以此为准）】\n${requestContext}` },
                 ], { timeoutMs: REPAIR_TIMEOUT_MS, maxTokens: 16000 });
                 console.log(`[CaseGate] 批次${bi + 1}/${batches.length} 返回 ${(out.content || '').length} 字`);
+                reportBatchProgress(bi, true);
                 return out.content || '';
               } catch (e) {
                 console.warn(`[CaseGate] 批次${bi + 1}/${batches.length} 失败: ${e.message}`);
+                reportBatchProgress(bi, false);
                 return '';
               }
             };
@@ -12657,8 +12684,29 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
       userId
     });
 
+    // 审核员单次调用实测 2~13 分钟（含网络重试），期间没有任何事件，
+    // 前端看起来就像卡死。每 20 秒发一条仍在审核的心跳，让用户知道进度。
+    const reviewerStartedAt = Date.now();
+    const reviewHeartbeat = setInterval(() => {
+      const sec = Math.round((Date.now() - reviewerStartedAt) / 1000);
+      try {
+        broadcast({
+          type: 'reviewer_heartbeat',
+          ...(workflowId ? { workflowId } : { taskId }),
+          reviewerId,
+          reviewerName,
+          reviewerIndex: i + 1,
+          totalReviewers: REVIEWER_AGENTS.length,
+          attempt: retryCount,
+          elapsedSec: sec,
+          userId,
+        });
+      } catch (_) {}
+    }, 20000);
+
     try {
       const result = await callSingleReviewer(reviewerId, taskId, agentName, output, retryCount, reviewContext);
+      clearInterval(reviewHeartbeat);
       results.push(result);
 
       console.log(`[Review] Sequential [${i+1}/${REVIEWER_AGENTS.length}] ${reviewerId} scored ${result.score}, veto=${result.veto}`);
@@ -12711,6 +12759,7 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
         onEachComplete(result, i);
       }
     } catch (reviewerErr) {
+      clearInterval(reviewHeartbeat);
       console.error(`[Review] Sequential [${i+1}/${REVIEWER_AGENTS.length}] ${reviewerId} failed:`, reviewerErr);
 
       // 单个审核智能体失败,记录失败结果但继续其他审核

@@ -731,6 +731,14 @@ export const useMainStore = defineStore('main', () => {
           content: `正在定向修复 ${p.issues || 0} 条问题用例（第 ${p.round || 1} 轮）`,
         }
 
+      case 'case_quality_repair_progress':
+        return {
+          ...base,
+          id: `tl-repair-progress-${evt.seq}`,
+          agentName: '用例质量门禁',
+          content: `${p.message || '定向修复进行中'}${p.failedBatches ? `，${p.failedBatches} 批失败` : ''}`,
+        }
+
       case 'rule_quality_gate':
         return {
           ...base,
@@ -1149,6 +1157,22 @@ export const useMainStore = defineStore('main', () => {
     const isSecurityWorkflow = typeof wfId === 'string' && wfId.startsWith('security-')
     const panel: 'dashboard' | 'workflow' = (wfId && !isSecurityWorkflow) ? 'workflow' : 'dashboard'
 
+    /**
+     * 事件 → 消息 id（2026-11-11）
+     *
+     * 每条 SSE 事件后端都会带回 `_eid`（全局递增、永不重复）。用它做消息 id 的
+     * 唯一后缀，可以一次性解决所有「跨轮次 id 冲突」：
+     *   - case_quality_gate 的 round 在每次重试里都从 1 开始，
+     *     三轮下来 `case-gate-<taskId>-1` 完全相同 → v-for :key 冲突 → 后两轮渲染不出来；
+     *   - reviewer_started/completed 同理会按轮次重复。
+     * 没有 `_eid` 时（WebSocket 老路径 / 单测）退回时间戳+随机，同样不会撞。
+     */
+    const eventMsgId = (prefix: string, extra?: string | number) => {
+      const eid = (data as any)?._eid
+      const uniq = eid != null ? `e${eid}` : `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      return extra != null ? `${prefix}-${uniq}-${extra}` : `${prefix}-${uniq}`
+    }
+
     // 面板写入 helper（先定义后调用，避免 TS hoisting 报错）
     const writeMsg = (msg: ChatMessage) => {
       if (panel === 'workflow') workflowMessages.value.push(msg)
@@ -1333,7 +1357,7 @@ export const useMainStore = defineStore('main', () => {
         message = `用例质量检查：${data.usable}/${data.total} 条可用（${(Number(data.usabilityRate || 0) * 100).toFixed(1)}%）${data.pass ? '达标' : '未达标'}`
         status = data.pass ? 'success' : 'warning'
         writeMsg({
-          id: `case-gate-${data.taskId || Date.now()}-${data.round || 1}`,
+          id: eventMsgId('case-gate', data.round || 1),
           role: 'assistant',
           type: 'agent',
           agentName: '用例质量门禁',
@@ -1347,7 +1371,7 @@ export const useMainStore = defineStore('main', () => {
         message = `正在定向修复 ${data.issues || 0} 条问题用例（第 ${data.round || 1} 轮）`
         status = 'info'
         writeMsg({
-          id: `case-repair-${data.taskId || Date.now()}-${data.round || 1}`,
+          id: eventMsgId('case-repair', data.round || 1),
           role: 'assistant',
           type: 'agent',
           agentName: '用例质量门禁',
@@ -1361,7 +1385,7 @@ export const useMainStore = defineStore('main', () => {
         message = `${data.agentId} 确定性检查：得分 ${(Number(data.rate || 0) * 100).toFixed(1)}%，${data.pass ? '通过' : '未通过'}`
         status = data.pass ? 'success' : 'warning'
         writeMsg({
-          id: `rule-gate-${data.taskId || Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: eventMsgId('rule-gate'),
           role: 'assistant',
           type: 'agent',
           agentName: '交付物质量检查',
@@ -1442,7 +1466,7 @@ export const useMainStore = defineStore('main', () => {
           message = `${data.reviewerName || data.reviewerId} 开始审核${roundTag}（第${data.reviewerIndex}/${data.totalReviewers}个）`
           status = 'info'
           writeMsg({
-            id: `reviewer-started-${data.taskId || Date.now()}-a${data.attempt ?? 0}-${data.reviewerIndex}`,
+            id: eventMsgId('reviewer-started', `${data.attempt ?? 0}-${data.reviewerIndex}`),
             role: 'assistant',
             type: 'agent',
             agentName: data.reviewerName || data.reviewerId,
@@ -1451,6 +1475,50 @@ export const useMainStore = defineStore('main', () => {
           })
         }
         break
+
+      case 'reviewer_heartbeat': {
+        // 审核员单次调用实测 2~13 分钟（含网络重试），期间没有任何事件。
+        // 心跳沿用同一条消息（同 reviewerIndex+attempt），只更新内容，不刷屏。
+        const hbId = `reviewer-heartbeat-${data.taskId || ''}-a${data.attempt ?? 0}-${data.reviewerIndex}`
+        const hbContent = `${data.reviewerName || data.reviewerId} 仍在审核（第${data.reviewerIndex}/${data.totalReviewers}个，已 ${Math.round((data.elapsedSec || 0))} 秒）`
+        const existingHb = messages.value.find(m => m.id === hbId)
+        if (existingHb) {
+          existingHb.content = hbContent
+          existingHb.timestamp = new Date().toISOString()
+        } else {
+          writeMsg({
+            id: hbId,
+            role: 'assistant',
+            type: 'agent',
+            agentName: data.reviewerName || data.reviewerId,
+            content: hbContent,
+            timestamp: new Date().toISOString(),
+            isStreaming: true,
+          })
+        }
+        return
+      }
+
+      case 'case_quality_repair_progress': {
+        const pId = `repair-progress-${data.taskId || ''}-${data.round || 1}`
+        const pContent = `${data.message || '定向修复进行中'}${data.failedBatches ? `，${data.failedBatches} 批失败` : ''}`
+        const existingP = messages.value.find(m => m.id === pId)
+        if (existingP) {
+          existingP.content = pContent
+          existingP.timestamp = new Date().toISOString()
+        } else {
+          writeMsg({
+            id: pId,
+            role: 'assistant',
+            type: 'agent',
+            agentName: '用例质量门禁',
+            content: pContent,
+            timestamp: new Date().toISOString(),
+            isStreaming: true,
+          })
+        }
+        return
+      }
 
       case 'reviewer_completed':
         // 与流水线页一致：🛡️ AI质量审核-X 审核完成（XX分 ✅）+ 产出物预览代码块
@@ -1471,7 +1539,7 @@ export const useMainStore = defineStore('main', () => {
           const completedAttempt = Number(data.attempt ?? 0) + 1
           const completedRoundTag = completedAttempt > 1 ? `第 ${completedAttempt} 轮 · ` : ''
           writeMsg({
-            id: `reviewer-completed-${data.taskId || Date.now()}-a${data.attempt ?? 0}-${data.reviewerIndex}`,
+            id: eventMsgId('reviewer-completed', `${data.attempt ?? 0}-${data.reviewerIndex}`),
             role: 'assistant',
             type: 'agent',
             agentName: data.reviewerName || data.reviewerId,
@@ -1648,7 +1716,7 @@ export const useMainStore = defineStore('main', () => {
             : `第 ${failedAttempt}/${maxRetries} 轮审核未通过，重试次数已用尽`
           status = 'warning'
           writeMsg({
-            id: `review-failed-${data.taskId}-a${data.attempt ?? data.retry ?? 0}`,
+            id: eventMsgId('review-failed', data.attempt ?? data.retry ?? 0),
             role: 'system',
             type: 'system',
             content: `${message}${scoresText ? `\n\n本轮评分：${scoresText}` : ''}${data.reason ? `\n原因：${data.reason}` : ''}`,
@@ -1669,7 +1737,7 @@ export const useMainStore = defineStore('main', () => {
         message = `${data.agentName} 任务执行完成，开始 AI 质量审核（共 ${data.reviewerCount} 个审核智能体）`
         status = 'info'
         writeMsg({
-          id: `review-started-${data.taskId || Date.now()}-a${data.attempt ?? 0}`,
+          id: eventMsgId('review-started', data.attempt ?? 0),
           role: 'assistant',
           type: 'agent',
           agentName: 'AI质量审核',
@@ -1735,7 +1803,7 @@ export const useMainStore = defineStore('main', () => {
           message = `正在重新执行任务（第 ${nextAttempt}/${maxRetries} 轮），审核未通过已带上问题清单`
           status = 'warning'
           writeMsg({
-            id: `review-retry-${data.taskId || Date.now()}-a${data.attempt ?? data.retry ?? 1}`,
+            id: eventMsgId('review-retry', data.attempt ?? data.retry ?? 1),
             role: 'system',
             type: 'system',
             content: `${message}${data.feedback ? `\n\n本轮需修正：\n${String(data.feedback).slice(0, 1500)}` : ''}`,
