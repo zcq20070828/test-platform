@@ -271,6 +271,50 @@ export async function getTaskQuality(taskId) {
 }
 
 // ============================================================
+// 审核历史（2026-11-11）
+// ============================================================
+
+/**
+ * 读取某任务的全部审核记录（按 attempt 与时间排序）
+ *
+ * 用途：任务时间线兜底。门禁与审核事件过去只在前端内存里，
+ * 刷新后就没了；审核结果本身一直落在 task_review_results，
+ * 这里把它读回来，时间线为空时也能显示「三个审核员各轮打了多少分」。
+ *
+ * @param {string} taskId
+ * @returns {Promise<Array>}
+ */
+export async function getReviewHistory(taskId) {
+  if (!taskId) return [];
+  try {
+    const rows = await query(
+      `SELECT reviewer_id, reviewer_name, score, veto, passed, attempt, error, created_at,
+              CHAR_LENGTH(COALESCE(output,'')) AS output_len
+         FROM task_review_results
+        WHERE task_id = ?
+        ORDER BY attempt ASC, created_at ASC`,
+      [taskId],
+    );
+    return rows.map((r) => ({
+      reviewerId: r.reviewer_id,
+      reviewerName: r.reviewer_name,
+      score: Number(r.score) || 0,
+      veto: r.veto === 1,
+      passed: r.passed === 1,
+      attempt: Number(r.attempt) || 0,
+      // score=0 且 error 非空 ≠ 模型打了 0 分，是审核自己没跑起来
+      failed: !!(r.error && String(r.error).trim()),
+      error: r.error || null,
+      outputLength: Number(r.output_len) || 0,
+      createdAt: r.created_at,
+    }));
+  } catch (e) {
+    console.warn(`[ReviewHistory] 读取失败 ${taskId}: ${e.message}`);
+    return [];
+  }
+}
+
+// ============================================================
 // 阈值校准（2026-11-09）
 // ============================================================
 
@@ -358,4 +402,5 @@ export default {
   getCalibrationSamples,
   saveGateThreshold,
   getSavedGateThreshold,
+  getReviewHistory,
 };

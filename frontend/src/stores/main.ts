@@ -659,6 +659,207 @@ export const useMainStore = defineStore('main', () => {
     }
   }
 
+  /**
+   * 时间线事件 → 聊天消息（2026-11-11）
+   *
+   * 与 handleRealtimeEvent 里的渲染保持同一口径：过去这些消息只在前端内存里生成，
+   * 任务结束/刷新就没了。现在后端把事件按 seq 落盘，这里把同一条事件
+   * 还原成同样的消息，历史与实时看起来完全一致。
+   *
+   * 只处理「过程信息」类事件；task_completed / task_review_passed 这类
+   * 已经由 loadRecentTaskResults 渲染成交付物卡片，这里不重复造。
+   */
+  function timelineEventToMessage(evt: any): ChatMessage | null {
+    const p = evt?.payload || {}
+    const ts = p.timestamp || evt?.createdAt || new Date().toISOString()
+    const base = { timestamp: ts, role: 'assistant' as const, type: 'agent' as const }
+
+    switch (evt?.type) {
+      case 'reviewer_started':
+        return {
+          ...base,
+          id: `tl-reviewer-start-${evt.seq}`,
+          agentName: p.reviewerName || p.reviewerId,
+          content: `${p.reviewerName || p.reviewerId} 开始审核（第${p.reviewerIndex}/${p.totalReviewers}个）`,
+        }
+
+      case 'reviewer_completed': {
+        const raw = p.output != null ? p.output : (p.reason || '')
+        const preview = raw && String(raw).trim()
+          ? `\n\n**审核意见：**\n\`\`\`\n${String(raw)}\n\`\`\``
+          : ''
+        const failed = !p.score && (p.error || p.parseOk === false)
+        const verdict = failed ? '审核未跑出结果' : `${p.score}分 ${p.veto ? '否决' : (p.passed ? '通过' : '未通过')}`
+        return {
+          ...base,
+          id: `tl-reviewer-done-${evt.seq}`,
+          agentName: p.reviewerName || p.reviewerId,
+          content: `${p.reviewerName || p.reviewerId} 审核完成（${verdict}）${preview}`,
+        }
+      }
+
+      case 'reviewer_failed': {
+        return {
+          ...base,
+          id: `tl-reviewer-failed-${evt.seq}`,
+          agentName: p.reviewerName || p.reviewerId,
+          content: `${p.reviewerName || p.reviewerId} 审核失败：${p.error || '未知原因'}`,
+        }
+      }
+
+      case 'case_quality_gate': {
+        const dim = p.dimensionCoverage?.text
+        const head = `用例质量检查：${p.usable}/${p.total} 条可用（${(Number(p.usabilityRate || 0) * 100).toFixed(1)}%）${p.pass ? '达标' : '未达标'}`
+        return {
+          ...base,
+          id: `tl-gate-${evt.seq}`,
+          agentName: '用例质量门禁',
+          content: `${head}${p.summary ? `\n\n${p.summary}` : ''}${dim ? `\n\n${dim}` : ''}`,
+        }
+      }
+
+      case 'case_quality_repair':
+        return {
+          ...base,
+          id: `tl-repair-${evt.seq}`,
+          agentName: '用例质量门禁',
+          content: `正在定向修复 ${p.issues || 0} 条问题用例（第 ${p.round || 1} 轮）`,
+        }
+
+      case 'rule_quality_gate':
+        return {
+          ...base,
+          id: `tl-rule-gate-${evt.seq}`,
+          agentName: '交付物质量检查',
+          content: `${p.agentId} 确定性检查：得分 ${(Number(p.rate || 0) * 100).toFixed(1)}%，${p.pass ? '通过' : '未通过'}${Array.isArray(p.issues) && p.issues.length ? `\n\n问题：${p.issues.join('；')}` : ''}`,
+        }
+
+      case 'task_review_started':
+        return {
+          ...base,
+          id: `tl-review-start-${evt.seq}`,
+          agentName: 'AI质量审核',
+          content: `${p.agentName || '任务'} 执行完成，开始 AI 质量审核（共 ${p.reviewerCount || 3} 个审核智能体）`,
+        }
+
+      case 'task_review_retry':
+        return {
+          ...base,
+          id: `tl-review-retry-${evt.seq}`,
+          agentName: 'AI质量审核',
+          content: `本轮审核未通过，正在重新执行任务（第 ${p.retry || 1} 次重试）${p.feedback ? `\n\n${String(p.feedback).slice(0, 2000)}` : ''}`,
+        }
+
+      case 'agent_skill_result': {
+        const skill = p.skillId || 'skill'
+        return {
+          ...base,
+          id: `tl-skill-${evt.seq}`,
+          agentName: `${p.agentId || '智能体'} 工具执行`,
+          content: `调用真实工具 ${skill} 完成`,
+        }
+      }
+
+      case 'step_review_completed':
+        return {
+          ...base,
+          id: `tl-step-review-${evt.seq}`,
+          agentName: 'AI质量审核',
+          content: `「${p.stage || '阶段'}」审核：${(p.scores || []).join(', ') || '无有效评分'}，${p.passed ? '通过' : '未通过'}`,
+        }
+
+      case 'task_review_exhausted':
+        return {
+          ...base,
+          role: 'system',
+          type: 'system',
+          id: `tl-review-exhausted-${evt.seq}`,
+          content: `任务 ${p.taskId || ''} 审核未通过：${p.reason || p.message || '达到最大重试次数'}`,
+        }
+
+      case 'task_error':
+        return {
+          ...base,
+          role: 'system',
+          type: 'system',
+          id: `tl-task-error-${evt.seq}`,
+          content: `任务错误：${p.error || '未知错误'}`,
+        }
+
+      default:
+        return null
+    }
+  }
+
+  /**
+   * 把任务时间线重放成聊天消息
+   *
+   * @param taskId 任务ID
+   * @param agentId 用于过滤（只重放当前智能体的任务）
+   */
+  async function restoreTaskTimeline(taskId: string, agentId?: string) {
+    try {
+      const data = await taskApi.getTimeline(taskId)
+      if (!data) return 0
+
+      const events: any[] = Array.isArray(data.events) ? data.events : []
+      let added = 0
+      for (const evt of events) {
+        const msg = timelineEventToMessage(evt)
+        if (!msg) continue
+        // 去重：实时链路可能已经生成过同语义消息，按 id 判重
+        if (messages.value.some((m) => m.id === msg.id)) continue
+        if (agentId && msg.agentId && msg.agentId !== agentId) continue
+        messages.value.push(msg)
+        added += 1
+      }
+
+      // 兜底：时间线表是本次上线才开始写的，历史任务为空。
+      // 用审核历史 + 门禁快照合成一条摘要，至少让用户看到「三轮各打了多少分」。
+      if (events.length === 0 && (data.reviews?.length || data.quality)) {
+        const summaryId = `tl-summary-${taskId}`
+        if (!messages.value.some((m) => m.id === summaryId)) {
+          const lines: string[] = []
+          if (data.quality) {
+            const q = data.quality
+            lines.push(`门禁可用率 ${((q.usabilityGate ?? 0) * 100).toFixed(1)}%（${q.usable}/${q.total}），${q.gatePassed ? '达标' : '未达标'}`)
+            if (q.dimensionCoverage != null) lines.push(`九维必测点覆盖 ${(Number(q.dimensionCoverage) * 100).toFixed(0)}%`)
+            if (q.autoRepairs) lines.push(`自动修复占位输入 ${q.autoRepairs} 处，定向修复 ${q.repairRounds || 0} 轮`)
+          }
+          if (Array.isArray(data.reviews) && data.reviews.length) {
+            const byAttempt = new Map<number, string[]>()
+            for (const r of data.reviews) {
+              const label = r.failed ? `${r.reviewerName || r.reviewerId}: 未跑出结果` : `${r.reviewerName || r.reviewerId}: ${r.score}分`
+              const list = byAttempt.get(r.attempt) || []
+              list.push(label)
+              byAttempt.set(r.attempt, list)
+            }
+            for (const [attempt, list] of [...byAttempt.entries()].sort((a, b) => a[0] - b[0])) {
+              lines.push(`第 ${attempt + 1} 轮审核 — ${list.join('，')}`)
+            }
+          }
+          if (lines.length) {
+            messages.value.push({
+              id: summaryId,
+              role: 'assistant',
+              type: 'agent',
+              agentName: '历史执行过程',
+              content: `任务 ${taskId} 的历史执行过程（该任务早于过程留存上线，以下信息由数据库还原）：\n\n${lines.join('\n')}`,
+              timestamp: new Date().toISOString(),
+            })
+            added += 1
+          }
+        }
+      }
+
+      if (added) console.log(`[Timeline] 重放 ${taskId} 的 ${added} 条过程消息`)
+      return added
+    } catch (err) {
+      console.warn('[Timeline] 重放失败:', err)
+      return 0
+    }
+  }
+
   // 加载最近已完成任务的完整结果到 messages（用于刷新页面后恢复历史）
   // 解决：刷新后 chat panel 空白、或流式中断导致 agent 消息只显示部分内容的问题
   // 【串台修复-草案A】仅加载当前选中智能体(agentId)的任务；切换智能体时由调用方传入新 agentId 重新加载。
@@ -726,6 +927,8 @@ export const useMainStore = defineStore('main', () => {
           isStreaming: false,
           artifacts: taskArtifacts.length > 0 ? taskArtifacts : undefined,
         })
+        // 恢复该任务的过程时间线（门禁/审核/修复），否则用户只看到「任务完成 + 最终产出」
+        await restoreTaskTimeline(taskId, agentId)
         loadedCount++
       }
       console.log(`[History] loadRecentTaskResults 加载了 ${loadedCount} 个最近完成任务结果`)
@@ -1224,7 +1427,12 @@ export const useMainStore = defineStore('main', () => {
       case 'reviewer_completed':
         // 与流水线页一致：🛡️ AI质量审核-X 审核完成（XX分 ✅）+ 产出物预览代码块
         {
-          const vetoMark = data.veto ? '否决' : '通过'
+          // score=0 且带 error：审核自身没跑起来，不是「模型认真审了给 0 分」。
+          // 与时间线重放（timelineEventToMessage）保持同一文案口径。
+          const reviewerFailed = !data.score && (data.error || data.parseOk === false)
+          const vetoMark = reviewerFailed
+            ? '未跑出结果'
+            : (data.veto ? '否决' : (data.passed ? '通过' : '未通过'))
           const now = new Date().toISOString()
           // 产出物预览：把审核输出用 markdown 代码块包裹（黑色背景区域）
           // 注意：data.output 可能是空字符串，要用 != null 判断
@@ -2106,6 +2314,7 @@ export const useMainStore = defineStore('main', () => {
     loadKnowledgeDocs,
     loadConversationHistory,
     loadRecentTaskResults,
+    restoreTaskTimeline,
     createTask,
     addMessage,
     clearMessages,

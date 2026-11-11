@@ -276,6 +276,19 @@ export const taskApi = {
     return res.success ? res.data! : null
   },
 
+  /**
+   * 任务过程时间线（2026-11-11）
+   *
+   * 门禁结果、三个审核员的评分、定向修复轮次这些过程信息过去只活在内存里，
+   * 刷新或换设备就没了。后端现在把它们按 seq 落盘，这里按序读回来重放。
+   * 同时返回 quality（门禁快照）与 reviews（审核历史）作为兜底：
+   * 历史任务没有时间线记录时，也能显示「三轮各打了多少分」。
+   */
+  async getTimeline(id: string, afterSeq = 0, limit = 200): Promise<any> {
+    const res = await request<any>(`/api/tasks/${id}/timeline?afterSeq=${afterSeq}&limit=${limit}`)
+    return res.success ? res.data : null
+  },
+
   // 取消运行中的任务
   async cancel(id: string): Promise<{ ok: boolean; task?: Task } & ApiResponse<any>> {
     const res = await request<{ ok: boolean; task: Task }>(`/api/tasks/${id}/cancel`, {
