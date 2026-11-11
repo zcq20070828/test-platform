@@ -675,13 +675,16 @@ export const useMainStore = defineStore('main', () => {
     const base = { timestamp: ts, role: 'assistant' as const, type: 'agent' as const }
 
     switch (evt?.type) {
-      case 'reviewer_started':
+      case 'reviewer_started': {
+        const attemptNo = Number(p.attempt ?? 0) + 1
+        const roundTag = attemptNo > 1 ? `（第 ${attemptNo} 轮）` : ''
         return {
           ...base,
           id: `tl-reviewer-start-${evt.seq}`,
           agentName: p.reviewerName || p.reviewerId,
-          content: `${p.reviewerName || p.reviewerId} 开始审核（第${p.reviewerIndex}/${p.totalReviewers}个）`,
+          content: `${p.reviewerName || p.reviewerId} 开始审核${roundTag}（第${p.reviewerIndex}/${p.totalReviewers}个）`,
         }
+      }
 
       case 'reviewer_completed': {
         const raw = p.output != null ? p.output : (p.reason || '')
@@ -690,11 +693,13 @@ export const useMainStore = defineStore('main', () => {
           : ''
         const failed = !p.score && (p.error || p.parseOk === false)
         const verdict = failed ? '审核未跑出结果' : `${p.score}分 ${p.veto ? '否决' : (p.passed ? '通过' : '未通过')}`
+        const attemptNo = Number(p.attempt ?? 0) + 1
+        const roundTag = attemptNo > 1 ? `第 ${attemptNo} 轮 · ` : ''
         return {
           ...base,
           id: `tl-reviewer-done-${evt.seq}`,
           agentName: p.reviewerName || p.reviewerId,
-          content: `${p.reviewerName || p.reviewerId} 审核完成（${verdict}）${preview}`,
+          content: `${p.reviewerName || p.reviewerId} 审核完成（${roundTag}${verdict}）${preview}`,
         }
       }
 
@@ -742,12 +747,29 @@ export const useMainStore = defineStore('main', () => {
           content: `${p.agentName || '任务'} 执行完成，开始 AI 质量审核（共 ${p.reviewerCount || 3} 个审核智能体）`,
         }
 
+      case 'task_review_failed': {
+        const attemptNo = Number(p.attempt ?? p.retry ?? 0) + 1
+        const willRetry = p.willRetry !== false
+        const scoresText = Array.isArray(p.reviewResults)
+          ? p.reviewResults.map((r: any) => `${r.reviewerName || r.reviewerId}: ${r.score}`).join('，')
+          : ''
+        return {
+          ...base,
+          role: 'system',
+          type: 'system',
+          id: `tl-review-failed-${evt.seq}`,
+          content: `第 ${attemptNo}/${Number(p.maxRetries) || 3} 轮审核未通过${willRetry ? '，即将重新执行任务' : '，重试次数已用尽'}${scoresText ? `\n\n本轮评分：${scoresText}` : ''}${p.reason ? `\n原因：${p.reason}` : ''}`,
+        }
+      }
+
       case 'task_review_retry':
         return {
           ...base,
+          role: 'system',
+          type: 'system',
           id: `tl-review-retry-${evt.seq}`,
           agentName: 'AI质量审核',
-          content: `本轮审核未通过，正在重新执行任务（第 ${p.retry || 1} 次重试）${p.feedback ? `\n\n${String(p.feedback).slice(0, 2000)}` : ''}`,
+          content: `正在重新执行任务（第 ${Number(p.attempt ?? p.retry ?? 1)}/${Number(p.maxRetries) || 3} 轮），审核未通过已带上问题清单${p.feedback ? `\n\n本轮需修正：\n${String(p.feedback).slice(0, 1500)}` : ''}`,
         }
 
       case 'agent_skill_result': {
@@ -1411,17 +1433,23 @@ export const useMainStore = defineStore('main', () => {
 
       case 'reviewer_started':
         // 与流水线页一致：🛡️ AI质量审核-X 开始审核（第X/3个）
-        // 同时给实时日志面板留一条摘要（原重复 case 的 message/status 语义合并至此）
-        message = `${data.reviewerName || data.reviewerId} 开始审核（第${data.reviewerIndex}/${data.totalReviewers}个）`
-        status = 'info'
-        writeMsg({
-          id: `reviewer-started-${data.taskId || Date.now()}-${data.reviewerIndex}`,
-          role: 'assistant',
-          type: 'agent',
-          agentName: data.reviewerName || data.reviewerId,
-          content: `${data.reviewerName || data.reviewerId} 开始审核（第${data.reviewerIndex}/${data.totalReviewers}个）`,
-          timestamp: new Date().toISOString(),
-        })
+        // 【必带 attempt】id 里必须含轮次：三轮审核的 reviewerIndex 相同，
+        // 只用 taskId+index 会让第二轮第三轮的消息 id 与第一轮重复，
+        // v-for :key 冲突后 DOM 复用，看起来就像「一次都没重试」。
+        {
+          const attemptNo = Number(data.attempt ?? 0) + 1
+          const roundTag = attemptNo > 1 ? `（第 ${attemptNo} 轮）` : ''
+          message = `${data.reviewerName || data.reviewerId} 开始审核${roundTag}（第${data.reviewerIndex}/${data.totalReviewers}个）`
+          status = 'info'
+          writeMsg({
+            id: `reviewer-started-${data.taskId || Date.now()}-a${data.attempt ?? 0}-${data.reviewerIndex}`,
+            role: 'assistant',
+            type: 'agent',
+            agentName: data.reviewerName || data.reviewerId,
+            content: message,
+            timestamp: new Date().toISOString(),
+          })
+        }
         break
 
       case 'reviewer_completed':
@@ -1440,12 +1468,14 @@ export const useMainStore = defineStore('main', () => {
           const outputPreview = rawOutput && String(rawOutput).trim()
             ? `\n\n**产出物预览：**\n\`\`\`\n${typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput, null, 2)}\n\`\`\``
             : ''
+          const completedAttempt = Number(data.attempt ?? 0) + 1
+          const completedRoundTag = completedAttempt > 1 ? `第 ${completedAttempt} 轮 · ` : ''
           writeMsg({
-            id: `reviewer-completed-${data.taskId || Date.now()}-${data.reviewerIndex}`,
+            id: `reviewer-completed-${data.taskId || Date.now()}-a${data.attempt ?? 0}-${data.reviewerIndex}`,
             role: 'assistant',
             type: 'agent',
             agentName: data.reviewerName || data.reviewerId,
-            content: `${data.reviewerName || data.reviewerId} 审核完成（${data.score}分 ${vetoMark}）${outputPreview}`,
+            content: `${data.reviewerName || data.reviewerId} 审核完成（${completedRoundTag}${data.score}分 ${vetoMark}）${outputPreview}`,
             timestamp: now,
             // 审核结果同时作为可下载的输出物
             artifacts: rawOutput && String(rawOutput).trim() ? [{
@@ -1603,22 +1633,34 @@ export const useMainStore = defineStore('main', () => {
         }
         break
       case 'task_review_failed':
-        // 本轮审核未通过，提示用户
- message = ` 本轮审核未通过，将自动重试`
-        status = 'warning'
-        writeMsg({
-          id: `review-failed-${data.taskId}`,
-          role: 'system',
-          type: 'system',
- content: ` 任务 ${data.taskId} 本轮审核未通过，系统将自动重试。`,
-          timestamp: new Date().toISOString(),
-        })
-        if (data.taskId) {
-          const idx = tasks.value.findIndex(t => t.id === data.taskId)
-          if (idx >= 0) {
-            const task = tasks.value[idx]!
-            task.reviewResults = data.reviewResults
-            task.reviewing = true
+        // 本轮审核未通过。必须真正写进 messages：
+        // 以前这里只给局部变量 message/status 赋值，唯一的消费方是 realtimeLogs，
+        // 而 realtimeLogs 没有任何面板渲染 —— 于是「审核未通过」在界面上完全看不到。
+        {
+          const failedAttempt = Number(data.attempt ?? data.retry ?? 0) + 1
+          const willRetry = data.willRetry !== false
+          const maxRetries = Number(data.maxRetries) || 3
+          const scoresText = Array.isArray(data.reviewResults)
+            ? data.reviewResults.map((r: any) => `${r.reviewerName || r.reviewerId}: ${r.score}`).join('，')
+            : ''
+          message = willRetry
+            ? `第 ${failedAttempt}/${maxRetries} 轮审核未通过，即将重新执行任务`
+            : `第 ${failedAttempt}/${maxRetries} 轮审核未通过，重试次数已用尽`
+          status = 'warning'
+          writeMsg({
+            id: `review-failed-${data.taskId}-a${data.attempt ?? data.retry ?? 0}`,
+            role: 'system',
+            type: 'system',
+            content: `${message}${scoresText ? `\n\n本轮评分：${scoresText}` : ''}${data.reason ? `\n原因：${data.reason}` : ''}`,
+            timestamp: new Date().toISOString(),
+          })
+          if (data.taskId) {
+            const idx = tasks.value.findIndex(t => t.id === data.taskId)
+            if (idx >= 0) {
+              const task = tasks.value[idx]!
+              task.reviewResults = data.reviewResults
+              task.reviewing = willRetry
+            }
           }
         }
         break
@@ -1626,6 +1668,14 @@ export const useMainStore = defineStore('main', () => {
       case 'task_review_started':
         message = `${data.agentName} 任务执行完成，开始 AI 质量审核（共 ${data.reviewerCount} 个审核智能体）`
         status = 'info'
+        writeMsg({
+          id: `review-started-${data.taskId || Date.now()}-a${data.attempt ?? 0}`,
+          role: 'assistant',
+          type: 'agent',
+          agentName: 'AI质量审核',
+          content: message,
+          timestamp: new Date().toISOString(),
+        })
         if (data.taskId) {
           const idx = tasks.value.findIndex(t => t.id === data.taskId)
           if (idx >= 0) {
@@ -1677,13 +1727,38 @@ export const useMainStore = defineStore('main', () => {
         break
 
       case 'task_review_retry':
- message = ` 正在重新执行任务（第 ${data.retry} 次重试）...`
-        status = 'warning'
+        // 原来这里只给局部变量赋值、从不写消息，「正在重试」在界面上完全不可见，
+        // 加上重新执行要跑几分钟，用户看到的就是「审核不通过就结束了」。
+        {
+          const nextAttempt = Number(data.attempt ?? data.retry ?? 1)
+          const maxRetries = Number(data.maxRetries) || 3
+          message = `正在重新执行任务（第 ${nextAttempt}/${maxRetries} 轮），审核未通过已带上问题清单`
+          status = 'warning'
+          writeMsg({
+            id: `review-retry-${data.taskId || Date.now()}-a${data.attempt ?? data.retry ?? 1}`,
+            role: 'system',
+            type: 'system',
+            content: `${message}${data.feedback ? `\n\n本轮需修正：\n${String(data.feedback).slice(0, 1500)}` : ''}`,
+            timestamp: new Date().toISOString(),
+          })
+          if (data.taskId) {
+            const idx = tasks.value.findIndex(t => t.id === data.taskId)
+            if (idx >= 0) tasks.value[idx]!.reviewing = true
+          }
+        }
         break
 
       case 'task_error':
- message = ` 任务错误: ${data.taskId} - ${data.error}`
+        // 同源问题：以前只赋值给局部变量，任务失败原因在界面上完全看不到
+        message = `任务错误: ${data.taskId} - ${data.error}`
         status = 'error'
+        writeMsg({
+          id: `task-error-${data.taskId || Date.now()}`,
+          role: 'system',
+          type: 'system',
+          content: `任务 ${data.taskId || ''} 执行出错：${data.error || '未知错误'}`,
+          timestamp: new Date().toISOString(),
+        })
         if (data.task) {
           const idx = tasks.value.findIndex(t => t.id === data.task.id)
           if (idx >= 0) {

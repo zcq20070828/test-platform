@@ -111,5 +111,23 @@ t('时间线为空时有摘要兜底（历史任务也能看到三轮评分）',
   assert.ok(/历史执行过程/.test(STORE), '缺少历史执行过程摘要');
 });
 
+
+// ---------------- 并发写入（2026-11-11）----------------
+// 踩过的坑：broadcast 是同步函数，一个任务在一次工具循环里会连推好几条事件，
+// 各自独立算 seq 会全撞同一个值。实测并发 20 条只进 9 条，时间线缺事件。
+t('同任务写入按 taskId 串行（不用 INSERT...SELECT，也不用裸并发）', () => {
+  assert.ok(/taskWriteQueues/.test(DAO), '缺少按任务的写入队列');
+  assert.ok(/function enqueue/.test(DAO), '缺少入队函数');
+  // INSERT ... SELECT MAX(seq) 在 MariaDB 并发下会报
+  // 「Failed to read auto-increment value from storage engine」，绝不能用
+  assert.ok(!/INSERT INTO task_timeline_events[\s\S]{0,200}SELECT\s+\?,\s*COALESCE\(MAX/s.test(DAO),
+    '不允许 INSERT ... SELECT MAX(seq) 写法');
+});
+
+t('seq 用独立 SELECT 算，冲突只 warn', () => {
+  assert.ok(/SELECT COALESCE\(MAX\(seq\), 0\) \+ 1 AS nextSeq/.test(DAO), 'seq 应由独立 SELECT 计算');
+  assert.ok(/事件落盘失败/.test(DAO), '写入失败要 warn');
+});
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

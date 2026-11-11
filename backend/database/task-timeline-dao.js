@@ -28,6 +28,7 @@ export const RECORD_EVENT_TYPES = new Set([
   'task_review_started',
   'reviewer_started',
   'reviewer_completed',
+  'reviewer_failed',
   'task_review_failed',
   'task_review_retry',
   'task_review_exhausted',
@@ -44,10 +45,56 @@ export const RECORD_EVENT_TYPES = new Set([
 const MAX_PAYLOAD_CHARS = 200_000;
 
 /**
+ * 每个任务一条写入队列
+ *
+ * broadcast 是同步函数，一个任务在一次工具循环里会连续推好几条事件
+ * （agent_skill_result ×3、case_quality_gate ×2…），它们几乎同时到达。
+ * 如果各自独立算 seq，会全部 SELECT 到同一个值然后撞唯一键——
+ * 实测并发 20 条只成功 9 条，剩下的被丢掉，时间线就缺事件。
+ *
+ * 所以按 taskId 串成 Promise 链：同一任务的写入严格串行，
+ * seq 永远算在「上一条已提交之后」，不会互相覆盖。
+ */
+const taskWriteQueues = new Map();
+
+/** 把一次写入排到该任务队的尾端 */
+function enqueue(taskId, job) {
+  const prev = taskWriteQueues.get(taskId) || Promise.resolve();
+  const next = prev.then(job, job).catch(() => null);
+  taskWriteQueues.set(taskId, next);
+  // 队列跑完就清理，避免长期运行的进程累积 key
+  next.finally(() => {
+    if (taskWriteQueues.get(taskId) === next) taskWriteQueues.delete(taskId);
+  });
+  return next;
+}
+
+async function insertEvent(taskId, type, agentId, text, originalSize) {
+  try {
+    const rows = await query(
+      'SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM task_timeline_events WHERE task_id = ?',
+      [taskId],
+    );
+    const seq = Number(rows[0]?.nextSeq) || 1;
+    await query(
+      `INSERT INTO task_timeline_events (task_id, seq, type, agent_id, payload, original_size)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [taskId, seq, type, agentId, text, originalSize],
+    );
+    return seq;
+  } catch (e) {
+    // 表不存在（未跑迁移）或多进程撞唯一键都只 warn，不影响主流程
+    console.warn(`[Timeline] 事件落盘失败 ${type}/${taskId}: ${e.message}`);
+    return null;
+  }
+}
+
+/**
  * 追加一条时间线事件
  *
- * seq 用单条 SQL 内的 MAX(seq)+1 计算，配合 uk_task_seq 唯一键，
- * 并发写同一个任务时最多是冲突重试，不会出现重复序号。
+ * ⚠️ 不要改回 `INSERT ... SELECT MAX(seq)+1 FROM 本表` 的写法：
+ * MariaDB 并发下会报 `Failed to read auto-increment value from storage engine`，
+ * 事件被静默丢弃（实测 12 条时间线里少了 reviewer-1/reviewer-2 的「开始审核」）。
  *
  * @param {Object} input
  * @param {string} input.taskId
@@ -79,24 +126,7 @@ export async function appendTimelineEvent({ taskId, type, agentId = null, payloa
     return null;
   }
 
-  try {
-    await query(
-      `INSERT INTO task_timeline_events (task_id, seq, type, agent_id, payload, original_size)
-       SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?
-         FROM task_timeline_events
-        WHERE task_id = ?`,
-      [taskId, type, agentId, text, originalSize, taskId],
-    );
-    const rows = await query(
-      'SELECT seq FROM task_timeline_events WHERE task_id = ? ORDER BY seq DESC LIMIT 1',
-      [taskId],
-    );
-    return rows.length ? Number(rows[0].seq) : null;
-  } catch (e) {
-    // 表不存在（未跑迁移）或写入冲突都不影响主流程
-    console.warn(`[Timeline] 事件落盘失败 ${type}/${taskId}: ${e.message}`);
-    return null;
-  }
+  return enqueue(taskId, () => insertEvent(taskId, type, agentId, text, originalSize));
 }
 
 /**
