@@ -15,6 +15,11 @@ import * as userActionLogDAO from './database/user-action-log-dao.js'; // 用户
 import { getTokenStats, getTokenStatsByAgent } from './database/task-execution-log-dao.js'; // Token 使用统计
 import * as securityDAO from './database/security-dao.js';
 import * as caseFeedbackDAO from './database/case-feedback-dao.js';
+import {
+  appendTimelineEvent,
+  getTaskTimeline,
+  RECORD_EVENT_TYPES as TIMELINE_EVENT_TYPES,
+} from './database/task-timeline-dao.js';
 import * as performanceDAO from './database/performance-dao.js';
 import { init as initWebCompat, create as createWebCompatReport, findByUser as getWebCompatByUser, countByUser as countWebCompatByUser, findById as getWebCompatById } from './database/web-compatibility-dao.js';
 import { getToolList, generateInstallScript, getTool as getToolInfo, checkToolsStatus, installToolBackend, upgradeToolBackend, isToolInstalledBackend } from './tool-registry.js';
@@ -3591,6 +3596,49 @@ app.get('/api/tasks/:id/case-feedback', authenticate, async (req, res) => {
     ]);
     res.json({ success: true, items, humanUsability: human });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * GET /api/tasks/:id/timeline?afterSeq=0&limit=200
+ *
+ * 任务过程时间线（2026-11-11）
+ *
+ * 解决「任务结束后实时信息不完整」：门禁结果、三个审核员的评分、定向修复轮次
+ * 过去只活在前端内存里，刷新或换设备就没了。现在这些事件在广播时按 seq 落盘，
+ * 这里按顺序读回来，前端按同一套渲染逻辑重放，就能看到完整的执行过程。
+ *
+ * 返回里同时附上「从关系表能推导出的过程信息」作为兜底：
+ * 即使某次部署刚开始落盘、时间线为空，历史任务的审核记录与门禁快照也能显示出来。
+ */
+app.get('/api/tasks/:id/timeline', authenticate, async (req, res) => {
+  try {
+    const taskId = req.params.id;
+    const task = tasks.get(taskId) || await taskDAO.getTaskById(taskId);
+    if (!task) return res.status(404).json({ error: '任务不存在' });
+    if (!canAccessTask(task, req)) return res.status(403).json({ error: '无权访问此任务' });
+
+    const afterSeq = Math.max(0, Number(req.query.afterSeq) || 0);
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 200));
+
+    const [events, quality, reviews] = await Promise.all([
+      getTaskTimeline(taskId, { limit, afterSeq }),
+      caseFeedbackDAO.getTaskQuality(taskId).catch(() => null),
+      caseFeedbackDAO.getReviewHistory(taskId).catch(() => []),
+    ]);
+
+    res.json({
+      success: true,
+      taskId,
+      afterSeq,
+      events,
+      // 兜底展示用的结构化摘要（时间线为空时前端用它渲染「审核 9 条 / 三轮」这类信息）
+      quality: quality || null,
+      reviews: reviews || [],
+    });
+  } catch (e) {
+    console.error(`[Timeline] 接口失败 ${req.params.id}:`, e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -8994,6 +9042,22 @@ function broadcast(message) {
   });
   // SSE 广播
   sseBroadcast(message);
+
+  // ===== 任务时间线落盘（2026-11-11）=====
+  // 门禁结果、审核评分、修复轮次这些过程信息过去只活在前端内存里：
+  // 任务结束或刷新后，loadRecentTaskResults 只恢复一条「任务完成 + 最终产出」，
+  // 过程消息全丢，表现就是「实时信息不完整」。这里把过程事件按 seq 落盘，
+  // 刷新后由 GET /api/tasks/:id/timeline 重放。
+  // 只在白名单内记录（流式 chunk 这类高频事件不记），失败只 warn 不影响主流程。
+  const timelineTaskId = message.taskId || message.task?.id;
+  if (timelineTaskId && TIMELINE_EVENT_TYPES.has(message.type)) {
+    appendTimelineEvent({
+      taskId: timelineTaskId,
+      type: message.type,
+      agentId: message.agentId || message.reviewerId || null,
+      payload: message,
+    }).catch(() => {});
+  }
 }
 
 // ============================================================================
