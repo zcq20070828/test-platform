@@ -24,6 +24,7 @@ export const RECORD_EVENT_TYPES = new Set([
   'agent_skill_result',
   'case_quality_gate',
   'case_quality_repair',
+  'case_quality_repair_progress',
   'rule_quality_gate',
   'task_review_started',
   'reviewer_started',
