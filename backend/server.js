@@ -12274,7 +12274,8 @@ async function executeTaskWithReview(task, userId = null) {
       agentId: task.agent,
       agentName: agentName,
       message: `🛡️ 任务执行完成,开始 AI 质量审核(共 3 个审核智能体串行审核)`,
-      reviewerCount: REVIEWER_AGENTS.length
+      reviewerCount: REVIEWER_AGENTS.length,
+      attempt: 0
     });
 
     let reviewResults = [];
@@ -12324,6 +12325,8 @@ async function executeTaskWithReview(task, userId = null) {
             taskId: task.id,
             userId: task.userId || userId,
             retry: retryCount,
+            attempt: retryCount,
+            maxRetries: MAX_RETRIES,
             feedback: feedbackLines,
             message: `🔄 第 ${retryCount} 次重试...`
           });
@@ -12387,6 +12390,10 @@ async function executeTaskWithReview(task, userId = null) {
             reviewResults: reviewResults,
             reason: reason,
             retry: retryCount,
+            attempt: retryCount,
+            // 是否还有剩余重试次数：前端据此区分「将自动重试」和「已用尽重试」
+            willRetry: retryCount + 1 < MAX_RETRIES,
+            maxRetries: MAX_RETRIES,
             message: `⚠️ AI审核未通过(${retryCount + 1}/${MAX_RETRIES}次)\n原因:${reason}`
           });
 
@@ -12644,6 +12651,9 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
       reviewerName,
       reviewerIndex: i + 1,
       totalReviewers: REVIEWER_AGENTS.length,
+      // attempt = 第几轮审核（0 起）。前端靠它区分「第一轮 62 分」和「第二轮 72 分」，
+      // 没有它三轮消息长得一模一样，用户会以为「没重试」。
+      attempt: retryCount,
       userId
     });
 
@@ -12686,6 +12696,7 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
         reviewerName,
         reviewerIndex: i + 1,
         totalReviewers: REVIEWER_AGENTS.length,
+        attempt: retryCount,
         score: result.score,
         veto: result.veto,
         passed: result.passed,
@@ -12735,6 +12746,7 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
         reviewerName,
         reviewerIndex: i + 1,
         totalReviewers: REVIEWER_AGENTS.length,
+        attempt: retryCount,
         score: 0,
         veto: false,
         passed: false,
