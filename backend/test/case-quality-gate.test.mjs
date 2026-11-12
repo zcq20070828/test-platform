@@ -542,5 +542,39 @@ t('非用例表（无预期结果列）不补层级', () => {
   assert.strictEqual(r.tablesRepaired, 0);
 });
 
+
+// ---------------- 需求编号抽取：追踪标记不算断链（2026-11-12）----------------
+// 实测任务 1ddfd0f6：239 条用例里 102 条被误判需求断链，因为「关联需求」列写成
+// `FR-011 [R1]`，方括号是设计方法追踪标记，按空白切词后被当成需求编号去比对。
+t('关联需求含追踪标记 [R1] 不判断链', () => {
+  const ctx = { requirementIds: new Set(['FR-011']), seenKeys: new Map() };
+  const r = inspectCase({ id: 'X', name: 'n', steps: '1.输入', expected: '返回 200', input: 'a=1', requirement: 'FR-011 [R1]' }, ctx);
+  assert.ok(!r.reasons.includes('orphanRequirement'), r.detail);
+});
+
+t('多编号 + 追踪标记都能正确解析', () => {
+  const ctx = { requirementIds: new Set(['FR-015', 'NFR-002']), seenKeys: new Map() };
+  const r = inspectCase({ id: 'X', name: 'n', steps: '1.输入', expected: '返回 200', input: 'a=1', requirement: 'FR-015/NFR-002 [R5]' }, ctx);
+  assert.ok(!r.reasons.includes('orphanRequirement'), r.detail);
+});
+
+t('真断链仍然判出（不因放宽而漏检）', () => {
+  const ctx = { requirementIds: new Set(['FR-011']), seenKeys: new Map() };
+  const r = inspectCase({ id: 'X', name: 'n', steps: '1.输入', expected: '返回 200', input: 'a=1', requirement: 'FR-999 [R1]' }, ctx);
+  assert.ok(r.reasons.includes('orphanRequirement'), r.detail);
+});
+
+t('部分断链：一个存在一个不存在仍判断链', () => {
+  const ctx = { requirementIds: new Set(['NFR-002']), seenKeys: new Map() };
+  const r = inspectCase({ id: 'X', name: 'n', steps: '1.输入', expected: '返回 200', input: 'a=1', requirement: 'FR-999/NFR-002' }, ctx);
+  assert.ok(r.reasons.includes('orphanRequirement'), r.detail);
+});
+
+t('关联需求没写编号（如「见需求文档」）不算断链', () => {
+  const ctx = { requirementIds: new Set(['FR-011']), seenKeys: new Map() };
+  const r = inspectCase({ id: 'X', name: 'n', steps: '1.输入', expected: '返回 200', input: 'a=1', requirement: '见需求文档' }, ctx);
+  assert.ok(!r.reasons.includes('orphanRequirement'), r.detail);
+});
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

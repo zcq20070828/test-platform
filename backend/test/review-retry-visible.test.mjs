@@ -81,5 +81,16 @@ ok('修复进度落盘（过程信息要能回放）', DAO.includes("'case_quali
 ok('前端渲染修复进度', /case 'case_quality_repair_progress'/.test(STORE));
 ok('前端渲染审核心跳', /case 'reviewer_heartbeat'/.test(STORE));
 ok('时间线重放修复进度', /tl-repair-progress/.test(STORE));
+
+// ---------------- 流式推送体积（2026-11-12）----------------
+// 实测任务 1ddfd0f6：35411 条 chunk、正文 64KB。若每条 chunk 都带累积全文
+// fullContent，单任务要往浏览器推约 1GB，EventSource 单线程解析直接排队到卡死，
+// 表现正是「实时信息输出有问题、只显示一半、进度不刷新」。
+ok('流式 chunk 不携带 fullContent（只发 delta）', (() => {
+  const m = SERVER.match(/chunkType: 'content',[^}]*\}/);
+  return m && !/fullContent/.test(m[0]);
+})());
+ok('agent_stream_end 仍带完整内容（最终一致）', /type: 'agent_stream_end'[\s\S]{0,200}content: fullContent/.test(SERVER));
+ok('前端 delta 分支能增量拼接', /buf\.content \+= chunkText/.test(STORE));
 console.log(`\n结果：${checks.length - fail} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
