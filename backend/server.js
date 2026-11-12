@@ -11888,6 +11888,12 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
+    // 流式心跳定时器。必须在这里声明（而不是在 if (isStreamRequest) 块内），
+    // 否则 catch 里访问不到它：块级 const 在 catch 作用域不可见，
+    // `typeof streamHeartbeatInterval !== 'undefined'` 恒为 false，
+    // clearInterval 从来不会执行 → 请求 abort 后心跳继续每 30 秒空转，
+    // 实测同一个 reviewer-2 的 idle 从 14:06 一路涨到 24 分钟。
+    let streamHeartbeatInterval = null;
     // 修复:使用固定超时时间120秒,避免后续尝试超时时间过长
     // 原代码:180000 + attempt * 60000(第1次180s,第2次240s,第3次300s)
     // 修复:增加到300秒,允许复杂Agent(test-case-generator等)完成
@@ -11994,7 +12000,7 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
         // 流式读取超时保护:防止无限等待(每 5 分钟无数据则超时)
         let lastChunkTime = Date.now();
         const streamIdleTimeoutMs = 300000; // 5 分钟无新数据则超时
-        const streamHeartbeatInterval = setInterval(() => {
+        streamHeartbeatInterval = setInterval(() => {
           const idle = Date.now() - lastChunkTime;
           if (idle > streamIdleTimeoutMs) {
             console.warn(`[GatewayAPI] Stream idle timeout for ${agentId} (${idle}ms)`);
@@ -12077,7 +12083,10 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
           endPayload.toolCalls = currentToolCalls.map(tc => ({ id: tc.id, type: tc.type, name: tc.function.name, arguments: tc.function.arguments }));
         }
         cb(endPayload);
-        clearInterval(streamHeartbeatInterval);
+        if (streamHeartbeatInterval) {
+          clearInterval(streamHeartbeatInterval);
+          streamHeartbeatInterval = null;
+        }
         // 附加 usage 到结果
         const result = { content: fullContent, toolCalls: currentToolCalls };
         if (lastUsage) {
@@ -12134,8 +12143,9 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
 
     } catch (err) {
       clearTimeout(timeout);
-      if (typeof streamHeartbeatInterval !== 'undefined') {
+      if (streamHeartbeatInterval) {
         clearInterval(streamHeartbeatInterval);
+        streamHeartbeatInterval = null;
       }
       lastError = err;
 

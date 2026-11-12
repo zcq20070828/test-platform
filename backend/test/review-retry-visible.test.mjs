@@ -92,5 +92,18 @@ ok('流式 chunk 不携带 fullContent（只发 delta）', (() => {
 })());
 ok('agent_stream_end 仍带完整内容（最终一致）', /type: 'agent_stream_end'[\s\S]{0,200}content: fullContent/.test(SERVER));
 ok('前端 delta 分支能增量拼接', /buf\.content \+= chunkText/.test(STORE));
+
+// ---------------- 流式心跳定时器泄漏（2026-11-12）----------------
+// 实测：streamHeartbeatInterval 曾声明在 if (isStreamRequest) 块内，
+// catch 作用域访问不到 → clearInterval 从不执行 → 请求 abort 后每 30 秒空转，
+// 同一个 reviewer-2 的 idle 从 2 分钟一路涨到 24 分钟（日志里 61 条超时告警）。
+ok('定时器在 attempt 作用域声明（catch 才能拿到）',
+  /for \(let attempt = 0; attempt <= maxRetries; attempt\+\+\) \{[\s\S]{0,400}let streamHeartbeatInterval = null;/.test(SERVER));
+ok('定时器不再用块级 const 声明',
+  !/const streamHeartbeatInterval = setInterval/.test(SERVER));
+ok('catch 里真正清理（判断变量本身而非 typeof）',
+  /if \(streamHeartbeatInterval\) \{\s*clearInterval\(streamHeartbeatInterval\);\s*streamHeartbeatInterval = null;/.test(SERVER));
+ok('成功路径也清理并置空',
+  (SERVER.match(/clearInterval\(streamHeartbeatInterval\);\s*streamHeartbeatInterval = null;/g) || []).length >= 2);
 console.log(`\n结果：${checks.length - fail} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

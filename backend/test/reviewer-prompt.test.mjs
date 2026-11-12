@@ -94,5 +94,30 @@ t('提示词要求只输出 JSON', () => {
   }
 });
 
+
+// ---------------- veto 判据不能误伤「待细化占位」（2026-11-12）----------------
+// 实测任务 1ddfd0f6：需求只给了接口名称、没给路径字段，用例按常规命名写了
+// POST /lottery/draw 之类，reviewer-1 判成「严重事实幻觉」并触发一票否决，
+// 三个审核员全 veto → 直接失败，连重试都没意义。
+t('提示词明确区分「待细化占位」与「编造事实」', () => {
+  for (const id of IDS) {
+    const p = prompts[id];
+    assert.ok(/待细化项/.test(p), `${id} 缺少「待细化项」说明`);
+    assert.ok(/不构成 veto/.test(p), `${id} 缺少「不构成 veto」结论`);
+  }
+});
+
+t('提示词要求引用系统检查结果时注明口径偏差', () => {
+  for (const id of IDS) {
+    assert.ok(/口径偏差/.test(prompts[id]), `${id} 缺少口径偏差提示`);
+  }
+});
+
+t('文中的需求编号示例不会破坏模板字符串（无反引号嵌套）', () => {
+  for (const id of IDS) {
+    assert.ok(!/`FR-011/.test(prompts[id]), `${id} 在模板字符串里用了反引号包裹编号`);
+  }
+});
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
