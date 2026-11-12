@@ -507,10 +507,18 @@ export function inspectCase(c, ctx = {}) {
   }
 
   // 6) 需求可达性
+  //
+  // 只校验**需求编号本身**，不能把同一格里的其它文字也算作需求编号。
+  // 实测任务 1ddfd0f6：239 条用例里 102 条被误判成「需求断链」，原因是
+  // 「关联需求」列写成 `FR-011 [R1]`（方括号是设计方法/规则的追踪标记），
+  // 按空白切词后 `[R1]` 也被当成需求编号去比对，必然找不到 → 整条判不可用。
+  // 这里改为先抽出形如 FR-/NFR-/API- 的编号再比对，追踪标记一概忽略。
   const req = String(c.requirement || '').trim();
   if (ctx.requirementIds && ctx.requirementIds.size > 0 && req) {
-    const ids = req.split(/[\/,，、;；\s]+/).filter(Boolean);
-    const orphan = ids.filter((x) => !ctx.requirementIds.has(x.toUpperCase()));
+    const ids = (req.match(/\b(?:FR|NFR|API)-\d{1,4}\b/gi) || []).map((x) => x.toUpperCase());
+    const orphan = [...new Set(ids.filter((x) => !ctx.requirementIds.has(x)))];
+    // 一格都没抽出编号（如只写了「见需求文档」）不算断链，由 missingField 之外的规则处理；
+    // 只有「写了编号但需求里没有」才是真的断链。
     if (orphan.length) {
       reasons.push('orphanRequirement');
       details.push(`关联需求不存在: ${orphan.join(',')}`);

@@ -12057,7 +12057,13 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
 
                 if (delta.content) {
                   fullContent += delta.content;
-                  cb({ type: 'agent_stream_chunk', agentId, agentName: agentInfo.name || agentId, streamMsgId, chunkType: 'content', chunkText: delta.content, content: delta.content, fullContent, timestamp: new Date().toISOString() });
+                  // ⚠️ 每条 chunk 只发 delta，绝不能带 fullContent。
+                  // 实测任务 1ddfd0f6：35411 条 chunk、正文 64KB，若每条都附带累积全文，
+                  // 单个任务就往浏览器推约 1GB；EventSource 是单线程解析，直接排队到卡死，
+                  // 表现就是「实时信息输出有问题、只显示一半、进度不刷新」。
+                  // 前端 scheduleStreamUpdate 的 delta 分支本来就是增量拼接，
+                  // agent_stream_end 还会用完整内容覆盖一次，所以增量完全够用。
+                  cb({ type: 'agent_stream_chunk', agentId, agentName: agentInfo.name || agentId, streamMsgId, chunkType: 'content', chunkText: delta.content, content: delta.content, timestamp: new Date().toISOString() });
                 }
               } catch (e) {
                 // 忽略解析错误
