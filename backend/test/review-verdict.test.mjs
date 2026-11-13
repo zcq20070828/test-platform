@@ -17,6 +17,7 @@ import {
   extractBalancedJson,
   parseReviewResult,
   decideReviewVerdict,
+  decideReviewVerdictWithGate,
   isReviewerFailure,
 } from '../lib/review-verdict.js';
 
@@ -332,6 +333,60 @@ t('回归：真实任务 fece20f3（76 被误记 0）修正后应通过', () => 
   assert.strictEqual(v.median, 76);
   assert.strictEqual(v.verdict, 'failed', '76/80/64 是真不达标，应继续拦住');
   assert.strictEqual(v.reviewerFailures, 0, '76 分是有效评分，不能算审核失败');
+});
+
+
+// ---------------- 复合判定：门禁 + 审核（2026-11-12）----------------
+const mkRes = (scores, veto = false) => scores.map((s, i) => ({
+  reviewerId: `r${i}`, reviewerName: `R${i}`, score: s, veto, passed: s >= 80, scoreOk: true,
+}));
+
+t('门禁达标 + 中位数 76（374bc1eb 实况）→ 放行但保留意见', () => {
+  const v = decideReviewVerdictWithGate(mkRes([76, 73, 76]), { threshold: 80, softThreshold: 70, gatePassed: true });
+  assert.strictEqual(v.passed, true, v.reason);
+  assert.strictEqual(v.verdict, 'passed_with_notes');
+  assert.ok(v.reason.includes('允许交付'), v.reason);
+});
+
+t('门禁达标 + 中位数 62 → 仍判不通过（内容确实差）', () => {
+  const v = decideReviewVerdictWithGate(mkRes([62, 65, 60]), { threshold: 80, softThreshold: 70, gatePassed: true });
+  assert.strictEqual(v.passed, false, v.reason);
+});
+
+t('门禁达标也不能洗白一票否决', () => {
+  const v = decideReviewVerdictWithGate(mkRes([62, 65, 60], true), { threshold: 80, softThreshold: 70, gatePassed: true });
+  assert.strictEqual(v.passed, false);
+  assert.ok(v.reason.includes('门禁已达标，但'), v.reason);
+});
+
+t('门禁未达标时行为与旧口径一致（不看软阈值）', () => {
+  const v = decideReviewVerdictWithGate(mkRes([76, 73, 76]), { threshold: 80, softThreshold: 70, gatePassed: false });
+  assert.strictEqual(v.passed, false, '门禁没过就不该因软阈值放行');
+});
+
+t('门禁未达标但审核分很高 → 仍按旧口径通过', () => {
+  const v = decideReviewVerdictWithGate(mkRes([85, 86, 84]), { threshold: 80, gatePassed: false });
+  assert.strictEqual(v.passed, true);
+});
+
+t('门禁达标 + 中位数刚好等于软阈值 → 放行（边界）', () => {
+  const v = decideReviewVerdictWithGate(mkRes([70, 70, 71]), { threshold: 80, softThreshold: 70, gatePassed: true });
+  assert.strictEqual(v.passed, true, v.reason);
+});
+
+t('门禁达标 + 有效评审不足 → 沿用 inconclusive 放行', () => {
+  const v = decideReviewVerdictWithGate([
+    { reviewerId: 'r0', reviewerName: 'R0', score: 0, veto: false, passed: false, parseOk: false, error: '超时' },
+    { reviewerId: 'r1', reviewerName: 'R1', score: 0, veto: false, passed: false, parseOk: false, error: '超时' },
+    { reviewerId: 'r2', reviewerName: 'R2', score: 72, veto: false, passed: false, scoreOk: true },
+  ], { threshold: 80, softThreshold: 70, gatePassed: true });
+  assert.strictEqual(v.passed, true);
+  assert.strictEqual(v.verdict, 'inconclusive');
+});
+
+t('返回值始终带 gatePassed 标记', () => {
+  assert.strictEqual(decideReviewVerdictWithGate(mkRes([76, 73, 76]), { gatePassed: true }).gatePassed, true);
+  assert.strictEqual(decideReviewVerdictWithGate(mkRes([76, 73, 76]), { gatePassed: false }).gatePassed, false);
 });
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

@@ -105,5 +105,23 @@ ok('catch 里真正清理（判断变量本身而非 typeof）',
   /if \(streamHeartbeatInterval\) \{\s*clearInterval\(streamHeartbeatInterval\);\s*streamHeartbeatInterval = null;/.test(SERVER));
 ok('成功路径也清理并置空',
   (SERVER.match(/clearInterval\(streamHeartbeatInterval\);\s*streamHeartbeatInterval = null;/g) || []).length >= 2);
+
+// ---------------- 三审并行 & 局部改写（2026-11-12）----------------
+// 耗时结构：单次审核 231s，串行三人 11~12 分钟，占 90 分钟总时长的 26%。
+// 三人互不依赖（各读同一交付物、独立打分取中位数），没理由串行。
+ok('审核改为并行发起', /REVIEWER_AGENTS\.map\(\(reviewerId, i\) => runOneReviewer\(reviewerId, i\)\)/.test(SERVER));
+ok('并行后仍按原顺序返回（投票依赖稳定顺序）', /Promise\.all\(\s*REVIEWER_AGENTS\.map/.test(SERVER));
+ok('每个审核员仍有独立心跳', /const reviewHeartbeat = setInterval/.test(SERVER));
+ok('并行版仍落库审核结果', /INSERT INTO task_review_results/.test(SERVER));
+
+// 重试策略：门禁已达标时不再全量重生成（374bc1eb 因此白花 60 分钟）
+ok('门禁达标时走局部改写', /gateObjectivelyPassed && task\.result/.test(SERVER));
+ok('局部改写会校验条数不缩水', /afterCheck\.total < beforeCount \* 0\.9/.test(SERVER));
+ok('局部改写失败退回全量重生成', /局部改写失败，退回全量重生成/.test(SERVER));
+ok('门禁未达标仍走全量重生成', /门禁未达标：确实需要重做主体内容/.test(SERVER));
+
+// 系统自报统计口径
+ok('系统计数改用门禁同一口径', /parseCaseTableForCount\(existingText\)/.test(SERVER));
+ok('统计句标注「系统复核，以此为准」', /用例统计（系统复核，以此为准）/.test(SERVER));
 console.log(`\n结果：${checks.length - fail} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

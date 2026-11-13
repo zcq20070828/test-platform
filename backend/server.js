@@ -30,7 +30,7 @@ import {
 } from './lib/document-reader.js';
 import {
   parseReviewResult,
-  decideReviewVerdict,
+  decideReviewVerdictWithGate,
 } from './lib/review-verdict.js';
 import {
   checkWithRules as checkByAgentRules,
@@ -43,6 +43,7 @@ import {
   buildSurgicalRepairPrompt,
   spliceRepairedRows,
   applyLayerColumnRepair as applyCaseLayerRepair,
+  parseCaseTable as parseCaseTableForCount,
 } from './lib/case-quality-gate.js';
 import {
   calibrateThreshold as calibrateGateThreshold,
@@ -6864,7 +6865,13 @@ async function executeInteractiveWorkflow(workflowId, taskInput, retryCount = 0,
       console.log(`[InteractiveWorkflow] Review completed: ${JSON.stringify(reviewResults.map(r => ({id: r.reviewerId, score: r.score, veto: r.veto})))}`);
 
       // 统一审核判定（2026-11-09）：与其它三条链路同一口径
-      const verdict = decideReviewVerdict(reviewResults, { threshold: REVIEW_PASS_THRESHOLD });
+      // 2026-11-12：叠加确定性门禁（门禁客观达标时不再因主观分偏低就判失败）
+      const wfGate = taskCaseQualityReports.get(workflowId);
+      const verdict = decideReviewVerdictWithGate(reviewResults, {
+        threshold: REVIEW_PASS_THRESHOLD,
+        softThreshold: REVIEW_SOFT_THRESHOLD,
+        gatePassed: !!(wfGate && wfGate.applicable && wfGate.pass),
+      });
       const vetoTriggered = verdict.vetoTriggered;
       reviewPassed = verdict.passed;
       console.log(`[InteractiveWorkflow] Review verdict=${verdict.verdict} median=${verdict.median} veto=${vetoTriggered} passed=${reviewPassed} | ${verdict.reason}`);
@@ -7238,7 +7245,12 @@ async function executeAutoNativeWorkflow(workflowId, taskInput) {
           },
           workflowId,
         );
-        const nativeVerdict = decideReviewVerdict(nativeReviewResults, { threshold: REVIEW_PASS_THRESHOLD });
+        const stageGate = taskCaseQualityReports.get(workflowId);
+        const nativeVerdict = decideReviewVerdictWithGate(nativeReviewResults, {
+          threshold: REVIEW_PASS_THRESHOLD,
+          softThreshold: REVIEW_SOFT_THRESHOLD,
+          gatePassed: !!(stageGate && stageGate.applicable && stageGate.pass),
+        });
         const nativePass = nativeVerdict.passed;
         console.log(`[AutoNative] 阶段「${stage.stage}」审核: verdict=${nativeVerdict.verdict} scores=[${nativeVerdict.scores.join(',')}] median=${nativeVerdict.median} pass=${nativePass}`);
         workflowResults.reviewerResults = (workflowResults.reviewerResults || []).concat(
@@ -8048,7 +8060,13 @@ ${previousStepOutput || '(无)'}
       }
 
       // 统一审核判定（2026-11-09）：与其它三条链路同一口径
-      const wfVerdict = decideReviewVerdict(validResults, { threshold: REVIEW_PASS_THRESHOLD });
+      // 2026-11-12：叠加确定性门禁
+      const stepGate = taskCaseQualityReports.get(workflowId);
+      const wfVerdict = decideReviewVerdictWithGate(validResults, {
+        threshold: REVIEW_PASS_THRESHOLD,
+        softThreshold: REVIEW_SOFT_THRESHOLD,
+        gatePassed: !!(stepGate && stepGate.applicable && stepGate.pass),
+      });
       const scores = wfVerdict.scores;
       const vetoTriggered = wfVerdict.vetoTriggered;
       const allPass = wfVerdict.passed;
@@ -10270,10 +10288,19 @@ function buildApiTestCasesMarkdown(apis, existingText = '') {
   lines.push('');
   lines.push('## 接口测试用例（系统按接口清单补齐）');
   lines.push('');
-  const modelCaseCount = (String(existingText || '').match(/^\|\s*[A-Za-z][\w-]*-\d+\s*\|/gm) || []).length;
+  // ⚠️ 计数必须与门禁口径一致：只数**用例表**的行，不能把覆盖分析表里的
+  // FR-001/NFR-002 行也算进去。旧正则 `/^\|\s*[A-Za-z][\w-]*-\d+\s*\|/` 数出 270 条，
+  // 门禁实际解析 239 条（差 31 条就是覆盖分析表的编号行）。
+  // 系统自己写进交付物的统计数字一旦错了，审核员会据此扣分（实测 47 条 issue 里
+  // 13 条是这类「自报统计口径矛盾」），形成系统自己给自己制造缺陷的循环。
+  const { cases: existingCases } = parseCaseTableForCount(existingText);
+  const modelCaseCount = existingCases.length;
   lines.push(`> 输入报告的接口清单共 ${apis.length} 个（${apis.map((a) => a.id).join('、')}）。以下用例由系统确定性生成，每个接口覆盖正向、鉴权、参数异常、边界，POST/PUT/PATCH 额外覆盖幂等/重复提交。具体请求字段、响应结构需接口文档补充后细化。`);
   lines.push('');
-  lines.push(`> 用例统计：原用例集（模型生成）${modelCaseCount} 条；接口用例（系统补齐）${rows.length} 条；合计 ${modelCaseCount + rows.length} 条（均按表格行统计，已含本表）。`);
+  // 这句是**系统写死的权威口径**：模型在上文自报的总计/分项数字常常互相矛盾
+  // （实测同一份交付物里出现 217/248/267/298 四个不同的总数），审核员据此扣分。
+  // 这里明确写「系统复核值」，并提示以本句为准，减少这类无意义扣分。
+  lines.push(`> **用例统计（系统复核，以此为准）**：原用例集 ${modelCaseCount} 条；接口用例 ${rows.length} 条；合计 **${modelCaseCount + rows.length}** 条。正文其它位置的用例数量若与此不一致，请以本句为准。`);
   lines.push('');
   lines.push('| 用例编号 | 接口编号 | 接口名称 | 请求方式 | 用例类型 | 维度 | 层级 | 前置条件 | 测试步骤 | 预期结果 | 优先级 | 关联需求 |');
   lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|');
@@ -12188,6 +12215,10 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
 
 // 审核通过阈值(与全自动模式保持一致,使用已定义的 MAX_RETRIES)
 const REVIEW_PASS_THRESHOLD = 80;
+// 门禁已客观达标时，审核中位数的下限（低于它说明内容确实有问题，仍需重做）。
+// 80 是设计时拍定的、从未校准；近 7 天 20 个有效轮次的中位数均分 74.8，
+// 阈值 80 只能过 45%。门禁已经把「能不能用」客观判掉，这里只兜「内容是否胡说」。
+const REVIEW_SOFT_THRESHOLD = Number(process.env.REVIEW_SOFT_THRESHOLD) || 70;
 
 // 用例交付物确定性质量门禁（2026-11-05）
 // 0.85 是设计时拍定的常数，从未用人工判定校准（2026-11-09 补上校准链路）：
@@ -12358,11 +12389,6 @@ async function executeTaskWithReview(task, userId = null) {
             ? `\n\n---\n${buildCaseRepairPrompt(qualityReport, { maxListPerReason: 20 })}`
             : '';
 
-          const improvementGuide = `\n\n---\n【本轮需要修正的问题（第${retryCount}次，共 ${feedbackIssues.length || failing.length} 条）】\n${feedbackLines}${gateGuide}\n\n【修改范围约束】\n1. 只改上面列出的问题，未列入的内容保持不变\n2. 不要重写整份交付物，不要调整章节结构\n3. 不要把「评分」当作目标去凑，按问题清单逐条修正即可`;
-
-          task.input = task.originalInput + improvementGuide;
-          task._retryCount = retryCount;
-
           broadcast({
             type: 'task_review_retry',
             taskId: task.id,
@@ -12374,11 +12400,102 @@ async function executeTaskWithReview(task, userId = null) {
             message: `🔄 第 ${retryCount} 次重试...`
           });
 
-          // 重新执行任务(携带审核反馈)
-          await executeTaskAsync(task);
-          if (task.status !== 'completed' || !task.result) {
-            lastError = '任务重执行失败';
-            break;
+          // ========== 重试策略（2026-11-12 重写）==========
+          // 旧做法：把问题清单拼到原始输入后面，再 executeTaskAsync 全量重跑一遍。
+          // 实测任务 374bc1eb 的代价：
+          //   第 1 轮门禁 65.5% → 修复到 98.5%（已经合格），审核 76/73/76 → 未通过
+          //   第 2 轮「重执行」= 全量重新生成 7 分钟 → 门禁跌回 66.4%
+          //          → 又花 9.5+18.3 分钟修回 99.7%
+          // 也就是把已经合格的交付物扔掉重来，再花 28 分钟修回同一水平。
+          //
+          // 新做法分两条路：
+          //   a) 门禁客观已达标（可用率/维度都过）→ 不再重新生成，直接把审核意见
+          //      局部改写进现有交付物（一次 LLM 调用，1~2 分钟）；
+          //   b) 门禁未达标 → 仍走全量重生成（此时确实需要重做主体内容）。
+          const existingGate = taskCaseQualityReports.get(task.id);
+          const gateObjectivelyPassed = !!(existingGate && existingGate.applicable && existingGate.pass);
+
+          if (gateObjectivelyPassed && task.result) {
+            console.log(`[TaskWithReview] 门禁已客观达标（${(existingGate.usabilityRate * 100).toFixed(1)}%），改为局部改写而非重新生成`);
+            const patchGuide = [
+              '【任务】下面是一份已经通过确定性质量门禁的交付物。审核智能体提出了若干问题，',
+              '请**只针对这些问题**做局部修改，输出修改后的完整交付物。',
+              '',
+              '【硬性约束】',
+              '1. 未涉及问题清单的内容一字不改（包括表格行、章节标题、编号）。',
+              '2. 不要新增章节、不要调整结构、不要重新编号。',
+              '3. 不要因为「分数」而做无关改动。',
+              '4. 直接输出修改后的完整 Markdown，不要输出任何解释说明。',
+              '',
+              `【需要修正的问题（共 ${feedbackIssues.length || failing.length} 条）】`,
+              feedbackLines || failing.map((r) => `- [${r.reviewerName}] ${r.reason || '未通过'}`).join('\n'),
+              gateGuide,
+            ].join('\n');
+
+            try {
+              const rewritten = await callDeepSeekRewrite([
+                { role: 'system', content: '你是测试用例评审专家，按问题清单局部修改交付物，输出完整 Markdown，不输出解释。' },
+                { role: 'user', content: `${patchGuide}\n\n---\n【现有交付物】\n${task.result}` },
+              ], { timeoutMs: CASE_QUALITY_REPAIR_TIMEOUT_MS * 2, maxTokens: 32000 });
+
+              const patched = String(rewritten.content || '').trim();
+              // 校验：改写结果必须仍是用例交付物，且条数不能大幅缩水（防止模型只回一段说明）
+              const beforeCount = (existingGate && existingGate.total) || 0;
+              const afterCheck = checkCaseQuality(patched, {
+                originalInput: task.originalInput || '',
+                minUsabilityRate: CASE_QUALITY_MIN_RATE,
+                requireDimension: true,
+                minProbeCoverage: CASE_QUALITY_MIN_PROBE_COVERAGE,
+              });
+              const shrank = afterCheck.applicable && beforeCount > 0 && afterCheck.total < beforeCount * 0.9;
+
+              if (!afterCheck.applicable || shrank) {
+                console.warn(`[TaskWithReview] 局部改写结果不可用（applicable=${afterCheck.applicable}, ${afterCheck.total}/${beforeCount} 条），退回全量重生成`);
+                const improvementGuide = `\n\n---\n【本轮需要修正的问题（第${retryCount}次，共 ${feedbackIssues.length || failing.length} 条）】\n${feedbackLines}${gateGuide}\n\n【修改范围约束】\n1. 只改上面列出的问题，未列入的内容保持不变\n2. 不要重写整份交付物，不要调整章节结构\n3. 不要把「评分」当作目标去凑，按问题清单逐条修正即可`;
+                task.input = task.originalInput + improvementGuide;
+                task._retryCount = retryCount;
+                await executeTaskAsync(task);
+                if (task.status !== 'completed' || !task.result) {
+                  lastError = '任务重执行失败';
+                  break;
+                }
+              } else {
+                task.result = patched;
+                task._retryCount = retryCount;
+                task.updatedAt = new Date().toISOString();
+                await persistTask(task.id);
+                console.log(`[TaskWithReview] 局部改写完成：${afterCheck.total} 条，可用率 ${(afterCheck.usabilityRate * 100).toFixed(1)}%（保留原 ${beforeCount} 条结构）`);
+                broadcast({
+                  type: 'task_progress',
+                  taskId: task.id,
+                  userId: task.userId || userId,
+                  agentId: task.agent,
+                  agentName,
+                  message: `🔧 已按审核意见局部改写（未重新生成），${afterCheck.total} 条用例`,
+                  stillRunning: true,
+                });
+              }
+            } catch (patchErr) {
+              console.warn(`[TaskWithReview] 局部改写失败，退回全量重生成: ${patchErr.message}`);
+              const improvementGuide = `\n\n---\n【本轮需要修正的问题（第${retryCount}次，共 ${feedbackIssues.length || failing.length} 条）】\n${feedbackLines}${gateGuide}\n\n【修改范围约束】\n1. 只改上面列出的问题，未列入的内容保持不变\n2. 不要重写整份交付物，不要调整章节结构\n3. 不要把「评分」当作目标去凑，按问题清单逐条修正即可`;
+              task.input = task.originalInput + improvementGuide;
+              task._retryCount = retryCount;
+              await executeTaskAsync(task);
+              if (task.status !== 'completed' || !task.result) {
+                lastError = '任务重执行失败';
+                break;
+              }
+            }
+          } else {
+            // 门禁未达标：确实需要重做主体内容，保持原有全量重生成
+            const improvementGuide = `\n\n---\n【本轮需要修正的问题（第${retryCount}次，共 ${feedbackIssues.length || failing.length} 条）】\n${feedbackLines}${gateGuide}\n\n【修改范围约束】\n1. 只改上面列出的问题，未列入的内容保持不变\n2. 不要重写整份交付物，不要调整章节结构\n3. 不要把「评分」当作目标去凑，按问题清单逐条修正即可`;
+            task.input = task.originalInput + improvementGuide;
+            task._retryCount = retryCount;
+            await executeTaskAsync(task);
+            if (task.status !== 'completed' || !task.result) {
+              lastError = '任务重执行失败';
+              break;
+            }
           }
         }
 
@@ -12411,13 +12528,34 @@ async function executeTaskWithReview(task, userId = null) {
           continue;
         }
 
-        // 统一审核判定（2026-11-09）：此前这里是「全票 ≥80」，一个 78 分就否掉整个任务
-        const taskVerdict = decideReviewVerdict(reviewResults, { threshold: REVIEW_PASS_THRESHOLD });
+        // 统一审核判定（2026-11-09）：此前这里是「全票 ≥80」，一个 78 分就否掉整个任务。
+        // 2026-11-12：叠加确定性门禁，区分「客观不达标」与「主观分偏低」。
+        // 门禁已达标时不再因中位数 76 < 80 就把合格交付物扔掉重跑（实测这类重跑
+        // 单任务要多花 60 分钟，而交付物本身可用率已经 99.7%）。
+        const gateForVerdict = taskCaseQualityReports.get(task.id);
+        const gateObjectivelyPassed = !!(gateForVerdict && gateForVerdict.applicable && gateForVerdict.pass);
+        const taskVerdict = decideReviewVerdictWithGate(reviewResults, {
+          threshold: REVIEW_PASS_THRESHOLD,
+          softThreshold: REVIEW_SOFT_THRESHOLD,
+          gatePassed: gateObjectivelyPassed,
+        });
         const vetoTriggered = taskVerdict.vetoTriggered;
         allPassed = taskVerdict.passed;
 
         if (taskVerdict.verdict === 'inconclusive') {
           console.warn(`[TaskWithReview] ${taskVerdict.reason}`);
+        }
+        if (taskVerdict.verdict === 'passed_with_notes') {
+          console.log(`[TaskWithReview] ${taskVerdict.reason}`);
+          broadcast({
+            type: 'task_progress',
+            taskId: task.id,
+            userId: task.userId || userId,
+            agentId: task.agent,
+            agentName,
+            message: `✅ ${taskVerdict.reason}`,
+            stillRunning: true,
+          });
         }
 
         if (!allPassed) {
@@ -12670,19 +12808,28 @@ async function callReviewersInParallel(taskId, agentName, output, retryCount = 0
  * @returns {Promise<Object[]>} 审核结果数组
  */
 async function callReviewersSequentially(taskId, agentName, output, retryCount = 0, userId = null, onEachComplete = null, reviewContext = {}, workflowId = null) {
-  const results = [];
-
   // 2026-11-09：不再删除该任务的历史审核记录。
   // 以前每次进入都 DELETE，导致重试 3 轮的任务只看得到最后一轮——
   // 复盘时无法回答「是真改好了，还是模型改了措辞」。改为按 attempt 累积，
   // 读取端取 MAX(attempt) 那一轮作为当前结论（见 task-dao.loadTasks）。
 
-  for (let i = 0; i < REVIEWER_AGENTS.length; i++) {
-    const reviewerId = REVIEWER_AGENTS[i];
+  // 2026-11-12：从「串行」改为「并行」。函数名保留（8 处调用点不必改），
+  // 但三个审核员现在同时发起。
+  //
+  // 为什么要改：实测单次审核调用平均 231 秒（含推理模型思考），串行三人
+  // 就是 11~12 分钟；任务 374bc1eb 两轮审核一共耗 23 分钟，占 90 分钟总时长的 26%。
+  // 三个审核员**互不依赖**（各自读同一份交付物、各自独立打分，取中位数），
+  // 没有任何理由串行。并行后审核阶段从 ~11 分钟降到 ~4 分钟（取最慢的那个）。
+  //
+  // 为什么不直接用已有的 callReviewersInParallel：那个版本没有心跳、不落库、
+  // 不发 reviewer_started/completed 事件、失败也不兜底，功能是残缺的。
+  const total = REVIEWER_AGENTS.length;
+
+  const runOneReviewer = async (reviewerId, i) => {
     const reviewerInfo = AGENTS[reviewerId] || {};
     const reviewerName = reviewerInfo.name || reviewerId;
 
-    console.log(`[Review] Sequential [${i+1}/${REVIEWER_AGENTS.length}] Calling ${reviewerId} for task ${taskId}`);
+    console.log(`[Review] Parallel [${i + 1}/${total}] Calling ${reviewerId} for task ${taskId}`);
 
     // 广播当前审核智能体开始
     broadcast({
@@ -12693,7 +12840,7 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
       reviewerId,
       reviewerName,
       reviewerIndex: i + 1,
-      totalReviewers: REVIEWER_AGENTS.length,
+      totalReviewers: total,
       // attempt = 第几轮审核（0 起）。前端靠它区分「第一轮 62 分」和「第二轮 72 分」，
       // 没有它三轮消息长得一模一样，用户会以为「没重试」。
       attempt: retryCount,
@@ -12712,7 +12859,7 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
           reviewerId,
           reviewerName,
           reviewerIndex: i + 1,
-          totalReviewers: REVIEWER_AGENTS.length,
+          totalReviewers: total,
           attempt: retryCount,
           elapsedSec: sec,
           userId,
@@ -12723,10 +12870,9 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
     try {
       const result = await callSingleReviewer(reviewerId, taskId, agentName, output, retryCount, reviewContext);
       clearInterval(reviewHeartbeat);
-      results.push(result);
 
-      console.log(`[Review] Sequential [${i+1}/${REVIEWER_AGENTS.length}] ${reviewerId} scored ${result.score}, veto=${result.veto}`);
-      
+      console.log(`[Review] Parallel [${i + 1}/${total}] ${reviewerId} scored ${result.score}, veto=${result.veto}`);
+
       // 保存审核结果到数据库
       try {
         // callSingleReviewer 内部用 try/catch 兜住了模型调用异常，不会抛到这里。
@@ -12759,7 +12905,7 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
         reviewerId,
         reviewerName,
         reviewerIndex: i + 1,
-        totalReviewers: REVIEWER_AGENTS.length,
+        totalReviewers: total,
         attempt: retryCount,
         score: result.score,
         veto: result.veto,
@@ -12774,9 +12920,10 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
       if (onEachComplete) {
         onEachComplete(result, i);
       }
+      return result;
     } catch (reviewerErr) {
       clearInterval(reviewHeartbeat);
-      console.error(`[Review] Sequential [${i+1}/${REVIEWER_AGENTS.length}] ${reviewerId} failed:`, reviewerErr);
+      console.error(`[Review] Parallel [${i + 1}/${total}] ${reviewerId} failed:`, reviewerErr);
 
       // 单个审核智能体失败,记录失败结果但继续其他审核
       const failedResult = {
@@ -12791,8 +12938,7 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
         error: reviewerErr.message || '审核智能体调用失败',
         timestamp: new Date().toISOString()
       };
-      results.push(failedResult);
-      
+
       // 保存失败的审核结果到数据库
       try {
         await query(
@@ -12810,7 +12956,7 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
         reviewerId,
         reviewerName,
         reviewerIndex: i + 1,
-        totalReviewers: REVIEWER_AGENTS.length,
+        totalReviewers: total,
         attempt: retryCount,
         score: 0,
         veto: false,
@@ -12824,10 +12970,17 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
       if (onEachComplete) {
         onEachComplete(failedResult, i);
       }
+      return failedResult;
     }
-  }
+  };
 
-  return results;
+  // 并行发起，结果按 REVIEWER_AGENTS 原顺序返回（投票逻辑依赖稳定顺序）。
+  // runOneReviewer 内部已兜住所有异常，Promise.all 不会因单个失败而 reject。
+  const settled = await Promise.all(
+    REVIEWER_AGENTS.map((reviewerId, i) => runOneReviewer(reviewerId, i)),
+  );
+
+  return settled.filter(Boolean);
 }
 
 /**

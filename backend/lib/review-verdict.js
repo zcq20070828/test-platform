@@ -343,11 +343,79 @@ export function decideReviewVerdict(results, options = {}) {
   };
 }
 
+/**
+ * 带「客观门禁」的复合判定（2026-11-12）
+ *
+ * 问题：阈值 80 是设计时拍定的，从未校准。近 7 天 20 个有效轮次的中位数均分 74.8，
+ * 阈值 80 只能过 45% —— 而其中像任务 374bc1eb 那种确定性门禁已经 99.7% 可用、
+ * 9/9 维覆盖、必测点 98% 的交付物，仅因为审核给了 76/73/76 就被判未通过，
+ * 又白花 60 分钟重跑。
+ *
+ * 这里区分两类失败：
+ *   - **客观不达标**：确定性门禁没过（可用率/维度/必测点）。这是硬事实，必须重做。
+ *   - **主观打分偏低**：门禁已客观达标，但审核中位数没到阈值。
+ *     此时正确的动作是「按问题清单局部改进」，而不是「扔掉重来」。
+ *
+ * 因此：
+ *   - 门禁已达标 + 中位数 ≥ softThreshold（默认 70）→ passed，标注「客观达标+主观可用」
+ *   - 门禁已达标 + 中位数 < softThreshold → 仍 passed，但 verdict='passed_with_notes'，
+ *     让上层保留审核意见供人工参考，不触发重试
+ *   - 门禁未达标 → 按原阈值判定，不通过则重试
+ *
+ * @param {Array} results - 审核结果
+ * @param {Object} options
+ * @param {number} [options.threshold=80] - 主观分阈值（门禁未达标时使用）
+ * @param {number} [options.softThreshold=70] - 门禁已达标时的主观分下限
+ * @param {boolean} [options.gatePassed=false] - 确定性门禁是否已客观达标
+ * @param {number} [options.minValid=2]
+ */
+export function decideReviewVerdictWithGate(results, options = {}) {
+  const base = decideReviewVerdict(results, {
+    threshold: Number(options.threshold ?? 80),
+    minValid: options.minValid,
+  });
+
+  const gatePassed = options.gatePassed === true;
+  if (!gatePassed) return { ...base, gatePassed: false };
+
+  // 门禁已客观达标：一票否决仍然生效（内容是幻觉/违规不能靠门禁洗白）
+  if (base.vetoTriggered) {
+    return { ...base, gatePassed: true, reason: `门禁已达标，但${base.reason}` };
+  }
+  // 有效评审不足（审核自身失败）→ 保持 inconclusive 的放行语义
+  if (base.verdict === 'inconclusive') {
+    return { ...base, gatePassed: true };
+  }
+
+  const softThreshold = Number(options.softThreshold ?? 70);
+  const median = base.median;
+  if (median != null && median >= softThreshold) {
+    if (base.passed) {
+      return { ...base, gatePassed: true, reason: `${base.reason}（门禁客观达标）` };
+    }
+    return {
+      ...base,
+      passed: true,
+      verdict: 'passed_with_notes',
+      gatePassed: true,
+      reason: `门禁客观达标（可用率/维度/必测点全部通过），审核中位数 ${median} ≥ ${softThreshold}：允许交付，审核意见作为改进建议保留`,
+    };
+  }
+
+  // 门禁达标但主观分很低（< softThreshold）：内容层面确实有问题，仍判不通过
+  return {
+    ...base,
+    gatePassed: true,
+    reason: `门禁客观达标但审核中位数 ${median} < ${softThreshold}，内容质量仍需改进：${base.reason}`,
+  };
+}
+
 export default {
   sanitizeJsonControlChars,
   extractBalancedJson,
   normalizeReviewIssues,
   parseReviewResult,
   decideReviewVerdict,
+  decideReviewVerdictWithGate,
   isReviewerFailure,
 };
