@@ -322,6 +322,27 @@ console.log('[Dashboard] handleSendTask called', {
     return
   }
 
+  // 「指代上一份产出」的短指令提示（2026-11-17）
+  //
+  // 实测：用户输入「重新生成刚才那份需求的用例」（13 字）直接提交，
+  // 新任务里没有需求原文，模型只能回「需求缺失」，白跑 3.5 分钟。
+  // 后端已做自动续做注入，但这里先提示一句更稳妥：让用户确认是新建任务
+  // 还是在原任务里改 —— 后者能保住完整上下文与交付物版本。
+  const refersToPrevious = /刚才|刚刚|上面|之前|上次|上一个|前一个|那份|这份|重新生成|再生成|再来一次|重做|重跑/.test(taskInputValue)
+  if (refersToPrevious && taskInputValue.trim().length <= 60 && (!files || files.length === 0)) {
+    try {
+      await ElMessageBox.confirm(
+        `检测到你的输入较短且指代了之前的产出：\n"${taskInputValue.trim()}"\n\n` +
+        '建议在「原任务」里用对话模式继续修改（会带上完整需求原文与已有交付物）；\n' +
+        '直接新建任务则由系统自动沿用该智能体最近一份任务的需求原文。',
+        '这是一条续做指令',
+        { confirmButtonText: '新建任务（沿用上次需求）', cancelButtonText: '取消，我去原任务里改', type: 'info' },
+      )
+    } catch {
+      return
+    }
+  }
+
   const targetAgentId = selectedAgentId.value
   console.log('[Dashboard] Target agent:', targetAgentId)
 
