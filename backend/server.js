@@ -4619,7 +4619,7 @@ async function executeChatRound(task, message, userFiles) {
       }
     }
     const chatInput = buildChatContinuationInput(task, message, userFileContents, chatHistory);
-    const result = await spawnAgentSession(task.agent, chatInput, task.id, null, true);
+    const result = await spawnAgentSession(task.agent, chatInput, task.id, null, true, [], task.userId || null);
     const text = result && result.text ? result.text : (typeof result === 'string' ? result : '');
     let agentVerLabel = '';
     if (text) {
@@ -10271,6 +10271,75 @@ const TASK_REFERENCE_AGENTS = new Set([
   'test-data-generator', 'data-masking', 'test-reporter', 'defect-analyzer',
 ]);
 
+/**
+ * 识别「指代上一份产出」的简短指令（2026-11-17）
+ *
+ * 实测问题：用户输入「重新生成刚才那份需求的用例」（13 字），系统把它当成一条
+ * 全新任务跑，模型手上只有这 13 个字 —— 于是如实回「原始需求文本缺失」，
+ * 白跑 3.5 分钟、消耗 token，最后产出一份 14KB 的「无法生成」说明。
+ *
+ * 判定条件（同时满足才注入，避免误伤正常任务）：
+ *   1. 输入很短（≤ 60 字）—— 正常需求描述不会这么短
+ *   2. 含指代词（刚才/上面/之前/那份/这个/上一个…）或纯操作指令（重新生成/再来一次/重做）
+ *   3. 不含 UUID（含 UUID 时走既有引用通道）
+ *
+ * 命中后把同用户、同智能体最近一次**有实际产出**的任务作为上下文注入，
+ * 并在输入开头写明「这是续做，上一份任务是 X」，让模型知道自己在改什么。
+ *
+ * @returns {Promise<string|null>} 增强后的输入；不适用时返回 null
+ */
+async function enrichInputWithRecentContext(agentId, taskInput, userId, currentTaskId) {
+  if (!userId) return null;
+  const input = String(taskInput || '').trim();
+  if (!input || input.length > 60) return null;
+  // 已显式引用某个任务 → 交给 enrichInputWithTaskReferences
+  if (UUID_PATTERN.test(input)) { UUID_PATTERN.lastIndex = 0; return null; }
+  UUID_PATTERN.lastIndex = 0;
+
+  const refersToPrevious = /刚才|刚刚|上面|之前|上次|上一个|前一个|那份|这份|该需求|同样的需求|重新生成|再生成|再来一次|重做|重跑|重新做/.test(input);
+  if (!refersToPrevious) return null;
+
+  let recent = [];
+  try {
+    recent = await taskDAO.getTasks({ userId, agentId, status: 'completed', limit: 5 });
+  } catch (e) {
+    console.warn(`[RecentContext] 查询最近任务失败: ${e.message}`);
+    return null;
+  }
+  // 挑选「有真实需求原文」的上一份任务：
+  //   - 必须有 result 且不是说明文档（长度 > 200）
+  //   - 更关键：input 必须够长（≥100 字），否则它本身也是「重新生成刚才那份」这类
+  //     短指令任务，把它的 input 当需求注入等于什么都没注入。
+  // 实测库里最新一条 completed 就是那种 13 字的空任务，不排除会连环失误。
+  const prev = (recent || []).find((t) =>
+    t
+    && t.id !== currentTaskId
+    && t.result && String(t.result).length > 200
+    && t.input && String(t.input).length >= 100,
+  );
+  if (!prev) return null;
+
+  // 上一份任务的需求原文是这次续做最重要的输入（它才是「那份需求」）
+  const prevRequirement = String(prev.input || '').slice(0, 20000);
+  const prevResultBrief = String(prev.result || '').slice(0, 6000);
+
+  console.log(`[RecentContext] ${agentId} 输入过短且含指代词，注入上一份任务 ${prev.id} 的需求原文（${prevRequirement.length} 字）`);
+
+  return [
+    `【续做上下文（系统自动注入：本次输入指代了上一份产出）】`,
+    `用户在说「${input}」，指的是同一智能体上一份任务（任务 ${prev.id}）。请基于该任务的需求原文继续产出，不要因为没有需求文本而拒绝。`,
+    '',
+    `## 上一份任务的需求原文（这是要处理的「那份需求」）`,
+    prevRequirement || '(上一份任务也没有保存需求原文，请向用户说明并请其重新提供)',
+    '',
+    `## 上一份交付物摘要（供参考，不要整份复述）`,
+    prevResultBrief,
+    '',
+    '---',
+    `【用户本轮指令】${input}`,
+  ].join('\n');
+}
+
 async function enrichInputWithTaskReferences(agentId, taskInput, userId, currentTaskId) {
   if (!TASK_REFERENCE_AGENTS.has(agentId)) return null;
   const input = String(taskInput || '');
@@ -10492,6 +10561,13 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     if (referenced) {
       console.log(`[EvidenceBinding] ${agentId} 已注入引用任务结果`);
       taskInput = referenced;
+    } else {
+      // 没显式引用 UUID 时，再看是不是「刚才那份」这类指代（2026-11-17）
+      const recentContext = await enrichInputWithRecentContext(agentId, taskInput, evidenceUserId, taskId);
+      if (recentContext) {
+        console.log(`[RecentContext] ${agentId} 已注入上一份任务需求原文`);
+        taskInput = recentContext;
+      }
     }
   }
 
@@ -12416,6 +12492,37 @@ async function executeTaskWithReview(task, userId = null) {
     // （「❌ 任务执行失败：…」），状态有时仍留在 completed，于是审核会拿着这段占位
     // 去评三个 0 分，最后表现为「审核不通过」。实测任务 f6617974（服务重启中断）
     // 就是这样被判 5/0/0。这里提前拦住：没有实际产出就不进审核。
+    // 「无法生成」自述防护（2026-11-17）
+    //
+    // 实测任务 886eede6：模型因为拿不到需求原文，输出了一份 14KB 的
+    // 「结论：需求原文缺失导致本轮无法产出」说明文档。这份文档结构完整、
+    // 表格齐全，确定性门禁给了 95.8% 可用率、审核给了 73/72/74 通过 ——
+    // 于是一个「什么都没生成」的任务被判为成功交付。
+    //
+    // 判据：交付物开头就自述无法产出/需求缺失，且正文里没有成规模的用例表
+    // （用例表行数 < 5）。两个条件同时满足时判失败，避免把说明文档当交付物。
+    const INCOMPLETE_SELF_REPORT = /(无法(产出|生成|完成)|需求(原文|文本)[^。\n]{0,12}(缺失|未提供|不存在)|未提供(任何)?需求|请(先)?(提供|补充)需求)/;
+    const selfReportHead = String(task.result || '').slice(0, 1200);
+    if (INCOMPLETE_SELF_REPORT.test(selfReportHead)) {
+      const caseRows = (String(task.result || '').match(/^\|\s*[A-Za-z][\w-]*-\d+\s*\|/gm) || []).length;
+      if (caseRows < 5) {
+        console.error(`[TaskWithReview] Task ${task.id} 交付物自述无法生成（用例行 ${caseRows} 条），判失败`);
+        task.status = 'failed';
+        task.error = '智能体自述无法产出交付物（多半是缺少需求原文）。请补充需求后重试，或在已有任务的对话模式里继续修改。';
+        await persistTask(task.id);
+        broadcast({
+          type: 'task_review_exhausted',
+          taskId: task.id,
+          userId: task.userId || userId,
+          reason: task.error,
+          reviewVerdict: 'failed',
+          reviewSummary: task.error,
+          message: `❌ ${task.error}`,
+        });
+        return;
+      }
+    }
+
     const PLACEHOLDER_RESULT = /^\s*❌\s*任务执行失败/;
     if (PLACEHOLDER_RESULT.test(String(task.result))) {
       console.log(`[TaskWithReview] Task ${task.id} result 是失败占位，跳过审核`);
@@ -14124,7 +14231,11 @@ async function executeTaskAsync(task) {
 
     let result;
     try {
-      result = await spawnAgentSession(task.agent, task.input, task.id, null, true); // skipReview=true,审核由调用方(executeTaskWithReview)统一处理
+      // ⚠️ 必须传 userId（第 7 个参数）：spawnAgentSession 用它拼 histKey 加载会话历史。
+      // 不传 → histKey=null → conversationMessages=null，模型拿不到任何上文。
+      // 实测任务 886eede6：用户输入「重新生成刚才那份需求的用例」只有 13 个字，
+      // 因为没带历史，模型只能回「原始需求文本缺失」，白跑 3.5 分钟。
+      result = await spawnAgentSession(task.agent, task.input, task.id, null, true, [], task.userId || null); // skipReview=true,审核由调用方(executeTaskWithReview)统一处理
     } catch (err) {
       console.log(`[Task] Agent call failed: ${err.message}`);
       result = null;
@@ -14234,7 +14345,7 @@ async function executeTaskAsync(task) {
 
           const followUpInput = `用户回复:${interactionReply}\n\n原始任务:${task.input}\n\n之前的输出:${task.result}`;
           try {
-            const followUpResult = await spawnAgentSession(task.agent, followUpInput, task.id, null, true);
+            const followUpResult = await spawnAgentSession(task.agent, followUpInput, task.id, null, true, [], task.userId || null);
             if (followUpResult && followUpResult.success !== false) {
               task.result = followUpResult.text || followUpResult.data || (typeof followUpResult === 'string' ? followUpResult : JSON.stringify(followUpResult));
               task.skillExecutions = [
