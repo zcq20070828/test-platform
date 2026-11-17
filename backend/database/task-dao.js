@@ -112,6 +112,31 @@ async function updateTask(taskId, updates) {
     fields.push('review_passed = ?');
     params.push(updates.reviewPassed);
   }
+  // 审核结论三元化（2026-11-17）：passed / passed_with_notes / failed。
+  // passed_with_notes 表示「门禁客观达标、无 blocker，但审核有若干改进建议」，
+  // 交付物可用性与 passed 相同，只是还需要把审核意见呈现给用户。
+  if (updates.reviewVerdict !== undefined) {
+    fields.push('review_verdict = ?');
+    params.push(updates.reviewVerdict ? String(updates.reviewVerdict).slice(0, 32) : null);
+  }
+  if (updates.reviewSummary !== undefined) {
+    fields.push('review_summary = ?');
+    params.push(updates.reviewSummary ? String(updates.reviewSummary).slice(0, 500) : null);
+  }
+  if (updates.reviewNotes !== undefined) {
+    fields.push('review_notes = ?');
+    params.push(updates.reviewNotes == null ? null : safeText(
+      typeof updates.reviewNotes === 'string' ? updates.reviewNotes : JSON.stringify(updates.reviewNotes),
+    ));
+  }
+  if (updates.reviewAttempts !== undefined) {
+    fields.push('review_attempts = ?');
+    params.push(Number.isFinite(Number(updates.reviewAttempts)) ? Number(updates.reviewAttempts) : null);
+  }
+  if (updates.reviewStats !== undefined) {
+    fields.push('review_stats = ?');
+    params.push(updates.reviewStats ? String(updates.reviewStats).slice(0, 255) : null);
+  }
   if (updates.completedAt !== undefined) {
     fields.push('completed_at = ?');
     // MySQL DATETIME 不接受 ISO 格式（带 T/Z），需转换为 YYYY-MM-DD HH:MM:SS
@@ -316,7 +341,18 @@ function formatTask(row) {
     result: row.result,
     error: row.error,
     requireReview: row.require_review === 1,
-    reviewPassed: row.review_passed,
+    // 一致性兜底：review_verdict 已判定为通过时，review_passed 必须为 true。
+    // 两者不一致会出现在「只回填了 verdict 的历史数据」或「手工修数据」场景，
+    // 前端按 verdict 展示、但别处按 reviewPassed 判断，会得出相反结论。
+    reviewPassed: (row.review_verdict === 'passed' || row.review_verdict === 'passed_with_notes')
+      ? 1
+      : row.review_passed,
+    // 审核结论三元化（2026-11-17）：前端据此区分「通过」「已交付·附改进建议」「未通过」
+    reviewVerdict: row.review_verdict || null,
+    reviewSummary: row.review_summary || null,
+    reviewNotes: safeParseReviewNotes(row.review_notes),
+    reviewAttempts: row.review_attempts == null ? null : Number(row.review_attempts),
+    reviewStats: row.review_stats || null,
     workflowId: row.workflow_id,
     workflowStep: row.workflow_step,
     source: row.source || 'step',
@@ -333,6 +369,17 @@ function formatTask(row) {
     estimatedCost: row.estimated_cost || 0,
     savedCost: row.saved_cost || 0,
   };
+}
+
+/** review_notes 是 JSON 字符串（数组），解析失败时按原文返回，避免整个任务读取失败 */
+function safeParseReviewNotes(raw) {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : raw;
+  } catch (_) {
+    return raw;
+  }
 }
 
 /**

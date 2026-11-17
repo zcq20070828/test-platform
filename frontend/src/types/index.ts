@@ -67,6 +67,19 @@ export interface Task {
   reviewPassed?: boolean  // 审核是否通过
   reviewFailed?: boolean  // 审核是否永久失败（达到最大重试次数）
   reviewResults?: ReviewResult[]  // 审核结果列表
+  /**
+   * 审核结论（2026-11-17 三元化）：
+   *   passed            门禁达标 + 无 blocker + major 密度 ≤3%
+   *   passed_with_notes 门禁达标 + 无 blocker + 密度 ≤6%：已交付，但附改进建议
+   *   failed            未通过（门禁未达标 / 有 blocker / 密度过高）
+   *   inconclusive      有效评审不足，按审核不可用放行
+   */
+  reviewVerdict?: 'passed' | 'passed_with_notes' | 'failed' | 'inconclusive' | 'veto' | null
+  reviewSummary?: string | null  // 结论摘要（含密度与 blocker 数）
+  reviewNotes?: ReviewNote[] | null  // 改进建议（并集去重后的 issues 摘要，最多 30 条；列表接口不返回，仅详情返回）
+  reviewNoteCount?: number | null  // 改进建议条数（列表接口用，避免返回完整 notes 拖慢列表）
+  reviewAttempts?: number | null  // 审核轮数（1 = 一轮通过）
+  reviewStats?: string | null  // 并集统计文本（blocker/major/minor + 密度）
   // 后端返回的原始字段（任务列表/详情直接透传，组件已在读取）
   result?: string | null
   error?: string | null
@@ -83,6 +96,15 @@ export interface Task {
   inputTokens?: number | null
   outputTokens?: number | null
   modelName?: string | null
+}
+
+/** 审核改进建议（任务详情页逐条展示，2026-11-17） */
+export interface ReviewNote {
+  severity: 'blocker' | 'major' | 'minor' | string
+  category: string
+  caseId?: string
+  description: string
+  suggestion?: string
 }
 
 // 知识库文档

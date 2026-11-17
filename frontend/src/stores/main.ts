@@ -1754,18 +1754,29 @@ export const useMainStore = defineStore('main', () => {
         break
 
       case 'task_review_passed':
- message = ` AI审核通过！评分：${data.reviewResults?.map((r: any) => r.score).join(', ') || ''}`
-        status = 'success'
-        if (data.taskId) {
-          const idx = tasks.value.findIndex(t => t.id === data.taskId)
-          if (idx >= 0) {
-            const task = tasks.value[idx]!
-            task.reviewResults = data.reviewResults
-            task.reviewPassed = true
-            task.reviewing = false
-            // 如果有 artifacts，同步到任务对象
-            if (data.artifacts && data.artifacts.length > 0) {
-              task.artifacts = data.artifacts
+        // 2026-11-17 三态化：passed / passed_with_notes
+        // passed_with_notes = 门禁客观达标、无 blocker，但审核有改进建议；
+        // 交付物可用性与 passed 相同，界面必须写「已交付·附建议」而不是含糊的「通过」。
+        {
+          const withNotes = data.reviewVerdict === 'passed_with_notes'
+          const noteCount = Number(data.improvedSuggestions) || 0
+          message = withNotes
+            ? `AI 审核已交付（附 ${noteCount} 条改进建议）！评分：${data.reviewResults?.map((r: any) => r.score).join(', ') || ''}`
+            : `AI审核通过！评分：${data.reviewResults?.map((r: any) => r.score).join(', ') || ''}`
+          status = withNotes ? 'warning' : 'success'
+          if (data.taskId) {
+            const idx = tasks.value.findIndex(t => t.id === data.taskId)
+            if (idx >= 0) {
+              const task = tasks.value[idx]!
+              task.reviewResults = data.reviewResults
+              task.reviewPassed = true
+              task.reviewVerdict = withNotes ? 'passed_with_notes' : 'passed'
+              task.reviewSummary = data.reviewSummary || null
+              task.reviewing = false
+              // 如果有 artifacts，同步到任务对象
+              if (data.artifacts && data.artifacts.length > 0) {
+                task.artifacts = data.artifacts
+              }
             }
           }
           // 将审核通过和输出物同步到 messages，供聊天面板显示
