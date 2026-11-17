@@ -43,6 +43,14 @@ const props = defineProps<{
   taskId: string
   /** 交付物正文（含用例表），用于解析出可勾选的用例清单 */
   content?: string
+  /**
+   * 审核结论（2026-11-17 三元化）。
+   * passed_with_notes 与 passed 的交付物可用性相同，区别只是「还有改进建议」，
+   * 卡片必须把这一点说清楚，否则用户看到「门禁达标」却被告知审核没过会困惑。
+   */
+  reviewVerdict?: 'passed' | 'passed_with_notes' | 'failed' | 'inconclusive' | 'veto' | null
+  /** 改进建议条数（passed_with_notes 时用于提示） */
+  reviewNoteCount?: number
 }>()
 
 const quality = ref<QualityInfo | null>(null)
@@ -66,6 +74,23 @@ const reasonText = computed(() => {
   const entries = Object.entries(quality.value.byReason || {})
   if (!entries.length) return '未发现问题'
   return entries.map(([k, v]) => `${REASON_LABELS[k] || k} ${v} 条`).join('；')
+})
+
+const verdictBadge = computed(() => {
+  switch (props.reviewVerdict) {
+    case 'passed':
+      return { type: 'success' as const, text: '审核通过' }
+    case 'passed_with_notes':
+      return { type: 'warning' as const, text: `已交付 · 附 ${props.reviewNoteCount || 0} 条改进建议` }
+    case 'inconclusive':
+      return { type: 'info' as const, text: '审核未定论（已放行）' }
+    case 'veto':
+      return { type: 'danger' as const, text: '审核未通过（一票否决）' }
+    case 'failed':
+      return { type: 'danger' as const, text: '审核未通过' }
+    default:
+      return null
+  }
 })
 
 const gateRate = computed(() => {
@@ -231,6 +256,10 @@ async function submit() {
         交付物质量
         <el-tag v-if="quality.gatePassed" type="success" size="small">门禁达标</el-tag>
         <el-tag v-else type="warning" size="small">门禁未达标</el-tag>
+        <!-- 审核结论：与门禁分开显示——门禁管「能不能用」，审核管「有没有改进空间」 -->
+        <el-tag v-if="verdictBadge" :type="verdictBadge.type" size="small" effect="plain">
+          {{ verdictBadge.text }}
+        </el-tag>
       </span>
       <el-button link type="primary" @click="showPanel = !showPanel">
         {{ showPanel ? '收起复核' : '人工复核' }}

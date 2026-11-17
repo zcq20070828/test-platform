@@ -567,6 +567,37 @@ async function saveTasks() {
  * 持久化单个任务更新(保存到数据库)
  * V3:改为同步等待,确保写入成功;调用方必须 await
  */
+/**
+ * 把审核判定结果写到 task 对象上（2026-11-17）
+ *
+ * 为什么要单独抽出来：审核结论从「布尔 review_passed」扩展为三态
+ * （passed / passed_with_notes / failed），并且要把「为什么是这个结论」
+ * 一起带上，否则任务详情页没法解释「已交付但附建议」到底是什么意思。
+ *
+ * reviewNotes 只保留可执行的改进建议（severity/位置/描述/建议），
+ * 最多 30 条 —— 前端要能逐条展示，不是把所有 issue 原样灌进去。
+ */
+function applyReviewVerdictToTask(task, verdict, attempts) {
+  if (!task || !verdict) return;
+  task.reviewVerdict = verdict.verdict || null;
+  task.reviewSummary = verdict.reason ? String(verdict.reason).slice(0, 500) : null;
+  task.reviewAttempts = Number.isFinite(Number(attempts)) ? Number(attempts) : null;
+
+  const u = verdict.union;
+  if (u) {
+    task.reviewStats = `blocker=${u.blocker} major=${u.major} minor=${u.minor} 总=${u.total} major密度=${((verdict.majorDensity || 0) * 100).toFixed(1)}%（分母 ${verdict.totalCases || 0}）`.slice(0, 255);
+  }
+
+  const notes = Array.isArray(verdict.issues) ? verdict.issues : [];
+  task.reviewNotes = notes.slice(0, 30).map((i) => ({
+    severity: i.severity || 'major',
+    category: i.category || 'other',
+    caseId: i.caseId || '',
+    description: String(i.description || '').slice(0, 200),
+    suggestion: String(i.suggestion || '').slice(0, 200),
+  }));
+}
+
 async function persistTask(taskId) {
   const task = tasks.get(taskId);
   if (!task) return;
@@ -577,6 +608,12 @@ async function persistTask(taskId) {
     result: task.result,
     error: task.error,
     reviewPassed: task.reviewPassed,
+    // 审核结论三元化：passed / passed_with_notes / failed（2026-11-17）
+    reviewVerdict: task.reviewVerdict,
+    reviewSummary: task.reviewSummary,
+    reviewNotes: task.reviewNotes,
+    reviewAttempts: task.reviewAttempts,
+    reviewStats: task.reviewStats,
     completedAt: task.completedAt,
     artifacts: task.artifacts || [],
     // 成本相关字段
@@ -3220,16 +3257,24 @@ app.get('/api/tasks', authenticate, async (req, res) => {
   try {
     const dbTasks = await taskDAO.getTasks({ userId: req.user.id, limit: 1000 });
     console.log(`[API] /api/tasks 返回 ${dbTasks.length} 个任务`);
-    taskList = dbTasks.map(t => ({
-      ...t,
-      id: t.id,
-      source: 'task',
-      agent: t.agentId,
-      agentName: t.agentName || (AGENTS[t.agentId] || {}).name || t.agentId,
-      output: t.output || t.result || null,
-      startTime: t.startTime || t.createdAt || null,
-      endTime: t.endTime || t.completedAt || null
-    }));
+    taskList = dbTasks.map(t => {
+      // review_notes 是 mediumtext（最多 30 条 × 400 字），列表接口一次返回上百个任务
+      // 会拖慢响应；列表只需要条数与结论，明细留给详情接口。
+      const noteCount = Array.isArray(t.reviewNotes) ? t.reviewNotes.length : 0;
+      const slim = { ...t };
+      delete slim.reviewNotes;
+      return {
+        ...slim,
+        reviewNoteCount: noteCount,
+        id: t.id,
+        source: 'task',
+        agent: t.agentId,
+        agentName: t.agentName || (AGENTS[t.agentId] || {}).name || t.agentId,
+        output: t.output || t.result || null,
+        startTime: t.startTime || t.createdAt || null,
+        endTime: t.endTime || t.completedAt || null
+      };
+    });
   } catch (err) {
     console.error('[Tasks] 从数据库加载任务失败:', err.message);
   }
@@ -3550,6 +3595,38 @@ app.get('/api/tasks/:id', authenticate, async (req, res) => {
     if (feedback && feedback.length) task.caseFeedback = feedback;
   } catch (_) { /* 表不存在或查询失败不影响任务详情 */ }
 
+  // 审核结论（2026-11-17）：内存快照可能来自重启前的旧对象，DB 是权威源。
+  // 三元化结论（passed / passed_with_notes / failed）必须来自 DB，
+  // 否则前端「已交付·附改进建议」的标记会在重启后消失。
+  try {
+    const raw = await query(
+      'SELECT review_verdict, review_summary, review_notes, review_attempts, review_stats FROM tasks WHERE id = ?',
+      [id],
+    );
+    if (raw.length) {
+      const r = raw[0];
+      if (r.review_verdict) task.reviewVerdict = r.review_verdict;
+      if (r.review_summary) task.reviewSummary = r.review_summary;
+      if (r.review_attempts != null) task.reviewAttempts = Number(r.review_attempts);
+      if (r.review_stats) task.reviewStats = r.review_stats;
+      if (r.review_notes) {
+        try {
+          const parsed = JSON.parse(r.review_notes);
+          task.reviewNotes = Array.isArray(parsed) ? parsed : null;
+        } catch (_) { /* 非法 JSON 时忽略，不阻塞详情 */ }
+      }
+    }
+  } catch (_) { /* 列不存在（未跑迁移）时不影响详情 */ }
+
+  // 老任务兼容 + 双向一致性：
+  //   verdict 为空 → 按 review_passed 推断，避免前端一片「未知」
+  //   verdict 为通过态 → review_passed 必须是 true（防止两处口径相反）
+  if (task.reviewVerdict === 'passed' || task.reviewVerdict === 'passed_with_notes') {
+    task.reviewPassed = true;
+  } else if (!task.reviewVerdict && task.reviewPassed != null) {
+    task.reviewVerdict = task.reviewPassed ? 'passed' : 'failed';
+  }
+
   res.json(task);
 });
 
@@ -3791,6 +3868,11 @@ app.get('/api/tasks/:id/output', authenticate, (req, res) => {
     input: task.input,
     output: task.result,
     reviewPassed: task.reviewPassed || false,
+    // 审核结论三态化（2026-11-17）：下载的完整报告里也要带上改进建议
+    reviewVerdict: task.reviewVerdict || (task.reviewPassed ? 'passed' : 'failed'),
+    reviewSummary: task.reviewSummary || null,
+    reviewNotes: task.reviewNotes || null,
+    reviewStats: task.reviewStats || null,
     reviewResults: task.reviewResults || [],
     artifacts: task.artifacts || extractArtifacts(task.result),
     username,
@@ -12369,6 +12451,9 @@ async function executeTaskWithReview(task, userId = null) {
     let allPassed = false;
     let retryCount = 0;
     let lastError = null;
+    // 最后一轮的审核判定结果。必须声明在循环外：pass/fail 分支在循环之后，
+    // 而 verdict 每轮都会重算，循环结束后要拿最后一轮的去写任务结论。
+    let lastVerdict = null;
 
     while (retryCount < MAX_RETRIES && !allPassed) {
       try {
@@ -12563,6 +12648,7 @@ async function executeTaskWithReview(task, userId = null) {
         if (taskVerdict.union) {
           console.log(`[TaskWithReview] 并集去重问题: blocker=${taskVerdict.union.blocker} major=${taskVerdict.union.major} minor=${taskVerdict.union.minor} 总=${taskVerdict.union.total}，major 密度=${(taskVerdict.majorDensity * 100).toFixed(1)}%（分母 ${taskVerdict.totalCases}）`);
         }
+        lastVerdict = taskVerdict;
         const vetoTriggered = taskVerdict.vetoTriggered;
         allPassed = taskVerdict.passed;
 
@@ -12661,6 +12747,8 @@ async function executeTaskWithReview(task, userId = null) {
         console.error(`[Evidence] 挂载执行证据失败 task=${task.id}: ${e.message}`);
       }
 
+      const isWithNotes = lastVerdict && lastVerdict.verdict === 'passed_with_notes';
+      const noteCount = lastVerdict && Array.isArray(lastVerdict.issues) ? lastVerdict.issues.length : 0;
       broadcast({
         type: 'task_review_passed',
         userId: task.userId || userId,
@@ -12668,12 +12756,23 @@ async function executeTaskWithReview(task, userId = null) {
         reviewResults: reviewResults,
         artifacts: task.artifacts,
         outputFiles: savedFiles,
-        message: `✅ AI审核通过!\n评分:${scores}\n任务结果已就绪,可查看/下载。${savedFiles.length > 0 ? `\n\n📦 已保存 ${savedFiles.length} 个交付物文件。` : ''}`
+        reviewVerdict: isWithNotes ? 'passed_with_notes' : 'passed',
+        reviewSummary: lastVerdict ? lastVerdict.reason : null,
+        reviewStats: lastVerdict && lastVerdict.union
+          ? { ...lastVerdict.union, majorDensity: lastVerdict.majorDensity, totalCases: lastVerdict.totalCases }
+          : null,
+        improvedSuggestions: noteCount,
+        message: `${isWithNotes ? '✅ AI 审核已交付（附改进建议）' : '✅ AI审核通过!'}\n评分:${scores}\n任务结果已就绪,可查看/下载。${noteCount > 0 ? `\n\n💡 另有 ${noteCount} 条改进建议，可在任务详情查看。` : ''}${savedFiles.length > 0 ? `\n\n📦 已保存 ${savedFiles.length} 个交付物文件。` : ''}`
       });
 
       // 存储审核结果到任务中
       task.reviewResults = reviewResults;
       task.reviewPassed = true;
+      // 审核结论三元化（2026-11-17）：
+      //   passed             = 门禁达标 + 无 blocker + major 密度 ≤3%
+      //   passed_with_notes  = 门禁达标 + 无 blocker + 密度 ≤6%（交付，但附改进建议）
+      // 两者交付物可用性相同，区别只在「是否需要把审核意见呈现给用户」。
+      applyReviewVerdictToTask(task, lastVerdict, retryCount + 1);
 
       // 设置任务完成状态
       task.status = 'completed';
@@ -12738,12 +12837,19 @@ async function executeTaskWithReview(task, userId = null) {
         reviewResults: reviewResults,
         reason: reason,
         artifacts: task.artifacts,
+        // 把审核结论与改进建议一并下发，前端任务详情据此展示「为什么没过 / 该改什么」
+        reviewVerdict: lastVerdict ? lastVerdict.verdict : 'failed',
+        reviewSummary: lastVerdict ? lastVerdict.reason : reason,
+        reviewStats: lastVerdict && lastVerdict.union
+          ? { ...lastVerdict.union, majorDensity: lastVerdict.majorDensity, totalCases: lastVerdict.totalCases }
+          : null,
         message: `❌ ${reason}${failFiles.length > 0 ? `\n\n📦 已保留 ${failFiles.length} 个脚本交付物,可在面板查看/下载。` : ''}`
       });
 
       task.reviewResults = reviewResults;
       task.reviewPassed = false;
       task.reviewFailed = true;
+      applyReviewVerdictToTask(task, lastVerdict, retryCount + 1);
 
       // 执行阶段已经失败（如 402 余额不足/网关错误）时保留 failed，
       // 不能被审核流程覆盖成 completed；只有“执行成功但审核未通过”才是 completed。

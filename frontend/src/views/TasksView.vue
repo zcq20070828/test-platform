@@ -27,6 +27,60 @@ const pageSize = ref(20)
 const detailVisible = ref(false)
 const selectedTask = ref<Task | null>(null)
 
+/**
+ * 审核结论 → 展示元信息（2026-11-17）
+ *
+ * 三态化之后，「通过」不再是唯一的好结果：
+ *   passed            → 绿色「审核通过」
+ *   passed_with_notes → 橙色「已交付 · 附改进建议」（交付物可用，只是还有优化点）
+ *   failed            → 红色「审核未通过」
+ *   inconclusive      → 灰色「审核未定论」（有效评审不足，已放行）
+ * 老任务没有 reviewVerdict 时按 reviewPassed 推断，避免显示成「未知」。
+ */
+const reviewVerdictMeta = computed(() => {
+  const t = selectedTask.value
+  if (!t) return { type: 'info' as const, label: '审核结论未知' }
+  const verdict = t.reviewVerdict
+    || (t.reviewPassed === true ? 'passed' : t.reviewPassed === false ? 'failed' : null)
+  const noteCount = Array.isArray(t.reviewNotes) ? t.reviewNotes.length : 0
+  switch (verdict) {
+    case 'passed':
+      return { type: 'success' as const, label: noteCount > 0 ? `审核通过（附 ${noteCount} 条改进建议）` : '审核通过' }
+    case 'passed_with_notes':
+      return { type: 'warning' as const, label: `已交付 · 附 ${noteCount || ''} 条改进建议`.replace('附  条', '附') }
+    case 'inconclusive':
+      return { type: 'info' as const, label: '审核未定论（已放行）' }
+    case 'veto':
+      return { type: 'danger' as const, label: '审核未通过（一票否决）' }
+    case 'failed':
+      return { type: 'danger' as const, label: '审核未通过' }
+    default:
+      return { type: 'info' as const, label: '未进入审核' }
+  }
+})
+
+/** 任务列表用的短标签（列宽有限，「已交付·附建议」七个字刚好） */
+function rowVerdictMeta(row: any): { type: 'success' | 'warning' | 'danger' | 'info'; label: string; short: string } {
+  const verdict = row.reviewVerdict
+    || (row.reviewPassed === true ? 'passed' : row.reviewPassed === false ? 'failed' : null)
+  // 列表接口只给 reviewNoteCount（不含完整 notes），详情接口才给 reviewNotes
+  const noteCount = Array.isArray(row.reviewNotes) ? row.reviewNotes.length : (Number(row.reviewNoteCount) || 0)
+  switch (verdict) {
+    case 'passed':
+      return { type: 'success', label: noteCount > 0 ? `审核通过（附 ${noteCount} 条改进建议）` : '审核通过', short: '通过' }
+    case 'passed_with_notes':
+      return { type: 'warning', label: `已交付 · 附 ${noteCount} 条改进建议`, short: '已交付·附建议' }
+    case 'inconclusive':
+      return { type: 'info', label: '有效评审不足，已放行', short: '未定论' }
+    case 'veto':
+      return { type: 'danger', label: '审核未通过（一票否决）', short: '否决' }
+    case 'failed':
+      return { type: 'danger', label: '审核未通过', short: '未通过' }
+    default:
+      return { type: 'info', label: '', short: '' }
+  }
+}
+
 // ===== 自动刷新 =====
 const autoRefresh = ref(false)
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -307,9 +361,22 @@ async function downloadFullOutput(task: Task) {
 
 `
       })
-      content += `### 综合结果：${data.reviewPassed ? '审核通过' : '审核未通过'}
+      // 审核结论三态化（2026-11-17）：通过的也要把改进建议一并带进下载文件，
+      // 否则「已交付·附建议」的建议在导出后就丢了。
+      const verdictLabel = data.reviewVerdict === 'passed_with_notes'
+        ? '已交付（附改进建议）'
+        : (data.reviewPassed ? '审核通过' : '审核未通过')
+      content += `### 综合结果：${verdictLabel}
 
 `
+      if (data.reviewSummary) content += `> ${data.reviewSummary}\n\n`
+      if (Array.isArray(data.reviewNotes) && data.reviewNotes.length) {
+        content += `### 改进建议（${data.reviewNotes.length} 条）\n\n`
+        for (const n of data.reviewNotes) {
+          content += `- [${n.severity}] ${n.caseId ? `${n.caseId} ` : ''}${n.description}${n.suggestion ? ` → ${n.suggestion}` : ''}\n`
+        }
+        content += '\n'
+      }
     }
     
     content += `## 任务输入
@@ -351,9 +418,19 @@ ${data.output || task.output}
 }
 
 // ===== 操作 =====
-function viewDetail(task: Task) {
+async function viewDetail(task: Task) {
+  // 列表接口不返回 reviewNotes（最多 30 条 × 400 字，会把列表拖慢），
+  // 只给 reviewNoteCount。打开详情时必须补拉一次，否则「改进建议」区块永远空着。
   selectedTask.value = task
   detailVisible.value = true
+  try {
+    const full = await taskApi.getById(task.id)
+    if (full && selectedTask.value && selectedTask.value.id === task.id) {
+      selectedTask.value = { ...task, ...full }
+    }
+  } catch (e) {
+    console.warn('[TasksView] 拉取任务详情失败，沿用列表数据', e)
+  }
 }
 
 async function cancelTask(task: Task) {
@@ -670,6 +747,24 @@ onMounted(() => {
         </template>
       </el-table-column>
 
+      <!-- 审核结论（2026-11-17 三元化）：把「已交付但附建议」在列表上就能看到，
+           否则用户以为任务失败/成功二选一，忽略掉审核意见 -->
+      <el-table-column label="审核" width="130" align="center">
+        <template #default="{ row }">
+          <el-tooltip
+            v-if="rowVerdictMeta(row).label"
+            :content="row.reviewSummary || rowVerdictMeta(row).label"
+            placement="top"
+            :show-after="300"
+          >
+            <el-tag :type="rowVerdictMeta(row).type" size="small" effect="light">
+              {{ rowVerdictMeta(row).short }}
+            </el-tag>
+          </el-tooltip>
+          <span v-else class="muted">-</span>
+        </template>
+      </el-table-column>
+
       <el-table-column label="耗时" width="100" align="center">
         <template #default="{ row }">
           <span class="duration">{{ getDuration(row) }}</span>
@@ -885,20 +980,75 @@ onMounted(() => {
               </template>
             </div>
           </div>
+          <!-- 审核结论（2026-11-17 三元化）：passed / passed_with_notes / failed
+               注意：passed_with_notes 的交付物可用性与 passed 相同，
+               区别只是「还有改进建议」，所以用 warning 色而不是 danger，
+               并且必须说明「已交付」——否则用户会以为任务失败了。 -->
           <div class="review-summary">
-            <el-tag v-if="selectedTask.reviewPassed" type="success" size="large" effect="light">
-              审核通过
+            <el-tag v-if="reviewVerdictMeta.type === 'success'" type="success" size="large" effect="light">
+              {{ reviewVerdictMeta.label }}
+            </el-tag>
+            <el-tag v-else-if="reviewVerdictMeta.type === 'warning'" type="warning" size="large" effect="light">
+              {{ reviewVerdictMeta.label }}
+            </el-tag>
+            <el-tag v-else-if="reviewVerdictMeta.type === 'info'" type="info" size="large" effect="light">
+              {{ reviewVerdictMeta.label }}
             </el-tag>
             <el-tag v-else type="danger" size="large" effect="light">
-              审核未通过
+              {{ reviewVerdictMeta.label }}
             </el-tag>
+            <span v-if="selectedTask.reviewAttempts && selectedTask.reviewAttempts > 1" class="verdict-extra">
+              经 {{ selectedTask.reviewAttempts }} 轮审核
+            </span>
+            <span v-if="selectedTask.reviewStats" class="verdict-extra">{{ selectedTask.reviewStats }}</span>
+          </div>
+
+          <!-- 结论摘要：说明「为什么是这个结论」 -->
+          <div v-if="selectedTask.reviewSummary" class="verdict-reason">
+            {{ selectedTask.reviewSummary }}
+          </div>
+
+          <!-- 改进建议：passed_with_notes 场景下这是用户最需要看的内容 -->
+          <div v-if="selectedTask.reviewNotes && selectedTask.reviewNotes.length" class="review-notes">
+            <div class="review-notes-head">
+              <MsIcon name="lightbulb" :size="16" />
+              <strong>改进建议（{{ selectedTask.reviewNotes.length }} 条）</strong>
+              <span class="review-notes-hint">
+                {{ reviewVerdictMeta.type === 'warning'
+                  ? '交付物已可用，以下为可继续优化的点'
+                  : '以下问题导致本次未通过' }}
+              </span>
+            </div>
+            <div class="review-notes-list">
+              <div
+                v-for="(note, i) in selectedTask.reviewNotes"
+                :key="i"
+                class="review-note"
+                :class="'note-' + note.severity"
+              >
+                <div class="note-head">
+                  <el-tag :type="note.severity === 'blocker' ? 'danger' : note.severity === 'major' ? 'warning' : 'info'" size="small">
+                    {{ note.severity }}
+                  </el-tag>
+                  <span class="note-category">{{ note.category }}</span>
+                  <span v-if="note.caseId" class="note-case">{{ note.caseId }}</span>
+                </div>
+                <div class="note-desc">{{ note.description }}</div>
+                <div v-if="note.suggestion" class="note-suggestion">→ {{ note.suggestion }}</div>
+              </div>
+            </div>
           </div>
         </div>
 
         <!-- 交付物质量与人工复核（阶段四） -->
         <div class="section">
           <h4 class="tab-label"><MsIcon name="verified" :size="16" /> 交付物质量</h4>
-          <QualityCard :task-id="selectedTask.id" :content="selectedTask.result || ''" />
+          <QualityCard
+            :task-id="selectedTask.id"
+            :content="selectedTask.result || ''"
+            :review-verdict="selectedTask.reviewVerdict || null"
+            :review-note-count="selectedTask.reviewNotes?.length || 0"
+          />
         </div>
 
         <!-- 输出物列表 -->
@@ -1151,8 +1301,44 @@ onMounted(() => {
 .score-high { color: var(--el-color-success); }
 .score-low { color: var(--el-color-danger); }
 .review-feedback { font-size: 12px; color: var(--el-text-color-secondary); padding: 8px; background: var(--el-fill-color); border-radius: 4px; margin-top: 6px; }
-.review-summary { text-align: center; margin-top: 12px; }
+.review-summary { text-align: center; margin-top: 12px; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; align-items: center; }
 .review-summary .el-tag { font-size: 14px; padding: 8px 20px; }
+.verdict-extra { font-size: 12px; color: var(--el-text-color-secondary); }
+.muted { color: var(--el-text-color-placeholder); }
+.verdict-reason {
+  margin-top: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--el-text-color-regular);
+  background: var(--el-fill-color-lighter);
+  border-radius: 6px;
+}
+.review-notes { margin-top: 14px; }
+.review-notes-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.review-notes-hint { font-size: 12px; color: var(--el-text-color-secondary); font-weight: normal; }
+.review-notes-list { max-height: 380px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.review-note {
+  border: 1px solid var(--el-border-color-lighter);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.review-note.note-blocker { border-left-color: var(--el-color-danger); }
+.review-note.note-major { border-left-color: var(--el-color-warning); }
+.review-note.note-minor { border-left-color: var(--el-color-info); }
+.note-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.note-category { font-size: 12px; color: var(--el-text-color-secondary); }
+.note-case { font-family: monospace; font-size: 12px; color: var(--el-color-primary); }
+.note-desc { line-height: 1.5; }
+.note-suggestion { margin-top: 4px; font-size: 12px; color: var(--el-color-success); line-height: 1.5; }
 
 /* 成本与工作量信息 */
 .cost-section { background: linear-gradient(135deg, #f8f9fc 0%, #f0f2f5 100%); border-radius: 10px; padding: 16px 20px; }
