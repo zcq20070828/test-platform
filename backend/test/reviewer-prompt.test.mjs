@@ -119,5 +119,32 @@ t('文中的需求编号示例不会破坏模板字符串（无反引号嵌套�
   }
 });
 
+
+// ---------------- 评分口径按密度标定（2026-11-17）----------------
+// 根因：分数只跟「问题绝对条数」走。major 13 条在 205 条用例里是 6.3%，
+// 在 324 条里是 4%，旧口径却都判「不达标」，导致大交付物永远过不了。
+t('评分口径改成按 major 占比而非绝对条数', () => {
+  for (const id of IDS) {
+    const p = prompts[id];
+    assert.ok(/major 占比/.test(p), `${id} 缺少 major 占比说明`);
+    assert.ok(/绝对条数不作判据/.test(p), `${id} 必须明确否掉绝对条数`);
+  }
+});
+
+t('给出不同规模下的分档示例（校准锚点）', () => {
+  for (const id of IDS) {
+    const p = prompts[id];
+    assert.ok(/300 条用例里有 12 条 major/.test(p), `${id} 缺少 300 条锚点`);
+    assert.ok(/150 条用例里有 12 条 major/.test(p), `${id} 缺少 150 条锚点`);
+  }
+});
+
+t('要求五维分与综合分自洽', () => {
+  for (const id of IDS) {
+    assert.ok(/五维分数要自洽/.test(prompts[id]), `${id} 缺少自洽要求`);
+    assert.ok(/requirement 25%/.test(prompts[id]), `${id} 缺少权重说明`);
+  }
+});
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

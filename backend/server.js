@@ -30,7 +30,8 @@ import {
 } from './lib/document-reader.js';
 import {
   parseReviewResult,
-  decideReviewVerdictWithGate,
+  decideReviewVerdictByDensity,
+  compositeScoreFromDimensions,
 } from './lib/review-verdict.js';
 import {
   checkWithRules as checkByAgentRules,
@@ -6864,13 +6865,15 @@ async function executeInteractiveWorkflow(workflowId, taskInput, retryCount = 0,
 
       console.log(`[InteractiveWorkflow] Review completed: ${JSON.stringify(reviewResults.map(r => ({id: r.reviewerId, score: r.score, veto: r.veto})))}`);
 
-      // 统一审核判定（2026-11-09）：与其它三条链路同一口径
-      // 2026-11-12：叠加确定性门禁（门禁客观达标时不再因主观分偏低就判失败）
+      // 统一审核判定：四条链路同一口径（2026-11-17 改为「并集 + 密度」，详见 review-verdict.js）
       const wfGate = taskCaseQualityReports.get(workflowId);
-      const verdict = decideReviewVerdictWithGate(reviewResults, {
+      const verdict = decideReviewVerdictByDensity(reviewResults, {
         threshold: REVIEW_PASS_THRESHOLD,
         softThreshold: REVIEW_SOFT_THRESHOLD,
         gatePassed: !!(wfGate && wfGate.applicable && wfGate.pass),
+        totalCases: wfGate && wfGate.applicable ? wfGate.total : 0,
+        majorDensityLimit: CASE_REVIEW_MAJOR_DENSITY_LIMIT,
+        majorDensityWarn: CASE_REVIEW_MAJOR_DENSITY_WARN,
       });
       const vetoTriggered = verdict.vetoTriggered;
       reviewPassed = verdict.passed;
@@ -7246,10 +7249,13 @@ async function executeAutoNativeWorkflow(workflowId, taskInput) {
           workflowId,
         );
         const stageGate = taskCaseQualityReports.get(workflowId);
-        const nativeVerdict = decideReviewVerdictWithGate(nativeReviewResults, {
+        const nativeVerdict = decideReviewVerdictByDensity(nativeReviewResults, {
           threshold: REVIEW_PASS_THRESHOLD,
           softThreshold: REVIEW_SOFT_THRESHOLD,
           gatePassed: !!(stageGate && stageGate.applicable && stageGate.pass),
+          totalCases: stageGate && stageGate.applicable ? stageGate.total : 0,
+          majorDensityLimit: CASE_REVIEW_MAJOR_DENSITY_LIMIT,
+          majorDensityWarn: CASE_REVIEW_MAJOR_DENSITY_WARN,
         });
         const nativePass = nativeVerdict.passed;
         console.log(`[AutoNative] 阶段「${stage.stage}」审核: verdict=${nativeVerdict.verdict} scores=[${nativeVerdict.scores.join(',')}] median=${nativeVerdict.median} pass=${nativePass}`);
@@ -8059,13 +8065,15 @@ ${previousStepOutput || '(无)'}
         console.warn(`[Artifact] Save review artifact failed: ${e.message}`);
       }
 
-      // 统一审核判定（2026-11-09）：与其它三条链路同一口径
-      // 2026-11-12：叠加确定性门禁
+      // 统一审核判定：四条链路同一口径（2026-11-17 改为「并集 + 密度」）
       const stepGate = taskCaseQualityReports.get(workflowId);
-      const wfVerdict = decideReviewVerdictWithGate(validResults, {
+      const wfVerdict = decideReviewVerdictByDensity(validResults, {
         threshold: REVIEW_PASS_THRESHOLD,
         softThreshold: REVIEW_SOFT_THRESHOLD,
         gatePassed: !!(stepGate && stepGate.applicable && stepGate.pass),
+        totalCases: stepGate && stepGate.applicable ? stepGate.total : 0,
+        majorDensityLimit: CASE_REVIEW_MAJOR_DENSITY_LIMIT,
+        majorDensityWarn: CASE_REVIEW_MAJOR_DENSITY_WARN,
       });
       const scores = wfVerdict.scores;
       const vetoTriggered = wfVerdict.vetoTriggered;
@@ -12219,6 +12227,11 @@ const REVIEW_PASS_THRESHOLD = 80;
 // 80 是设计时拍定的、从未校准；近 7 天 20 个有效轮次的中位数均分 74.8，
 // 阈值 80 只能过 45%。门禁已经把「能不能用」客观判掉，这里只兜「内容是否胡说」。
 const REVIEW_SOFT_THRESHOLD = Number(process.env.REVIEW_SOFT_THRESHOLD) || 70;
+// major 级问题占用例数的比例上限（密度制判定，2026-11-17）。
+// 不用「绝对条数」是因为 13 条 major 在 205 条用例里是 6.3%、在 324 条里是 4%——
+// 同样的绝对条数在不同规模下含义完全不同，旧口径导致大交付物永远过不了。
+const CASE_REVIEW_MAJOR_DENSITY_LIMIT = Number(process.env.CASE_REVIEW_MAJOR_DENSITY_LIMIT) || 0.03;
+const CASE_REVIEW_MAJOR_DENSITY_WARN = Number(process.env.CASE_REVIEW_MAJOR_DENSITY_WARN) || 0.06;
 
 // 用例交付物确定性质量门禁（2026-11-05）
 // 0.85 是设计时拍定的常数，从未用人工判定校准（2026-11-09 补上校准链路）：
@@ -12528,17 +12541,28 @@ async function executeTaskWithReview(task, userId = null) {
           continue;
         }
 
-        // 统一审核判定（2026-11-09）：此前这里是「全票 ≥80」，一个 78 分就否掉整个任务。
-        // 2026-11-12：叠加确定性门禁，区分「客观不达标」与「主观分偏低」。
-        // 门禁已达标时不再因中位数 76 < 80 就把合格交付物扔掉重跑（实测这类重跑
-        // 单任务要多花 60 分钟，而交付物本身可用率已经 99.7%）。
+        // 统一审核判定（2026-11-09）→ 2026-11-12 叠加门禁 → 2026-11-17 改为「并集 + 密度」
+        //
+        // 为什么第三次改：把三个审核员能力统一后，通过率从 71% 掉到 30%。复盘发现
+        // 不是交付物变差，而是评分机制有三个缺陷（详见 review-verdict.js 注释）：
+        //   1) 三人分数收敛到最严维度，中位数失去交叉验证意义；
+        //   2) 分数只跟问题绝对条数走，交付物越大越难达标（≤150 条 79% vs 251-350 条 33%）；
+        //   3) 模型输出的五维分被丢弃，而它自己拍的综合分与五维分不自洽。
+        // 新口径：三人 issue 取并集去重（实测重叠率仅 6%~26%，取中位数会丢掉两人视野），
+        // 门禁达标 + 无 blocker + major 密度 ≤3% 放行；≤6% 带意见放行。
         const gateForVerdict = taskCaseQualityReports.get(task.id);
         const gateObjectivelyPassed = !!(gateForVerdict && gateForVerdict.applicable && gateForVerdict.pass);
-        const taskVerdict = decideReviewVerdictWithGate(reviewResults, {
+        const taskVerdict = decideReviewVerdictByDensity(reviewResults, {
           threshold: REVIEW_PASS_THRESHOLD,
           softThreshold: REVIEW_SOFT_THRESHOLD,
           gatePassed: gateObjectivelyPassed,
+          totalCases: gateForVerdict && gateForVerdict.applicable ? gateForVerdict.total : 0,
+          majorDensityLimit: CASE_REVIEW_MAJOR_DENSITY_LIMIT,
+          majorDensityWarn: CASE_REVIEW_MAJOR_DENSITY_WARN,
         });
+        if (taskVerdict.union) {
+          console.log(`[TaskWithReview] 并集去重问题: blocker=${taskVerdict.union.blocker} major=${taskVerdict.union.major} minor=${taskVerdict.union.minor} 总=${taskVerdict.union.total}，major 密度=${(taskVerdict.majorDensity * 100).toFixed(1)}%（分母 ${taskVerdict.totalCases}）`);
+        }
         const vetoTriggered = taskVerdict.vetoTriggered;
         allPassed = taskVerdict.passed;
 
@@ -13734,6 +13758,10 @@ ${truncateForReview(reviewContext.originalInput, 12000)}
 - 问题分布：${Object.entries(reviewContext.caseQuality.byReason || {}).map(([k, v]) => `${k}×${v}`).join('、') || '无'}
 - 是否达标（阈值 ${(reviewContext.caseQuality.minUsabilityRate * 100).toFixed(0)}%）：${reviewContext.caseQuality.pass ? '达标' : '未达标'}
 ${reviewContext.caseQuality.summary ? `- 结论：${reviewContext.caseQuality.summary.text}` : ''}
+
+**打分时请用「用例总数 ${reviewContext.caseQuality.total}」作为 major 占比的分母**：
+例如本轮若列出 12 条 major，占比 = 12/${reviewContext.caseQuality.total} = ${((12 / Math.max(reviewContext.caseQuality.total, 1)) * 100).toFixed(1)}%，
+按评分口径应落在 ${((12 / Math.max(reviewContext.caseQuality.total, 1)) <= 0.01) ? '90-100' : ((12 / Math.max(reviewContext.caseQuality.total, 1)) <= 0.03) ? '80-89' : ((12 / Math.max(reviewContext.caseQuality.total, 1)) <= 0.08) ? '65-79' : '40-64'} 区间。
 
 `
       : '';

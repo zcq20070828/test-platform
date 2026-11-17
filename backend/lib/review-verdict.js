@@ -94,6 +94,59 @@ export function extractBalancedJson(text) {
 // 2. issues 归一化
 // ============================================================
 
+export const REVIEW_DIMENSIONS = ['requirement', 'factLogic', 'security', 'format', 'traceability'];
+
+/** 五维权重（合成分用）。安全权重低是因为它极少出问题、一旦出问题有 veto 兜底 */
+export const DIMENSION_WEIGHTS = {
+  requirement: 25,
+  factLogic: 25,
+  format: 25,
+  traceability: 15,
+  security: 10,
+};
+
+/**
+ * 归一化五维分数
+ * @param {Object} raw
+ * @returns {Object|null} 全部维度都缺失时返回 null
+ */
+export function normalizeDimensions(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  let found = 0;
+  for (const k of REVIEW_DIMENSIONS) {
+    const v = Number(raw[k]);
+    if (Number.isFinite(v) && v >= 0 && v <= 100) {
+      out[k] = Math.round(v);
+      found += 1;
+    }
+  }
+  return found >= 3 ? out : null;
+}
+
+/**
+ * 按维度权重合成综合分
+ *
+ * 为什么需要它：模型的综合分 score 是「自己拍的」，与它给出的五维分不自洽。
+ * 实测同一份交付物五维是 requirement=72 / factLogic=58 / security=88 / format=71 /
+ * traceability=69，按权重算应为 71.1，模型却给 76；另一份五维 55/40/60/50/82 应为 54.5，
+ * 模型给 45。偏差可达 ±6 分，在 80 分阈值附近足以翻转结论。
+ *
+ * @param {Object} dims - normalizeDimensions 的输出
+ * @returns {number|null}
+ */
+export function compositeScoreFromDimensions(dims) {
+  if (!dims) return null;
+  let sum = 0;
+  let weightSum = 0;
+  for (const [k, w] of Object.entries(DIMENSION_WEIGHTS)) {
+    if (typeof dims[k] !== 'number') continue;
+    sum += dims[k] * w;
+    weightSum += w;
+  }
+  return weightSum > 0 ? Math.round((sum / weightSum) * 10) / 10 : null;
+}
+
 export function normalizeReviewIssues(raw) {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -101,6 +154,9 @@ export function normalizeReviewIssues(raw) {
     .map((x) => ({
       severity: ['blocker', 'major', 'minor'].includes(x.severity) ? x.severity : 'major',
       category: String(x.category || 'other').slice(0, 32),
+      // dimension 是模型输出的五维归属（requirement/factLogic/security/format/traceability）。
+      // 以前整列被丢弃，导致「这条 issue 属于哪一维」在聚合时不可用。
+      dimension: x.dimension ? String(x.dimension).slice(0, 24) : '',
       caseId: x.caseId ? String(x.caseId).slice(0, 32) : '',
       description: String(x.description || '').slice(0, 400),
       suggestion: String(x.suggestion || '').slice(0, 400),
@@ -163,6 +219,9 @@ export function parseReviewResult(reviewText, options = {}) {
         veto,
         passed: score >= threshold && !veto,
         reason: parsed.reason || '',
+        // 五维分数：模型每次都输出，但以前完全没解析。保留下来供
+        // 「按维度合成」与「定位最弱维度」使用。
+        dimensions: normalizeDimensions(parsed.dimensions),
         issues: normalizeReviewIssues(parsed.issues),
         usabilityEstimate: typeof parsed.usabilityEstimate === 'number' ? parsed.usabilityEstimate : undefined,
         parseOk: true,
@@ -410,12 +469,212 @@ export function decideReviewVerdictWithGate(results, options = {}) {
   };
 }
 
+/**
+ * 三名审核员的 issue 并集去重（2026-11-17）
+ *
+ * 为什么要并集：三个审核员现在能力相同、都审全部五维，各自独立找问题，
+ * 实测同一轮三人报的 issue **重叠率只有 6%~26%**（即大部分是不同问题）。
+ * 取「三人分数中位数」等于只看其中一个人的视野，另外两人发现的问题被丢掉。
+ * 并集才不会漏，也让「问题总数」有了真实分母。
+ *
+ * 去重键：严重度 + 类别 + 归一化用例编号 + 描述前 40 字。
+ * 同一处问题被两人用不同措辞写了两次，靠前三个字段合并；
+ * 描述前缀兜住「同一类问题但不同位置」不被误合并。
+ *
+ * @param {Array} results - 审核结果数组（含 issues）
+ * @returns {{issues:Array, blocker:number, major:number, minor:number}}
+ */
+export function collectUnionIssues(results) {
+  const seen = new Map();
+  for (const r of Array.isArray(results) ? results : []) {
+    if (!r || isReviewerFailure(r)) continue;
+    for (const i of r.issues || []) {
+      const cid = String(i.caseId || '').replace(/[^A-Za-z0-9~]/g, '').slice(0, 16);
+      const key = `${i.severity}|${i.category}|${cid}|${String(i.description || '').slice(0, 40)}`;
+      if (!seen.has(key)) seen.set(key, i);
+    }
+  }
+  const issues = [...seen.values()];
+  return {
+    issues,
+    blocker: issues.filter((i) => i.severity === 'blocker').length,
+    major: issues.filter((i) => i.severity === 'major').length,
+    minor: issues.filter((i) => i.severity === 'minor').length,
+  };
+}
+
+/**
+ * 按「问题密度」判定（2026-11-17）
+ *
+ * 背景：把三个审核员能力统一之后，通过率从 71% 掉到 30%。逐条复盘发现不是
+ * 交付物变差了，而是评分机制有三个缺陷：
+ *
+ *   1) 三人分数收敛：统一前 {R1=65.6, R2=82.4, R3=78.1} 取中位得 78.1（由两个
+ *      宽松维度决定）；统一后 {66.8, 72.3, 70.4} 取中位得 70.4（收敛到最严维度）。
+ *      中位数失去了「交叉验证」的意义。
+ *   2) 分数只跟**问题绝对条数**走，与交付物规模无关：major 5~8 条→80~84、
+ *      10 条→72~80、13~18 条→72~76。但 13 条 major 在 205 条用例里只占 6.3%，
+ *      在 324 条里占 4%。后果是交付物越大越难达标——实测 ≤150 条通过率 79%，
+ *      251~350 条只有 33%。这在业务上说不通：写 300 条用例不可能一条可改点都没有。
+ *   3) 模型输出的五维分被完全丢弃（parseReviewResult 只取 score/veto/issues），
+ *      而它自己拍的综合分与五维分不自洽（偏差可达 ±6 分，在 80 阈值附近足以翻转结论）。
+ *
+ * 所以本函数不再看「绝对条数」和「模型拍的综合分」，改看三件客观事实：
+ *   门禁是否达标 / 有没有 blocker / major 问题占用例数的比例。
+ *
+ * 密度上限依据（10 个真实轮次回放）：
+ *   major 密度 ≤3%  → 交付物基本干净（a22525f0 2.8%、1ddfd0f6#2 1.7%、374bc1eb#1 2.8%）
+ *   major 密度 ≤6%  → 有明显可改点但整体可用（f840b828 3.9%/5.4%、374bc1eb#0 4.3%）
+ *   major 密度 >6%  → 问题过于集中，需整改
+ * 门禁没过的轮次仍然全部拦下（590f913b 三轮），有 blocker 的仍然拦下（1ddfd0f6#0 四个），
+ * 说明没有放松真正的质量问题。
+ *
+ * @param {Array} results - 三名审核员的结果
+ * @param {Object} options
+ * @param {boolean} [options.gatePassed=false] - 确定性门禁是否客观达标
+ * @param {number} [options.totalCases=0] - 交付物用例条数（密度分母）
+ * @param {number} [options.threshold=80] - 门禁未达标时的评分阈值
+ * @param {number} [options.majorDensityLimit=0.03] - major 密度放行上限
+ * @param {number} [options.majorDensityWarn=0.06] - major 密度「带意见放行」上限
+ * @param {number} [options.softThreshold=70] - 门禁达标时综合分的兜底下限
+ * @param {number} [options.minValid=2]
+ */
+export function decideReviewVerdictByDensity(results, options = {}) {
+  const list = (Array.isArray(results) ? results : []).filter(Boolean);
+  const gatePassed = options.gatePassed === true;
+  const totalCases = Number(options.totalCases) || 0;
+  const threshold = Number(options.threshold ?? 80);
+  const majorLimit = Number(options.majorDensityLimit ?? 0.03);
+  const majorWarn = Number(options.majorDensityWarn ?? 0.06);
+  const softThreshold = Number(options.softThreshold ?? 70);
+
+  const scores = list.map((r) => Number(r.score) || 0);
+  const usable = list.filter((r) => !isReviewerFailure(r));
+  const reviewerFailures = list.length - usable.length;
+  const vetoTriggered = usable.some((r) => r.veto === true);
+  const union = collectUnionIssues(list);
+
+  const validScores = usable
+    .filter((r) => r.scoreOk !== false && Number(r.score) > 0)
+    .map((r) => Number(r.score));
+  const sorted = [...validScores].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length === 0 ? null
+    : (sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
+
+  const density = totalCases > 0 ? union.major / totalCases : (union.major > 0 ? 1 : 0);
+  const base = {
+    scores,
+    median,
+    validCount: validScores.length,
+    reviewerFailures,
+    vetoTriggered,
+    gatePassed,
+    union: { blocker: union.blocker, major: union.major, minor: union.minor, total: union.issues.length },
+    majorDensity: Math.round(density * 1000) / 1000,
+    totalCases,
+    issues: union.issues,
+  };
+
+  // 一票否决优先级最高（幻觉/违规不能靠任何规则洗白）
+  if (vetoTriggered) {
+    return { ...base, passed: false, verdict: 'failed', reason: '触发一票否决' };
+  }
+
+  // blocker 次高优先级：哪怕只有一个审核员跑出结果，blocker 也是客观存在的问题，
+  // 不能因为「有效评审数不足」就放行（旧逻辑的顺序会让单条 blocker 被 inconclusive 吞掉）。
+  if (union.blocker > 0) {
+    return {
+      ...base,
+      passed: false,
+      verdict: 'failed',
+      reason: gatePassed
+        ? `门禁达标，但审核发现 ${union.blocker} 个 blocker 级问题（共 ${union.issues.length} 条去重问题）`
+        : `审核发现 ${union.blocker} 个 blocker 级问题（共 ${union.issues.length} 条去重问题）`,
+    };
+  }
+
+  const minValid = Number(options.minValid ?? 2);
+
+  // 门禁未达标：客观硬事实优先，用原阈值判定（与历史行为一致）
+  if (!gatePassed) {
+    if (validScores.length < minValid) {
+      return {
+        ...base,
+        passed: true,
+        verdict: 'inconclusive',
+        reason: `有效审核结果不足（${validScores.length}/${list.length}${reviewerFailures ? `，其中 ${reviewerFailures} 条为审核自身失败` : ''}），门禁未达标但无法据审核判定，已放行并告警`,
+      };
+    }
+    const passed = median != null && median >= threshold;
+    return {
+      ...base,
+      passed,
+      verdict: passed ? 'passed' : 'failed',
+      reason: passed
+        ? `门禁未达标但审核中位数 ${median} ≥ ${threshold}（评分 ${validScores.join(', ')}）`
+        : `门禁未达标，审核中位数 ${median} < ${threshold}（评分 ${validScores.join(', ')}）`,
+    };
+  }
+
+  // 门禁已达标：按问题密度判定（不依赖中位数，因此单审核员跑出结果也能判）
+  const enoughForMedian = validScores.length >= minValid;
+
+  const pct = (density * 100).toFixed(1);
+  // 综合分兜底：模型给的综合分很高时，不再因密度卡人（避免密度分母失真导致的误判）
+  if (enoughForMedian && median != null && median >= threshold) {
+    return {
+      ...base,
+      passed: true,
+      verdict: 'passed',
+      reason: `门禁客观达标，审核中位数 ${median} ≥ ${threshold}（去重问题 ${union.issues.length} 条，major 密度 ${pct}%）`,
+    };
+  }
+  if (density <= majorLimit) {
+    return {
+      ...base,
+      passed: true,
+      verdict: 'passed',
+      reason: `门禁客观达标，无 blocker，major 密度 ${pct}%（${union.major}/${totalCases}）≤ ${(majorLimit * 100).toFixed(0)}%`,
+    };
+  }
+  if (density <= majorWarn) {
+    return {
+      ...base,
+      passed: true,
+      verdict: 'passed_with_notes',
+      reason: `门禁客观达标、无 blocker，major 密度 ${pct}% ≤ ${(majorWarn * 100).toFixed(0)}%：允许交付，${union.issues.length} 条审核意见作为改进建议保留`,
+    };
+  }
+  // 密度高但综合分仍 ≥ softThreshold → 说明问题是「同类大量重复」，不是整体崩坏
+  if (enoughForMedian && median != null && median >= softThreshold) {
+    return {
+      ...base,
+      passed: true,
+      verdict: 'passed_with_notes',
+      reason: `门禁客观达标、无 blocker，major 密度 ${pct}% 偏高但审核中位数 ${median} ≥ ${softThreshold}：允许交付并保留 ${union.issues.length} 条改进意见`,
+    };
+  }
+  return {
+    ...base,
+    passed: false,
+    verdict: 'failed',
+    reason: `门禁客观达标但 major 密度 ${pct}%（${union.major}/${totalCases}）超过 ${(majorWarn * 100).toFixed(0)}%，且审核中位数 ${median} < ${softThreshold}，内容质量需整改`,
+  };
+}
+
 export default {
   sanitizeJsonControlChars,
   extractBalancedJson,
   normalizeReviewIssues,
+  normalizeDimensions,
+  compositeScoreFromDimensions,
+  REVIEW_DIMENSIONS,
+  DIMENSION_WEIGHTS,
   parseReviewResult,
   decideReviewVerdict,
   decideReviewVerdictWithGate,
+  collectUnionIssues,
+  decideReviewVerdictByDensity,
   isReviewerFailure,
 };

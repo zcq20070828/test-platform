@@ -18,6 +18,10 @@ import {
   parseReviewResult,
   decideReviewVerdict,
   decideReviewVerdictWithGate,
+  decideReviewVerdictByDensity,
+  collectUnionIssues,
+  normalizeDimensions,
+  compositeScoreFromDimensions,
   isReviewerFailure,
 } from '../lib/review-verdict.js';
 
@@ -387,6 +391,167 @@ t('门禁达标 + 有效评审不足 → 沿用 inconclusive 放行', () => {
 t('返回值始终带 gatePassed 标记', () => {
   assert.strictEqual(decideReviewVerdictWithGate(mkRes([76, 73, 76]), { gatePassed: true }).gatePassed, true);
   assert.strictEqual(decideReviewVerdictWithGate(mkRes([76, 73, 76]), { gatePassed: false }).gatePassed, false);
+});
+
+
+// ---------------- 并集 + 密度判定（2026-11-17）----------------
+// 背景：三个审核员能力统一后通过率从 71% 掉到 30%。根因是「取三人分数中位数」
+// 在三人视野趋同后失去交叉验证意义，且分数只跟问题绝对条数走（大交付物永远过不了）。
+const mkReviewer = (score, issues, veto = false) => ({
+  reviewerId: `r${Math.random()}`, reviewerName: 'R', score, veto, passed: score >= 80, scoreOk: true, issues,
+});
+const mkIssue = (severity, caseId = '', category = 'coverage') => ({ severity, caseId, category, description: `问题 ${caseId} ${severity}` });
+
+t('三人 issue 取并集，重复项合并', () => {
+  const u = collectUnionIssues([
+    mkReviewer(70, [mkIssue('major', 'TC-001'), mkIssue('minor', 'TC-002')]),
+    mkReviewer(72, [mkIssue('major', 'TC-001'), mkIssue('major', 'TC-003')]),
+  ]);
+  assert.strictEqual(u.major, 2, `major 应为 2（TC-001 去重），实际 ${u.major}`);
+  assert.strictEqual(u.minor, 1);
+});
+
+t('门禁未达标 → 按原阈值判定，不受密度规则影响', () => {
+  const v = decideReviewVerdictByDensity(
+    [mkReviewer(85, []), mkReviewer(82, [])],
+    { gatePassed: false, totalCases: 300 },
+  );
+  assert.strictEqual(v.passed, true, '门禁未达标但两名审核员都 ≥80 时按旧阈值放行');
+  const v2 = decideReviewVerdictByDensity(
+    [mkReviewer(70, [mkIssue('major', 'TC-1')]), mkReviewer(68, [])],
+    { gatePassed: false, totalCases: 300 },
+  );
+  assert.strictEqual(v2.passed, false, `门禁未达标且评分低应拦下：${v2.reason}`);
+});
+
+t('门禁达标 + 无 blocker + major 密度 2.8% → 通过', () => {
+  const issues = Array.from({ length: 8 }, (_, i) => mkIssue('major', `TC-00${i}`));
+  const v = decideReviewVerdictByDensity([mkReviewer(81, issues)], { gatePassed: true, totalCases: 284 });
+  assert.strictEqual(v.passed, true, v.reason);
+  assert.strictEqual(v.verdict, 'passed');
+  assert.ok(v.reason.includes('2.8%'), v.reason);
+});
+
+t('门禁达标 + major 密度 5.4% → 带意见放行（不是不通过）', () => {
+  const issues = Array.from({ length: 11 }, (_, i) => mkIssue('major', `TC-${i}`));
+  const v = decideReviewVerdictByDensity([mkReviewer(72, issues)], { gatePassed: true, totalCases: 205 });
+  assert.strictEqual(v.passed, true, v.reason);
+  assert.strictEqual(v.verdict, 'passed_with_notes');
+});
+
+t('门禁达标但有 blocker → 不通过（密度再低也没用）', () => {
+  const v = decideReviewVerdictByDensity([mkReviewer(88, [mkIssue('blocker', 'TC-001')])], { gatePassed: true, totalCases: 300 });
+  assert.strictEqual(v.passed, false, v.reason);
+  assert.ok(v.reason.includes('blocker'), v.reason);
+});
+
+t('门禁达标 + major 密度 16% → 不通过', () => {
+  const issues = Array.from({ length: 25 }, (_, i) => mkIssue('major', `TC-${i}`));
+  const v = decideReviewVerdictByDensity([mkReviewer(68, issues)], { gatePassed: true, totalCases: 153 });
+  assert.strictEqual(v.passed, false, v.reason);
+});
+
+t('一票否决优先级最高（门禁达标也拦）', () => {
+  const v = decideReviewVerdictByDensity([mkReviewer(95, [], true)], { gatePassed: true, totalCases: 300 });
+  assert.strictEqual(v.passed, false);
+  assert.ok(v.reason.includes('一票否决'));
+});
+
+t('同样 12 条 major：300 条用例放行，150 条用例不放行', () => {
+  const mk12 = () => Array.from({ length: 12 }, (_, i) => mkIssue('major', `TC-${i}`));
+  const big = decideReviewVerdictByDensity([mkReviewer(76, mk12())], { gatePassed: true, totalCases: 300 });
+  const small = decideReviewVerdictByDensity([mkReviewer(76, mk12())], { gatePassed: true, totalCases: 150 });
+  assert.strictEqual(big.passed, true, `300 条时密度 4% 应放行：${big.reason}`);
+  assert.strictEqual(small.passed, false, `150 条时密度 8% 应拦下：${small.reason}`);
+});
+
+t('门禁达标 + 综合分 ≥80 → 直接通过（不因密度分母失真卡人）', () => {
+  // 密度高（15%）但两名审核员都给了 ≥80：说明问题是「同类大量重复」而非整体崩坏
+  const issues = Array.from({ length: 30 }, (_, i) => mkIssue('major', `TC-${i}`));
+  const v = decideReviewVerdictByDensity(
+    [mkReviewer(85, issues), mkReviewer(84, [])],
+    { gatePassed: true, totalCases: 200 },
+  );
+  assert.strictEqual(v.passed, true, v.reason);
+});
+
+t('单审核员跑出结果时：密度规则仍生效（不因 minValid 放宽）', () => {
+  const issues = Array.from({ length: 30 }, (_, i) => mkIssue('major', `TC-${i}`));
+  const v = decideReviewVerdictByDensity([mkReviewer(85, issues)], { gatePassed: true, totalCases: 200 });
+  assert.strictEqual(v.passed, false, `只有一人结果时不能靠他的 85 分放行：${v.reason}`);
+});
+
+t('判定结果带可审计的并集统计与密度', () => {
+  const issues = Array.from({ length: 9 }, (_, i) => mkIssue('major', `TC-${i}`));
+  const v = decideReviewVerdictByDensity([mkReviewer(80, issues)], { gatePassed: true, totalCases: 324 });
+  assert.strictEqual(v.union.major, 9);
+  assert.strictEqual(v.totalCases, 324);
+  assert.ok(Math.abs(v.majorDensity - 0.028) < 0.001, String(v.majorDensity));
+});
+
+// ---------------- 五维分不再被丢弃（2026-11-17）----------------
+t('五维分被归一化保留', () => {
+  const d = normalizeDimensions({ requirement: 72, factLogic: 58, security: 88, format: 71, traceability: 69 });
+  assert.deepStrictEqual(d, { requirement: 72, factLogic: 58, security: 88, format: 71, traceability: 69 });
+});
+
+t('维度不足 3 个视为无效（防止残缺输出被当成分数）', () => {
+  assert.strictEqual(normalizeDimensions({ requirement: 72 }), null);
+  assert.strictEqual(normalizeDimensions(null), null);
+});
+
+t('按权重合成综合分，与模型自算不一致时以合成为准', () => {
+  // 实测真实数据：五维 72/58/88/71/69，模型自称 76，按权重应为 69.4
+  const c = compositeScoreFromDimensions({ requirement: 72, factLogic: 58, security: 88, format: 71, traceability: 69 });
+  assert.strictEqual(c, 69.4);
+});
+
+t('parseReviewResult 保留 dimensions 与 issue 的 dimension 字段', () => {
+  const raw = '```json\n' + JSON.stringify({
+    score: 76,
+    veto: false,
+    dimensions: { requirement: 72, factLogic: 58, security: 88, format: 71, traceability: 69 },
+    issues: [{ severity: 'major', category: 'coverage', dimension: 'requirement', caseId: 'FR-022', description: '未覆盖' }],
+  }) + '\n```';
+  const r = parseReviewResult(raw);
+  assert.ok(r.dimensions, 'dimensions 应被保留');
+  assert.strictEqual(r.dimensions.factLogic, 58);
+  assert.strictEqual(r.issues[0].dimension, 'requirement');
+});
+
+
+// ---------------- 回归：真实历史轮次（2026-11-17 回放）----------------
+// 这些数字来自 dev 库真实审核记录，用于锁住「统一审核员后通过率暴跌」的修复效果。
+t('回归 374bc1eb#0：门禁 99.7%、无 blocker、major 密度 5.6% → 带意见放行', () => {
+  const issues = [
+    ...Array.from({ length: 18 }, (_, i) => mkIssue('major', `TC-${i}`)),
+    ...Array.from({ length: 13 }, (_, i) => mkIssue('minor', `TM-${i}`)),
+  ];
+  // 三人并集去重后 major=14、minor=12（真实值）
+  const deduped = issues.slice(0, 14);
+  const v = decideReviewVerdictByDensity([mkReviewer(76, deduped)], { gatePassed: true, totalCases: 324 });
+  assert.strictEqual(v.passed, true, v.reason);
+  assert.strictEqual(v.verdict, 'passed_with_notes');
+});
+
+t('回归 590f913b：门禁 69.9% 未达标 → 三轮全部拦下', () => {
+  for (const [totalCases, major, score] of [[153, 16, 65], [153, 25, 68], [153, 7, 73]]) {
+    const issues = Array.from({ length: major }, (_, i) => mkIssue('major', `TC-${i}`));
+    const v = decideReviewVerdictByDensity(
+      [mkReviewer(score, issues), mkReviewer(score, [])],
+      { gatePassed: false, totalCases },
+    );
+    assert.strictEqual(v.passed, false, `门禁未达标的轮次不应放行：${v.reason}`);
+  }
+});
+
+t('回归 1ddfd0f6#0：门禁达标但有 4 个 blocker → 拦下', () => {
+  const issues = Array.from({ length: 4 }, (_, i) => mkIssue('blocker', `TC-${i}`));
+  const v = decideReviewVerdictByDensity(
+    [mkReviewer(50, issues), mkReviewer(58, [])],
+    { gatePassed: true, totalCases: 289 },
+  );
+  assert.strictEqual(v.passed, false, v.reason);
 });
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
