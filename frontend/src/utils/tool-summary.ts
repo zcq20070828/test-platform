@@ -35,6 +35,7 @@ const SKILL_LABELS: Record<string, string> = {
   'browser-matrix-invoker': '浏览器矩阵',
   'compatibility-coordinator-invoker': '兼容性协调',
   'evaluation-system': '评估体系',
+  sessions_spawn: '派生子智能体',
   'jmeter-executor': 'JMeter 压测',
   'k6-executor': 'k6 压测',
 };
@@ -251,7 +252,8 @@ function summarizeGeneric(r: any): string[] {
     return text ? [text.slice(0, 160)] : []
   }
 
-  if (r.success === false || r.error) {
+  const failed = r.success === false || !!r.error
+  if (failed) {
     lines.push(`工具返回失败：${r.error || r.reason || '未知错误'}。`)
   }
 
@@ -259,6 +261,8 @@ function summarizeGeneric(r: any): string[] {
   const arrays: string[] = []
   for (const [k, v] of Object.entries(r)) {
     if (v === null || v === undefined) continue
+    // 失败信息已经单独成句，不再作为「关键结果」重复一遍
+    if (failed && (k === 'success' || k === 'error' || k === 'reason')) continue
     if (Array.isArray(v)) {
       if (v.length) arrays.push(`${k} ${v.length} 项`)
       continue
@@ -549,6 +553,7 @@ export function describeToolCall(toolName: string, rawArgs: any): string {
     if (keys.length) parts.push(keys.join('、'))
   }
 
+  if (args.agentId) parts.push(`派发给 ${args.agentId}`)
   if (args.task) parts.push('已提供需求描述')
 
   const baseUrl = args.baseUrl || args.url
