@@ -356,9 +356,13 @@ async function downloadFullOutput(task: Task) {
     
     if (data.reviewResults && data.reviewResults.length > 0) {
       data.reviewResults.forEach((review: any, index: number) => {
+        // 与界面同一口径：单个审核员只报「评分是否达到 80」，不作交付物结论
+        const reviewerScoreState = review.veto
+          ? '一票否决'
+          : (Number(review.score) >= 80 ? '评分达标（≥80）' : '评分偏低（<80）')
         content += `### 审核员 ${index + 1}：${review.reviewerName}
 - 评分：${review.score}分
-- 状态：${review.veto ? '一票否决' : (review.passed ? '通过' : '未通过')}
+- 该审核员评分：${reviewerScoreState}
 
 `
       })
@@ -949,21 +953,33 @@ onMounted(() => {
         <!-- AI审核结果 -->
         <div v-if="selectedTask.reviewResults && selectedTask.reviewResults.length > 0" class="section">
           <h4 class="tab-label"><MsIcon name="shield" :size="16" /> AI质量审核结果</h4>
+          <div class="review-scope-hint">
+            单个审核员的「评分达标 / 偏低」只反映他自己的打分（满分 100，达标线 80 分）；
+            交付物是否通过由**门禁结果 + 三人问题并集 + major 问题密度**综合判定，见下方「综合结果」。
+          </div>
           <div class="review-results">
             <div 
               v-for="(review, index) in selectedTask.reviewResults" 
               :key="index" 
               class="review-card"
-              :class="{ 'review-passed': review.passed, 'review-failed': !review.passed || review.veto }"
+              :class="{
+                'review-veto': review.veto,
+                'review-scored-high': !review.veto && review.score >= 80,
+                'review-scored-low': !review.veto && review.score < 80,
+              }"
             >
               <div class="review-header">
                 <span class="review-name">{{ review.reviewerName || '审核员 ' + (index + 1) }}</span>
                 <!-- 审核智能体自身失败（网关超时/模型不可用）不是产出物的质量问题，
                      必须与「认真审了给低分」区分显示，否则用户会以为交付物被判不合格 -->
                 <el-tag v-if="review.error" type="warning" size="small">审核异常</el-tag>
-                <el-tag v-else :type="review.passed && !review.veto ? 'success' : 'danger'" size="small">
-                  {{ review.veto ? '一票否决' : (review.passed ? '通过' : '未通过') }}
-                </el-tag>
+                <!-- 单个审核员的标签只表示「他的评分是否达到 80」，不表示交付物结论。
+                     任务级结论由「门禁 + 三人问题并集 + major 密度」判定（见下方综合结果），
+                     两套口径不同，所以这里不能写「通过/未通过」，否则会出现
+                     「三个审核员全红、任务却已交付」的自相矛盾展示。 -->
+                <el-tag v-else-if="review.veto" type="danger" size="small">一票否决</el-tag>
+                <el-tag v-else-if="review.score >= 80" type="success" size="small">评分达标</el-tag>
+                <el-tag v-else type="info" size="small">评分偏低</el-tag>
               </div>
               <div v-if="review.error" class="review-feedback">
                 审核智能体未完成（{{ review.error }}），该评分不计入判定。
@@ -1290,10 +1306,13 @@ onMounted(() => {
 .section-actions { margin-top: 12px; display: flex; gap: 8px; }
 
 /* AI审核结果 */
+.review-scope-hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; margin-bottom: 10px; }
 .review-results { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
 .review-card { padding: 14px; border-radius: 8px; border: 1px solid var(--el-border-color-light); background: var(--el-fill-color-lighter); }
-.review-card.review-passed { border-left: 3px solid var(--el-color-success); }
-.review-card.review-failed { border-left: 3px solid var(--el-color-danger); }
+/* 左边框只反映「这个审核员自己的评分」，不代表交付物结论 */
+.review-card.review-scored-high { border-left: 3px solid var(--el-color-success); }
+.review-card.review-scored-low { border-left: 3px solid var(--el-border-color); }
+.review-card.review-veto { border-left: 3px solid var(--el-color-danger); }
 .review-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .review-name { font-weight: 500; color: var(--el-text-color-primary); }
 .review-score { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
