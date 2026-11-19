@@ -18771,7 +18771,7 @@ app.get('/api/compatibility/web/stats', authenticate, async (req, res) => {
 });
 
 // 将兼容性报告组装为结构化 Markdown（同时作为 docx/xlsx 的源文档）
-// 表格均带前置标题（md_to_xlsx 单 sheet 模式下作为附表的节分隔标题）；圆角字符已规避。
+// 表格均带前置标题（md_to_xlsx 用它作为独立 sheet 的名称：覆盖分析/维度矩阵/方法矩阵/豁免声明）；圆角字符已规避。
 function buildCompatMarkdownReport(report) {
   const r = report || {};
   const url = r.url || '(未知)';
