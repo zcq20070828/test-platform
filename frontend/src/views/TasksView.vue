@@ -9,6 +9,7 @@ import { escapeHtml as escapeHtmlUtil } from '@/utils/safe-html'
 import MsIcon from '@/components/MsIcon.vue'
 import QualityCard from '@/components/QualityCard.vue'
 import { formatDateTime } from '@/utils/time'
+import { summarizeTaskOutput } from '@/utils/tool-summary'
 
 const store = useMainStore()
 const router = useRouter()
@@ -941,7 +942,9 @@ onMounted(() => {
         <div v-if="selectedTask.output" class="section">
           <h4 class="tab-label"><MsIcon name="assignment" :size="16" /> 执行结果</h4>
           <div class="content-block result-block">
-            <pre>{{ selectedTask.output }}</pre>
+            <!-- 安全扫描等链路把 JSON 直接当 output 落库，这里转自然语言；
+                 Markdown 报告原样返回，不做改写。完整原文走「完整输出物下载」。 -->
+            <pre>{{ summarizeTaskOutput(selectedTask.output) }}</pre>
           </div>
           <div class="section-actions" v-if="selectedTask.source !== 'workflow'">
             <el-button type="primary" size="small" @click="downloadFullOutput(selectedTask)">

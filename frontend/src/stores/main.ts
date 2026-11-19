@@ -119,6 +119,7 @@ function getExtension(lang: string): string {
 }
 
 import { defineStore } from 'pinia'
+import { summarizeReviewOutput, describeToolCall, summarizeToolResult, skillLabel, summarizeTaskOutput } from '@/utils/tool-summary'
 import { ref, computed, nextTick, watch } from 'vue'
 import type { Agent, Task, ChatMessage, KnowledgeDoc } from '@/types'
 import { agentApi, taskApi, knowledgeApi, getAuthHeaders } from '@/api'
@@ -636,7 +637,9 @@ export const useMainStore = defineStore('main', () => {
             : ''
         const failed = task.status === 'failed' || task.status === 'error'
         const header = failed ? `任务 ${taskId} 执行失败` : `任务 ${taskId} 完成`
-        const content = `${header}\n\n${taskOutput}${artifactMsgs}`
+        // 安全扫描等链路把 JSON 直接当 output 落库，面板里会是一屏花括号；
+        // 这里转成自然语言（Markdown 报告原样返回）。
+        const content = `${header}\n\n${summarizeTaskOutput(taskOutput)}${artifactMsgs}`
         const existing = messages.value.find((m) => m.id === `task-output-${taskId}`)
         if (existing) {
           // SSE 已推送过，仅刷新 artifacts（防止 SSE 携带的数据不完整）
@@ -688,9 +691,9 @@ export const useMainStore = defineStore('main', () => {
 
       case 'reviewer_completed': {
         const raw = p.output != null ? p.output : (p.reason || '')
-        const preview = raw && String(raw).trim()
-          ? `\n\n**审核意见：**\n\`\`\`\n${String(raw)}\n\`\`\``
-          : ''
+        // 与实时链路同一口径：JSON → 自然语言
+        const previewText = raw && String(raw).trim() ? summarizeReviewOutput(raw, { maxIssues: 5 }) : ''
+        const preview = previewText ? `\n\n**审核意见：**\n${previewText}` : ''
         const failed = !p.score && (p.error || p.parseOk === false)
         const scoreState = p.veto ? '一票否决' : (Number(p.score) >= 80 ? '评分达标' : '评分偏低')
         const verdict = failed ? '审核未跑出结果' : `${p.score}分 ${scoreState}`
@@ -782,12 +785,14 @@ export const useMainStore = defineStore('main', () => {
         }
 
       case 'agent_skill_result': {
-        const skill = p.skillId || 'skill'
+        const skill = p.skillId || p.skill || 'skill'
+        // 重放也给出当时的执行结论，而不是只说「调用完成」
+        const summaryText = summarizeToolResult(skill, p.result ?? p.resultPayload ?? p)
         return {
           ...base,
           id: `tl-skill-${evt.seq}`,
-          agentName: `${p.agentId || '智能体'} 工具执行`,
-          content: `调用真实工具 ${skill} 完成`,
+          agentName: `${skillLabel(skill)} · 执行结果`,
+          content: summaryText || `已完成「${skillLabel(skill)}」`,
         }
       }
 
@@ -941,7 +946,7 @@ export const useMainStore = defineStore('main', () => {
           if (taskArtifacts.length > 0) {
             existing.artifacts = taskArtifacts
             const artifactMsgs = `\n\n输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}`
-            existing.content = `任务 ${taskId} 完成\n\n${taskOutput}${artifactMsgs}`
+            existing.content = `任务 ${taskId} 完成\n\n${summarizeTaskOutput(taskOutput)}${artifactMsgs}`
           }
           continue
         }
@@ -950,7 +955,7 @@ export const useMainStore = defineStore('main', () => {
           id: `loaded-task-${taskId}`,
           role: 'assistant',
           type: 'agent',
-          content: `任务 ${taskId} 完成\n\n${taskOutput}`,
+          content: `任务 ${taskId} 完成\n\n${summarizeTaskOutput(taskOutput)}`,
           timestamp: task.completedAt || task.updatedAt || task.createdAt || new Date().toISOString(),
           agentId,
           agentName: task.agentName || agentId,
@@ -1424,8 +1429,24 @@ export const useMainStore = defineStore('main', () => {
         break
 
       case 'agent_skill_result':
-        // 智能体通过工具调用真正执行了 skill（如 ui/api-test-tool-invoker），回传结构化结果
-        realtimeSkillResult.value = data
+        // 智能体通过工具调用真正执行了 skill（如 ui/api-test-tool-invoker），回传结构化结果。
+        // 2026-11-19：过去只把它塞进 realtimeSkillResult（仅测试运行器消费），聊天面板里
+        // 完全看不到工具执行结论。这里补一条自然语言摘要，**不贴 JSON**。
+        {
+          realtimeSkillResult.value = data
+          const skillId = data.skillId || data.skill || ''
+          const summaryText = summarizeToolResult(skillId, data.result ?? data.resultPayload ?? data)
+          if (summaryText) {
+            writeMsg({
+              id: eventMsgId('skill-result', skillId),
+              role: 'assistant',
+              type: 'agent',
+              agentName: `${skillLabel(skillId)} · 执行结果`,
+              content: summaryText,
+              timestamp: new Date().toISOString(),
+            })
+          }
+        }
         return
 
       case 'task_created':
@@ -1547,11 +1568,15 @@ export const useMainStore = defineStore('main', () => {
             ? '未跑出结果'
             : (data.veto ? '一票否决' : (Number(data.score) >= 80 ? '评分达标' : '评分偏低'))
           const now = new Date().toISOString()
-          // 产出物预览：把审核输出用 markdown 代码块包裹（黑色背景区域）
-          // 注意：data.output 可能是空字符串，要用 != null 判断
+          // 审核输出转自然语言（2026-11-19）：后端返回的是 score/dimensions/issues 结构，
+          // 过去原样贴成 JSON 代码块，用户要自己找分数、数问题，可读性很差。
+          // 现在转成中文摘要（分数+五维+主要问题），完整 JSON 仍作为可下载交付物保留。
           const rawOutput = data.output != null ? data.output : (data.reason || '')
-          const outputPreview = rawOutput && String(rawOutput).trim()
-            ? `\n\n**产出物预览：**\n\`\`\`\n${typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput, null, 2)}\n\`\`\``
+          const reviewSummaryText = rawOutput && String(rawOutput).trim()
+            ? summarizeReviewOutput(rawOutput, { maxIssues: 5 })
+            : ''
+          const outputPreview = reviewSummaryText
+            ? `\n\n**审核意见：**\n${reviewSummaryText}`
             : ''
           const completedAttempt = Number(data.attempt ?? 0) + 1
           const completedRoundTag = completedAttempt > 1 ? `第 ${completedAttempt} 轮 · ` : ''
@@ -1640,7 +1665,7 @@ export const useMainStore = defineStore('main', () => {
           )
           if (streamAgentMsg && taskOutput) {
             // 【修复】覆盖流式片段为完整报告，并追加明确的“任务完成”标记，避免用户看不到完成信号
-            streamAgentMsg.content = `${completionHeader}\n\n${taskOutput}`
+            streamAgentMsg.content = `${completionHeader}\n\n${summarizeTaskOutput(taskOutput)}`
             // 交付物卡片只挂在 task-output-<taskId> 上，避免同一份 md/docx/xlsx 出现两遍
             streamAgentMsg.artifacts = undefined
             if (streamAgentMsg.isStreaming) streamAgentMsg.isStreaming = false
@@ -1653,7 +1678,7 @@ export const useMainStore = defineStore('main', () => {
           if (alreadyExists) {
             // 已由轮询兜底插入，仅更新 artifacts 和 content（确保内容最新）
             const existingMsg = messages.value.find(m => m.id === existingMsgId)!
-            existingMsg.content = `${completionHeader}\n\n${taskOutput}${taskArtifacts.length > 0 ? `\n\n输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}` : ''}`
+            existingMsg.content = `${completionHeader}\n\n${summarizeTaskOutput(taskOutput)}${taskArtifacts.length > 0 ? `\n\n输出物（${taskArtifacts.length}个）: ${taskArtifacts.map((a: any) => a.name || a.title || 'unnamed').join(', ')}` : ''}`
             existingMsg.artifacts = taskArtifacts.length > 0 ? taskArtifacts : undefined
           } else if (taskOutput || taskArtifacts.length > 0) {
             const artifactMsgs = taskArtifacts.length > 0
@@ -1663,7 +1688,7 @@ export const useMainStore = defineStore('main', () => {
               id: existingMsgId,
               role: 'assistant',
               type: 'agent',
-              content: `${completionHeader}\n\n${taskOutput}${artifactMsgs}`,
+              content: `${completionHeader}\n\n${summarizeTaskOutput(taskOutput)}${artifactMsgs}`,
               timestamp: new Date().toISOString(),
               agentId: taskData.agentId || taskData.agent,
               artifacts: taskArtifacts.length > 0 ? taskArtifacts : undefined,
@@ -2165,12 +2190,12 @@ export const useMainStore = defineStore('main', () => {
               const toolInfo = JSON.parse(chunkText)
               if (!target.thinking) target.thinking = []
               const toolName = toolInfo.name || toolInfo.tool || 'unknown'
-              const argsText = typeof toolInfo.arguments === 'string'
+              // 工具调用参数转自然语言（2026-11-19）：原来直接把 JSON 参数摊开，
+              // 9dem_executor 的参数可达数 KB，用户看到一屏花括号。现在只列关键入参。
+              const rawArgs = typeof toolInfo.arguments === 'string'
                 ? toolInfo.arguments
-                : JSON.stringify(toolInfo.arguments ?? toolInfo, null, 2)
-              const displayArgs = argsText.length > 8000
-                ? `${argsText.slice(0, 8000)}\n…（参数过长，已截断 ${argsText.length} 字符）`
-                : argsText
+                : (toolInfo.arguments ?? toolInfo)
+              const displayArgs = describeToolCall(toolName, rawArgs)
               const lastToolStep = [...target.thinking].reverse().find(s => s.type === 'tool_call' && s.toolName === toolName)
               if (lastToolStep) {
                 lastToolStep.content = displayArgs
@@ -2274,7 +2299,9 @@ export const useMainStore = defineStore('main', () => {
         break
 
       default:
-        message = `${data.type}: ${JSON.stringify(data).slice(0, 50)}`
+        // 未处理的事件类型只留一句可读提示。以前这里把整个事件对象序列化后截断，
+        // 一旦有人把它接到面板上就是一屏花括号；事件类型本身就是最有用的信息。
+        message = `收到事件：${data.type || '未知类型'}`
         status = 'info'
     }
 
