@@ -692,7 +692,8 @@ export const useMainStore = defineStore('main', () => {
           ? `\n\n**审核意见：**\n\`\`\`\n${String(raw)}\n\`\`\``
           : ''
         const failed = !p.score && (p.error || p.parseOk === false)
-        const verdict = failed ? '审核未跑出结果' : `${p.score}分 ${p.veto ? '否决' : (p.passed ? '通过' : '未通过')}`
+        const scoreState = p.veto ? '一票否决' : (Number(p.score) >= 80 ? '评分达标' : '评分偏低')
+        const verdict = failed ? '审核未跑出结果' : `${p.score}分 ${scoreState}`
         const attemptNo = Number(p.attempt ?? 0) + 1
         const roundTag = attemptNo > 1 ? `第 ${attemptNo} 轮 · ` : ''
         return {
@@ -1540,9 +1541,11 @@ export const useMainStore = defineStore('main', () => {
           // score=0 且带 error：审核自身没跑起来，不是「模型认真审了给 0 分」。
           // 与时间线重放（timelineEventToMessage）保持同一文案口径。
           const reviewerFailed = !data.score && (data.error || data.parseOk === false)
+          // 单个审核员只报「评分是否达到 80」，不作交付物结论——
+          // 任务级结论由「门禁 + 三人问题并集 + major 密度」判定，两套口径不同。
           const vetoMark = reviewerFailed
             ? '未跑出结果'
-            : (data.veto ? '否决' : (data.passed ? '通过' : '未通过'))
+            : (data.veto ? '一票否决' : (Number(data.score) >= 80 ? '评分达标' : '评分偏低'))
           const now = new Date().toISOString()
           // 产出物预览：把审核输出用 markdown 代码块包裹（黑色背景区域）
           // 注意：data.output 可能是空字符串，要用 != null 判断
