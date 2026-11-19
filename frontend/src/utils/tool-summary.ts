@@ -410,10 +410,12 @@ export function summarizeReviewOutput(raw: any, options: any = {}): string {
     const top = [...issues]
       .sort((a: any, b: any) => (a?.severity === 'blocker' ? -1 : 0) - (b?.severity === 'blocker' ? -1 : 0))
       .slice(0, maxIssues)
+    // 单条控制在 120 字内：真实审核意见的描述常在 200 字以上，
+    // 全量铺开会把一条聊天消息撑成十几行，反而更难扫读。完整描述在审核报告里。
     for (const i of top) {
       const where = i?.caseId ? `【${i.caseId}】` : ''
-      const desc = String(i?.description || '').replace(/\s+/g, ' ').slice(0, 160)
-      const fix = i?.suggestion ? ` → 建议：${String(i.suggestion).replace(/\s+/g, ' ').slice(0, 120)}` : ''
+      const desc = String(i?.description || '').replace(/\s+/g, ' ').slice(0, 120)
+      const fix = i?.suggestion ? ` → 建议：${String(i.suggestion).replace(/\s+/g, ' ').slice(0, 80)}` : ''
       lines.push(`· ${where}${desc}${fix}`)
     }
     if (issues.length > maxIssues) {
