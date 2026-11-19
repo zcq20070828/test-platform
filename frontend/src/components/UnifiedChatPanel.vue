@@ -9,6 +9,7 @@ import 'highlight.js/styles/github-dark.css'
 import { Marked } from 'marked'
 import { sanitizeHtml, renderMarkdownSafe, escapeHtml } from '@/utils/safe-html'
 import MsIcon from '@/components/MsIcon.vue'
+import { formatClock } from '@/utils/time'
 import { getAgentIcon } from '@/utils/agentIcons'
 
 // ===== 局部 marked 实例：避免多个组件用 marked.use() 互相覆盖 renderer =====
@@ -219,7 +220,7 @@ function handleVoiceResult(text: string) {
 // 格式化时间
 function formatTime(iso: string) {
   const d = new Date(iso)
-  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return formatClock(d)
 }
 
 /**

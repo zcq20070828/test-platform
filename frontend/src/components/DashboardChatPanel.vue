@@ -9,6 +9,7 @@ import 'highlight.js/styles/github-dark.css'
 import { Marked } from 'marked'
 import { sanitizeHtml, renderMarkdownSafe, escapeHtml } from '@/utils/safe-html'
 import MsIcon from '@/components/MsIcon.vue'
+import { formatClock } from '@/utils/time'
 import { getAgentIcon } from '@/utils/agentIcons'
 
 const props = defineProps<{
@@ -316,9 +317,13 @@ function handleFileChange(e: Event) {
 function removeAttachment(index: number) { attachments.value.splice(index, 1) }
 function handleVoiceResult(text: string) { localInput.value += text; emit('update:modelValue', localInput.value) }
 
+// 时间统一按北京时区渲染（2026-11-19）
+// 原实现 new Date(iso).toLocaleTimeString('zh-CN') 依赖浏览器本地时区：
+// 在 UTC 机器上会把 UTC ISO 也显示成 UTC 时间；而 `YYYY-MM-DD HH:mm:ss`
+// （后端 Beijing 墙钟写入 DB 的格式）在非 UTC+8 机器上会被当成 UTC 解析，差 8 小时。
+// 统一走 utils/time.ts，固定 Asia/Shanghai。
 function formatTime(iso: string) {
-  const d = new Date(iso)
-  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return formatClock(iso)
 }
 
 /**

@@ -550,7 +550,7 @@
             </el-descriptions-item>
             <el-descriptions-item label="扫描引擎">{{ detailReport.scanner }}</el-descriptions-item>
             <el-descriptions-item label="耗时">{{ detailReport.duration_ms ? (detailReport.duration_ms / 1000).toFixed(1) + 's' : '—' }}</el-descriptions-item>
-            <el-descriptions-item label="创建时间" :span="2">{{ detailReport.created_at }}</el-descriptions-item>
+            <el-descriptions-item label="创建时间" :span="2">{{ formatDateTime(detailReport.created_at) }}</el-descriptions-item>
             <el-descriptions-item v-if="detailReport.test_domain" label="测试域">
               <el-tag size="small" type="primary">{{ securityDomainLabel(detailReport.test_domain) }}</el-tag>
             </el-descriptions-item>
@@ -685,6 +685,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, reactive, computed, watch } from 'vue'
+import { formatDateTime } from '@/utils/time'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import SecurityRealScanPanel from '@/components/SecurityRealScanPanel.vue'
 import { securityApi, toolsApi } from '@/api'
