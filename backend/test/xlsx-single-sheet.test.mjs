@@ -2,19 +2,19 @@
 /**
  * Excel 工作表划分 单元测试（2026-11-19，按用户口径修正）
  *
- * 用户口径：「用例清单不要分多个 sheet 页，其他 sheet 页还是要保留」。
+ * 用户最终口径：「用例清单不要分多个 sheet 页，其他 sheet 页还是要保留」，
+ * 且「接口用例字段数量和字段名称不一样」，所以接口用例要单独一页。
  *
- * 历史两版都错过：
- *   v1（原始）：每张表一页 → 用例清单被拆成「测试用例清单」+「接口测试用例」两页，
- *              执行同学要跨页拼用例、无法整表筛选。
- *   v2（上一版，做过头）：全部塞进一页 → 覆盖分析 / 维度矩阵 / 方法矩阵 / 豁免声明
- *              都被压到用例表下方，失去了「一表一页」的浏览方式。
- *
- * 正确规则（本版）：
- *   1. 所有「用例表」（表头同时有 用例编号 + 预期结果）合并成一张「测试用例」页
- *   2. 其他表格各自保留独立 sheet，名称取该表前最近的 Markdown 标题
- *   3. 用例页冻结表头 + 自动筛选（可整表按维度/优先级筛）
- *   4. --multi-sheet 保留 v1 行为，仅调试用
+ * 三版口径的演进（前两版都不对）：
+ *   v1：每张表一页 → 主用例清单被拆成多页（模型按章节拆表时会裂成 2~3 页）
+ *   v2：全部塞进一页 → 覆盖分析/矩阵/豁免声明变成用例下方附录，且接口用例
+ *       与主用例强行合表，造出大量空列（接口行没有「所属模块」，主用例行没有「接口编号」）
+ *   v3（本版）：**按列结构分组**
+ *     - 列结构相同 → 合并成一页（模型把用例清单拆成"功能/安全/性能"多节时仍是一页）
+ *     - 列结构不同 → 各自成页（主用例 11 列 vs 接口用例 12 列）
+ *     - 其他表格一表一页
+ *     - 每页冻结表头 + 自动筛选，各自独立可用
+ *     - --multi-sheet 保留 v1 行为，仅调试用
  */
 import assert from 'node:assert';
 import fs from 'node:fs';
@@ -107,17 +107,63 @@ const fullMd = [
   '| IT-API-001-01 | API-001 | 登录接口 | POST | 正向 | ② 数据 / 等价类划分法 | 正常 | 1.调用 | 返回 200 | 高 |',
 ].join('\n');
 
-t('用例清单只占 1 页（主用例 + 接口用例合并）', () => {
+t('主用例清单只占 1 页（不被章节拆分）', () => {
   const sheets = readSheets(convert(fullMd, 'merged'));
-  const caseSheet = sheets.find((s) => s.title === '测试用例');
-  assert.ok(caseSheet, `缺少「测试用例」页，实际：${sheets.map((s) => s.title).join(',')}`);
-  const idCol = caseSheet.rows[0].indexOf('用例编号');
-  const ids = caseSheet.rows.slice(1).map((r) => r[idCol]).filter(Boolean);
-  assert.ok(ids.includes('TC-001'), '主用例 TC-001 不在用例页');
-  assert.ok(ids.includes('IT-API-001-01'), '接口用例 IT-API-001-01 不在同一页');
-  // 不能再有独立的接口用例页
+  const tcSheet = sheets.find((s) => {
+    const idCol = s.rows[0].indexOf('用例编号');
+    if (idCol < 0) return false;
+    return s.rows.some((r) => String(r[idCol] || '').startsWith('TC-'));
+  });
+  assert.ok(tcSheet, `找不到主用例页，实际：${sheets.map((s) => s.title).join(',')}`);
+  const idCol = tcSheet.rows[0].indexOf('用例编号');
+  const tcIds = tcSheet.rows.slice(1).map((r) => r[idCol]).filter((v) => String(v).startsWith('TC-'));
+  assert.ok(tcIds.length >= 2, `主用例页只找到 ${tcIds.length} 条`);
+});
+
+t('接口用例单独成页（字段数量与名称不同，不能合表）', () => {
+  const sheets = readSheets(convert(fullMd, 'api-separate'));
+  const apiSheet = sheets.find((s) => {
+    const idCol = s.rows[0].indexOf('用例编号');
+    if (idCol < 0) return false;
+    return s.rows.some((r) => String(r[idCol] || '').startsWith('IT-API'));
+  });
+  assert.ok(apiSheet, `接口用例没有独立页，实际：${sheets.map((s) => s.title).join(',')}`);
+  // 主用例页里不应混入接口用例
+  const tcSheet = sheets.find((s) => s !== apiSheet && s.rows[0].includes('用例编号'));
+  const tcIdCol = tcSheet.rows[0].indexOf('用例编号');
+  assert.ok(!tcSheet.rows.some((r) => String(r[tcIdCol] || '').startsWith('IT-API')),
+    '接口用例被混进了主用例页');
+});
+
+t('接口用例页保留自己的接口特有列（不出现主用例的模块/输入列）', () => {
+  const sheets = readSheets(convert(fullMd, 'api-cols'));
   const apiSheet = sheets.find((s) => s.title.includes('接口测试用例'));
-  assert.strictEqual(apiSheet, undefined, `接口用例不应单独成页：${apiSheet && apiSheet.title}`);
+  assert.ok(apiSheet, '找不到接口用例页');
+  const header = apiSheet.rows[0];
+  for (const col of ['接口编号', '接口名称', '请求方式', '用例类型']) {
+    assert.ok(header.includes(col), `接口页缺少「${col}」`);
+  }
+  // 接口用例本就没有「所属模块」「输入数据」，不该为了合并而硬造空列
+  assert.ok(!header.includes('所属模块'), `接口页出现了不该有的「所属模块」：${header.join(',')}`);
+});
+
+t('列结构相同的用例表仍合并成一页', () => {
+  const md = [
+    '### 测试用例清单（功能）',
+    '| 用例编号 | 所属模块 | 用例名称 | 维度 | 层级 | 预期结果 | 优先级 |',
+    '|---|---|---|---|---|---|---|',
+    '| TC-001 | 登录 | a | ② 数据 | 正常 | 返回 200 | 高 |',
+    '',
+    '### 测试用例清单（续：安全）',
+    '| 用例编号 | 所属模块 | 用例名称 | 维度 | 层级 | 预期结果 | 优先级 |',
+    '|---|---|---|---|---|---|---|',
+    '| TC-002 | 安全 | b | ⑤ 安全 | 异常 | 返回 403 | 中 |',
+  ].join('\n');
+  const sheets = readSheets(convert(md, 'same-struct'));
+  assert.strictEqual(sheets.length, 1, `同结构应合并成 1 页，实际 ${sheets.length}：${sheets.map((s) => s.title).join(',')}`);
+  const idCol = sheets[0].rows[0].indexOf('用例编号');
+  const ids = sheets[0].rows.slice(1).map((r) => r[idCol]).filter(Boolean);
+  assert.deepStrictEqual(ids, ['TC-001', 'TC-002']);
 });
 
 t('其他表格各自保留独立 sheet（覆盖分析/维度矩阵/方法矩阵/豁免声明）', () => {
@@ -127,39 +173,45 @@ t('其他表格各自保留独立 sheet（覆盖分析/维度矩阵/方法矩阵
   }
 });
 
-t('总页数 = 1（用例）+ 4（其他表）', () => {
+t('总页数 = 2（主用例 + 接口用例）+ 4（其他表）', () => {
   const sheets = readSheets(convert(fullMd, 'count'));
-  assert.strictEqual(sheets.length, 5, `实际 ${sheets.length} 页：${sheets.map((s) => s.title).join(',')}`);
+  assert.strictEqual(sheets.length, 6, `实际 ${sheets.length} 页：${sheets.map((s) => s.title).join(',')}`);
 });
 
-t('用例页列取并集（主用例列 + 接口用例列都在）', () => {
-  const caseSheet = readSheets(convert(fullMd, 'union')).find((s) => s.title === '测试用例');
-  const header = caseSheet.rows[0];
-  for (const col of ['用例编号', '所属模块', '输入数据', '接口编号', '请求方式', '用例类型']) {
-    assert.ok(header.includes(col), `缺少列「${col}」`);
+t('主用例页保留自己的功能列（不被接口列污染）', () => {
+  const sheets = readSheets(convert(fullMd, 'tc-cols'));
+  const tcSheet = sheets.find((s) => {
+    const idCol = s.rows[0].indexOf('用例编号');
+    return idCol >= 0 && s.rows.some((r) => String(r[idCol] || '').startsWith('TC-'));
+  });
+  const header = tcSheet.rows[0];
+  for (const col of ['用例编号', '所属模块', '用例名称', '输入数据', '执行步骤', '预期结果']) {
+    assert.ok(header.includes(col), `主用例页缺少「${col}」`);
   }
+  assert.ok(!header.includes('接口编号'), `主用例页混入了接口列：${header.join(',')}`);
 });
 
-t('用例页列序按规范顺序', () => {
-  const header = readSheets(convert(fullMd, 'order')).find((s) => s.title === '测试用例').rows[0];
+t('主用例页列序按规范顺序', () => {
+  const sheets = readSheets(convert(fullMd, 'order'));
+  const tcSheet = sheets.find((s) => s.rows[0].includes('所属模块'));
+  const header = tcSheet.rows[0];
   assert.strictEqual(header[0], '用例编号');
   assert.ok(header.indexOf('用例名称') < header.indexOf('执行步骤'));
   assert.ok(header.indexOf('执行步骤') < header.indexOf('预期结果'));
 });
 
-t('缺列留空，不串列', () => {
-  const caseSheet = readSheets(convert(fullMd, 'blank')).find((s) => s.title === '测试用例');
-  const header = caseSheet.rows[0];
-  const apiCol = header.indexOf('接口编号');
-  const idCol = header.indexOf('用例编号');
-  const tcRow = caseSheet.rows.find((r) => r[idCol] === 'TC-001');
-  assert.strictEqual(tcRow[apiCol], '', `主用例行的接口编号应为空，实际「${tcRow[apiCol]}」`);
+t('接口页里的步骤列被归一为「执行步骤」（原表写「测试步骤」）', () => {
+  const sheets = readSheets(convert(fullMd, 'norm'));
+  const apiSheet = sheets.find((s) => s.title.includes('接口测试用例'));
+  assert.ok(apiSheet.rows[0].includes('执行步骤'), `表头未归一：${apiSheet.rows[0].join(',')}`);
+  assert.ok(!apiSheet.rows[0].includes('测试步骤'), '仍残留「测试步骤」');
 });
 
-t('用例页冻结首行 + 自动筛选', () => {
-  const caseSheet = readSheets(convert(fullMd, 'freeze')).find((s) => s.title === '测试用例');
-  assert.strictEqual(caseSheet.freeze, 'A2');
-  assert.ok(/^A1:[A-Z]+\d+$/.test(caseSheet.filter || ''), `筛选范围异常：${caseSheet.filter}`);
+t('主用例页冻结首行 + 自动筛选', () => {
+  const sheets = readSheets(convert(fullMd, 'freeze'));
+  const tcSheet = sheets.find((s) => s.rows[0].includes('所属模块'));
+  assert.strictEqual(tcSheet.freeze, 'A2');
+  assert.ok(/^A1:[A-Z]+\d+$/.test(tcSheet.filter || ''), `筛选范围异常：${tcSheet.filter}`);
 });
 
 t('其他表页也有冻结与筛选（各自独立可用）', () => {
