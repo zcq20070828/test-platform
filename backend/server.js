@@ -4619,7 +4619,65 @@ async function executeChatRound(task, message, userFiles) {
       }
     }
     const chatInput = buildChatContinuationInput(task, message, userFileContents, chatHistory);
+
+    // ── 过程事件（2026-11-19）──
+    // 以前 chat 轮次只发流式 chunk + 末尾一条 chat_message，中间没有任何阶段提示：
+    // 用户发完指令后如果模型慢，界面就一直是那条用户消息，看起来像"没反应"。
+    // 这里补上「开始修订 → 修订完成 / 失败」两个阶段事件，与普通任务同一套渲染路径。
+    // 用 chat_message(system) 而不是 task_progress：前端只有 chat_message 会真正写进
+    // 聊天面板（task_progress 只更新任务列表状态，没有面板渲染它）。
+    broadcast({
+      type: 'chat_message',
+      // taskId / userId 必须在顶层：broadcast() 只认 message.taskId 做用户隔离，
+      // 放进 data.taskId 会被当成全局事件发给所有登录用户。
+      taskId: task.id,
+      userId: task.userId || null,
+      data: {
+        role: 'system',
+        type: 'system',
+        content: '📝 正在按对话指令修订交付物…',
+        taskId: task.id,
+        agentId: task.agent,
+        timestamp: new Date().toISOString(),
+      },
+    });
+
+    // 多轮对话是「修订版」：保存调用前的质量快照，跑完恢复。
+    // spawnAgentSession 内部会把本次门禁结果写进 taskCaseQualityReports，
+    // 若不恢复，任务详情页显示的可用率会随每次改稿漂移，看起来像初次生成质量在变。
+    // chat 轮自己的检查结果由本函数单独广播（见下方 case_quality_gate）。
+    const prevQualitySnapshot = taskCaseQualityReports.get(task.id);
     const result = await spawnAgentSession(task.agent, chatInput, task.id, null, true, [], task.userId || null);
+    if (prevQualitySnapshot) taskCaseQualityReports.set(task.id, prevQualitySnapshot);
+
+    // ⚠️ 失败必须播报。spawnAgentSession 失败时返回 { success:false, error }，
+    // 没有 text —— 旧代码只在 if (text) 里广播，于是 402/超时/熔断这些失败
+    // 在界面上**完全没有反馈**（实测：余额不足 402，用户只看到自己那条消息，以为没发出）。
+    if (result && result.success === false) {
+      const reason = result.error || '智能体调用失败';
+      console.error(`[Chat] ${task.id} 本轮失败: ${reason}`);
+      broadcast({
+        type: 'chat_message',
+        taskId: task.id,
+        userId: task.userId || null,
+        data: {
+          role: 'system',
+          type: 'system',
+          content: `本轮修订失败：${reason}`,
+          taskId: task.id,
+          agentId: task.agent,
+          timestamp: new Date().toISOString(),
+        },
+      });
+      // 失败也要记进对话历史，避免下一轮模型以为上一轮成功了
+      const failEntry = [
+        { role: 'user', content: message || '', attachments: userFiles.map(f => ({ name: f.name })), versionLabel: userVerLabel, timestamp: new Date().toISOString() },
+        { role: 'assistant', content: `[本轮失败] ${reason}`, versionLabel: '', timestamp: new Date().toISOString() },
+      ];
+      await taskDAO.updateTask(task.id, { chat_history: JSON.stringify((chatHistory || []).concat(failEntry)) });
+      return;
+    }
+
     const text = result && result.text ? result.text : (typeof result === 'string' ? result : '');
     let agentVerLabel = '';
     if (text) {
@@ -4633,8 +4691,55 @@ async function executeChatRound(task, message, userFiles) {
         const lastAgent = outs.filter(o => o.versionSource === 'agent').pop();
         agentVerLabel = lastAgent ? lastAgent.displayVersion : '';
       } catch (_) {}
+
+      // 修订后的确定性质量检查（2026-11-19）：chat 轮的产出同样是要交付的，
+      // 过去只在 spawnAgentSession 内部跑一次、结果会被后续轮次覆盖，
+      // 而且界面上看不到。这里显式再检一次并广播，让用户知道这次修订是变好还是变差。
+      if (CASE_QUALITY_GATE_AGENTS.has(task.agent)) {
+        try {
+          const fixed = applyCaseInputRepairs(text);
+          const candidate = fixed.applied > 0 ? fixed.text : text;
+          const afterGate = checkCaseQuality(candidate, {
+            originalInput: task.originalInput || task.input || '',
+            minUsabilityRate: CASE_QUALITY_MIN_RATE,
+            requireDimension: true,
+            minProbeCoverage: CASE_QUALITY_MIN_PROBE_COVERAGE,
+          });
+          if (afterGate.applicable) {
+            broadcast({
+              type: 'case_quality_gate',
+              agentId: task.agent,
+              userId: task.userId || null,
+              taskId: task.id,
+              round: 0,
+              total: afterGate.total,
+              usable: afterGate.usable,
+              usabilityRate: afterGate.usabilityRate,
+              pass: afterGate.pass,
+              byReason: afterGate.byReason,
+              summary: `本轮修订后：${afterGate.summary.text}`,
+              usabilityPass: afterGate.usabilityPass,
+              dimensionPass: afterGate.dimensionPass,
+              dimensionCoverage: afterGate.dimensions ? {
+                text: afterGate.dimensions.text,
+                probeCoverage: afterGate.dimensions.probeCoverage,
+                missingDimensions: afterGate.dimensions.missingDimensions,
+                missingLayerDimensions: afterGate.dimensions.missingLayerDimensions,
+                waived: afterGate.dimensions.waived,
+              } : null,
+              skippedIds: afterGate.skippedIds,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } catch (gateErr) {
+          console.warn(`[Chat] 本轮质量检查失败: ${gateErr.message}`);
+        }
+      }
+
       broadcast({
         type: 'chat_message',
+        taskId: task.id,
+        userId: task.userId || null,
         data: {
           role: 'assistant', type: 'agent',
           content: text,
@@ -4654,7 +4759,12 @@ async function executeChatRound(task, message, userFiles) {
     await taskDAO.updateTask(task.id, { chat_history: JSON.stringify(updated) });
   } catch (e) {
     console.error('[Chat] 轮次失败', e);
-    broadcast({ type: 'chat_message', data: { role: 'system', content: `对话处理失败：${e.message}`, taskId: task.id, timestamp: new Date().toISOString() } });
+    broadcast({
+      type: 'chat_message',
+      taskId: task.id,
+      userId: task.userId || null,
+      data: { role: 'system', type: 'system', content: `对话处理失败：${e.message}`, taskId: task.id, timestamp: new Date().toISOString() },
+    });
   } finally {
     chatLocks.delete(task.id);
   }
@@ -4690,6 +4800,9 @@ app.post('/api/tasks/:id/chat', authenticate, async (req, res) => {
   } catch (_) {}
   broadcast({
     type: 'chat_message',
+    // 顶层 taskId/userId 供 broadcast() 做用户隔离（只放到 data 里会被当全局事件）
+    taskId,
+    userId: task.user_id || req.user.id,
     data: {
       role: 'user',
       content: message || '',

@@ -1325,6 +1325,20 @@ export const useMainStore = defineStore('main', () => {
       case 'chat_message':
         // 后端推送的 ChatMessage，直接加入消息列表供 DashboardChatPanel 显示
         if (data.data && data.data.role && data.data.content) {
+          // 去重（2026-11-19）：对话轮次里流式链路已经创建了一条 assistant 消息并累积了内容，
+          // 末尾 chat_message 再推一次全文会造成「同一份修订显示两遍」。
+          // 内容一致时只把流式消息收尾，不再追加新消息。
+          const incoming = String(data.data.content)
+          if (data.data.role === 'assistant') {
+            const dup = [...messages.value].reverse().find(
+              (m) => m.role === 'assistant' && String(m.content || '').trim() === incoming.trim(),
+            )
+            if (dup) {
+              dup.isStreaming = false
+              if (data.data.versionLabel) dup.versionLabel = data.data.versionLabel
+              return
+            }
+          }
           writeMsg(data.data)
         }
         return
