@@ -8,6 +8,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { escapeHtml as escapeHtmlUtil } from '@/utils/safe-html'
 import MsIcon from '@/components/MsIcon.vue'
 import QualityCard from '@/components/QualityCard.vue'
+import { formatDateTime } from '@/utils/time'
 
 const store = useMainStore()
 const router = useRouter()
@@ -157,9 +158,9 @@ function getStatusText(status: string) {
   return texts[status] || status
 }
 
+// 统一按北京时区渲染（2026-11-19）：见 frontend/src/utils/time.ts 的说明
 function formatTime(ts: string) {
-  if (!ts) return '-'
-  return new Date(ts).toLocaleString('zh-CN')
+  return formatDateTime(ts)
 }
 
 // 格式化任务输入（处理对象/JSON），敏感信息脱敏

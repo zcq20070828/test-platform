@@ -692,6 +692,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { formatDateTime } from '@/utils/time'
 import { ElMessage } from 'element-plus'
 import MsIcon from '@/components/MsIcon.vue'
 import { getAgentIcon, normalizeAgentIcon } from '@/utils/agentIcons'
@@ -1304,7 +1305,7 @@ function trendIcon(trend: string | null) {
 function formatTime(iso: string) {
   if (!iso) return '—'
   try {
-    return new Date(iso).toLocaleString('zh-CN', { hour12: false })
+    return formatDateTime(iso)
   } catch {
     return iso
   }

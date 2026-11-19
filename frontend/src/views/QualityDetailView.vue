@@ -204,7 +204,7 @@
           <el-descriptions-item label="智能体">{{ selectedReport.agentId }}</el-descriptions-item>
           <el-descriptions-item label="任务 ID">{{ selectedReport.taskId || '-' }}</el-descriptions-item>
           <el-descriptions-item label="任务类型">{{ selectedReport.taskType || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="评估时间">{{ selectedReport.timestamp }}</el-descriptions-item>
+          <el-descriptions-item label="评估时间">{{ formatDateTime(selectedReport.timestamp) }}</el-descriptions-item>
           <el-descriptions-item label="综合评分">
             <span :class="scoreClass(selectedReport.overall?.score)">
               {{ formatNum(selectedReport.overall?.score, 1) || '-' }}
@@ -263,7 +263,7 @@
               {{ selectedDeliverable.taskStatus }}
             </el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="创建时间">{{ selectedDeliverable.deliverable.createdAt }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatDateTime(selectedDeliverable.deliverable.createdAt) }}</el-descriptions-item>
         </el-descriptions>
 
         <h4 style="margin-top: 20px" class="tab-label"><MsIcon name="inventory_2" :size="16" /> 质量评分</h4>
@@ -313,6 +313,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { formatDateTime } from '@/utils/time'
 import { useRouter } from 'vue-router'
 import { request } from '@/api'
 import { ElMessage } from 'element-plus'

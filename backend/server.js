@@ -79,7 +79,21 @@ const SEC_REAL_STAGE_NAMES = ['安全测试方案生成', '安全测试用例生
 
 // 获取 CST 本地时间字符串 (与 MySQL TIMESTAMP 存储行为一致)
 function localNowStr() {
-  return new Date().toLocaleString('sv', { timeZone: 'Asia/Shanghai' }).replace(' ', 'T').slice(0, 19).replace('T', ' ');
+  return toLocalDateStr(new Date());
+}
+
+/**
+ * 任意 Date → 北京墙钟字符串 `YYYY-MM-DD HH:mm:ss`
+ *
+ * ⚠️ 不要用 `date.toISOString().slice(0,19).replace('T',' ')` 代替它：
+ * toISOString 永远是 UTC，写入 MySQL 的 created_at（TIMESTAMP 按会话时区解释）
+ * 会整体差 8 小时。实测因此出现过「评估任务创建时间比实际早 8 小时」，
+ * 以及「按 created_at ±2 分钟查关联任务」查不到任何记录。
+ */
+function toLocalDateStr(d) {
+  const date = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString('sv', { timeZone: 'Asia/Shanghai' }).replace(' ', 'T').slice(0, 19).replace('T', ' ');
 }
 
 
@@ -15256,7 +15270,7 @@ app.post('/api/evaluation/run', authenticate, async (req, res) => {
   try {
     const taskId = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`);
     evalTaskId = taskId;
-    const startTime = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const startTime = localNowStr(); // 必须用北京墙钟，toISOString 会写进 UTC 时间（差 8 小时）
     // 插入 MySQL tasks 表
     try {
       const sql = `INSERT INTO tasks (id, type, status, input, agent_id, user_id, require_review, created_at)
@@ -15727,10 +15741,11 @@ async function getAgentsForTask(taskId) {
     );
     if (!taskRow[0]) return [];
 
-    const windowStart = new Date(new Date(taskRow[0].created_at).getTime() - 2 * 60 * 1000)
-      .toISOString().slice(0, 19).replace('T', ' ');
-    const windowEnd = new Date(new Date(taskRow[0].created_at).getTime() + 2 * 60 * 1000)
-      .toISOString().slice(0, 19).replace('T', ' ');
+    // created_at 从 MySQL 读出来是北京时间（dateStrings: true），±2 分钟也必须用北京墙钟格式化，
+    // 用 toISOString 会把窗口整体挪到 UTC，BETWEEN 永远查不到记录。
+    const baseMs = new Date(taskRow[0].created_at).getTime();
+    const windowStart = toLocalDateStr(new Date(baseMs - 2 * 60 * 1000));
+    const windowEnd = toLocalDateStr(new Date(baseMs + 2 * 60 * 1000));
 
     const [related] = await pool.execute(
       "SELECT DISTINCT agent_id FROM tasks WHERE created_at BETWEEN ? AND ? AND status = 'completed' AND agent_id IS NOT NULL",

@@ -268,6 +268,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
+import { formatDateTime } from '@/utils/time'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { performanceTestApi } from '@/api/index'
 import PerfTestExecutor from '@/components/PerfTestExecutor.vue'
@@ -316,7 +317,7 @@ const statusLabel = (s: string) => ({ running: '进行中', completed: '已完�
 const scoreClass = (score: number | null) => score == null ? '' : score >= 90 ? 'score-high' : score >= 80 ? 'score-mid' : 'score-low'
 const gradeType = (g: string) => ({ 优秀: 'success', 良好: 'primary', 合格: 'warning', 不达标: 'danger' }[g] || 'info')
 
-const fmtTime = (t: string) => t ? new Date(t).toLocaleString('zh-CN') : '—'
+const fmtTime = (t: string) => formatDateTime(t)
 
 // 加载统计
 async function loadStats() {

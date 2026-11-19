@@ -167,6 +167,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { formatDateTime } from '@/utils/time'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { userActionApi } from '@/api'
@@ -269,7 +270,7 @@ const goBack = () => router.push('/stats')
 
 const formatTime = (t: string) => {
   if (!t) return '-'
-  try { return new Date(t).toLocaleString('zh-CN', { hour12: false }) } catch { return t }
+  return formatDateTime(t)
 }
 
 const formatDuration = (ms: number) => {

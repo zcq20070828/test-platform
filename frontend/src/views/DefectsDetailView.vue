@@ -158,6 +158,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { formatDateTime } from '@/utils/time'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { request } from '@/api'
@@ -191,7 +192,7 @@ const severityType = (s: string) => ({ critical: 'danger', high: 'danger', mediu
 const statusType = (s: string) => ({ open: 'danger', fixed: 'success', closed: 'info', reopened: 'warning' }[s] || 'info')
 const statusLabel = (s: string) => ({ open: '待处理', fixed: '已修复', closed: '已关闭', reopened: '重新打开' }[s] || s)
 
-const formatTime = (t: string) => t ? new Date(t).toLocaleString('zh-CN') : '-'
+const formatTime = (t: string) => formatDateTime(t)
 
 const buildParams = () => {
   const p: any = { page: currentPage.value, size: pageSize.value }

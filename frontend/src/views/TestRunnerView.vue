@@ -177,7 +177,7 @@
               class="log-line"
               :class="`log-${log.type}`"
             >
-              <span class="log-time">{{ log.time }}</span>
+              <span class="log-time">{{ formatClock(log.time) }}</span>
               <span class="log-msg">{{ log.msg }}</span>
             </div>
           </div>
@@ -345,6 +345,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, nextTick, computed, watch, onMounted } from 'vue'
+import { formatClock } from '@/utils/time'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { request, testFrameworkApi, taskApi, getAuthHeaders } from '@/api'
 import { useMainStore } from '@/stores/main'

@@ -295,6 +295,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed } from 'vue'
+import { formatDateTime } from '@/utils/time'
 import { ElMessage } from 'element-plus'
 import { compatApi } from '@/api/index'
 import CompatTestExecutor from '@/components/CompatTestExecutor.vue'
@@ -371,7 +372,7 @@ const scoreClass = (score: number | null | undefined) => {
   if (score >= 70) return 'score-mid'
   return 'score-low'
 }
-const fmtTime = (t: string) => t ? new Date(t).toLocaleString('zh-CN') : '—'
+const fmtTime = (t: string) => formatDateTime(t)
 
 function getResultClass(browser: string, viewport: string): string {
   const r = getResult(browser, viewport)
