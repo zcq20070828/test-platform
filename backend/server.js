@@ -9350,24 +9350,151 @@ function invalidateUserApiKeyCache(userId) {
  * 所以让用户选一次服务商，地址与模型由平台内置，用户不用记 URL。
  */
 const PROVIDERS = {
+  // ── 国内 ──────────────────────────────────────────────────────────────
   deepseek: {
+    group: '国内',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-v4-pro',
   },
+  dashscope: {
+    group: '国内',
+    label: '阿里云百炼（通义千问）',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen-plus',
+  },
+  zhipu: {
+    group: '国内',
+    label: '智谱 AI（GLM）',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'glm-4-plus',
+  },
+  moonshot: {
+    group: '国内',
+    label: '月之暗面（Kimi）',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    model: 'moonshot-v1-8k',
+  },
+  volcengine: {
+    group: '国内',
+    label: '火山方舟（豆包）',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    // 方舟用「推理接入点 ID」而不是模型名，必须由用户填写
+    model: '',
+    requiresModel: true,
+    modelHint: '填方舟的推理接入点 ID（ep-xxxx）或模型名（如 doubao-pro-32k）',
+  },
+  hunyuan: {
+    group: '国内',
+    label: '腾讯混元',
+    baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
+    model: 'hunyuan-turbo',
+  },
+  qianfan: {
+    group: '国内',
+    label: '百度千帆（文心一言）',
+    baseUrl: 'https://qianfan.baidubce.com/v2',
+    model: 'ernie-4.0-8k',
+  },
+  spark: {
+    group: '国内',
+    label: '讯飞星火',
+    baseUrl: 'https://spark-api-open.xf-yun.com/v1',
+    model: 'generalv3.5',
+  },
+  siliconflow: {
+    group: '国内',
+    label: '硅基流动 SiliconFlow',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    model: 'Qwen/Qwen2.5-7B-Instruct',
+    modelHint: '可填硅基流动上的任意模型，如 deepseek-ai/DeepSeek-V2.5',
+  },
+  minimax: {
+    group: '国内',
+    label: 'MiniMax',
+    baseUrl: 'https://api.minimax.chat/v1',
+    model: 'abab6.5s-chat',
+  },
+  stepfun: {
+    group: '国内',
+    label: '阶跃星辰 StepFun',
+    baseUrl: 'https://api.stepfun.com/v1',
+    model: 'step-1-8k',
+  },
+  sensenova: {
+    group: '国内',
+    label: '商汤日日新',
+    baseUrl: 'https://api.sensenova.cn/compatible-mode/v1',
+    model: 'SenseChat-5',
+  },
+  baichuan: {
+    group: '国内',
+    label: '百川智能',
+    baseUrl: 'https://api.baichuan-ai.com/v1',
+    model: 'Baichuan4',
+  },
+
+  // ── 国外 ──────────────────────────────────────────────────────────────
   openai: {
+    group: '国外',
     label: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4o',
   },
-  // 其他 OpenAI 兼容服务（Kimi / 通义 / 智谱 / 自建网关）：
-  // 地址与模型由运维通过环境变量指定，用户在界面上只选「其他」、不填 URL。
-  // 没配置时拒用而不是悄悄打到 openai.com——把 A 家的 Key 发到 B 家只会得到
-  // 令人困惑的 401，用户根本查不出原因。
+  xai: {
+    group: '国外',
+    label: 'xAI（Grok）',
+    baseUrl: 'https://api.x.ai/v1',
+    model: 'grok-beta',
+  },
+  gemini: {
+    group: '国外',
+    label: 'Google Gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    model: 'gemini-1.5-flash',
+  },
+  mistral: {
+    group: '国外',
+    label: 'Mistral AI',
+    baseUrl: 'https://api.mistral.ai/v1',
+    model: 'mistral-large-latest',
+  },
+  groq: {
+    group: '国外',
+    label: 'Groq',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    model: 'llama-3.3-70b-versatile',
+  },
+  together: {
+    group: '国外',
+    label: 'Together AI',
+    baseUrl: 'https://api.together.xyz/v1',
+    model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+  },
+  openrouter: {
+    group: '国外',
+    label: 'OpenRouter（聚合）',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    model: 'openai/gpt-4o-mini',
+    modelHint: '填 OpenRouter 的模型全名，如 anthropic/claude-3.5-sonnet',
+  },
+  deepinfra: {
+    group: '国外',
+    label: 'DeepInfra',
+    baseUrl: 'https://api.deepinfra.com/v1/openai',
+    model: 'meta-llama/Llama-3.3-70B-Instruct',
+  },
+
+  // ── 其他 ──────────────────────────────────────────────────────────────
+  // 自建网关 / 未列出的 OpenAI 兼容服务：地址由运维通过环境变量指定。
+  // 没配置时不出现在下拉里——把用户引到一个注定调不通的选项毫无意义。
   compatible: {
-    label: '其他（OpenAI 兼容协议）',
+    group: '其他',
+    label: '其他（OpenAI 兼容，需运维配置）',
     baseUrl: (process.env.OPENAI_COMPATIBLE_BASE_URL || envConfig.OPENAI_COMPATIBLE_BASE_URL || '').replace(/\/+$/, ''),
-    model: process.env.OPENAI_COMPATIBLE_MODEL || envConfig.OPENAI_COMPATIBLE_MODEL || 'gpt-4o',
+    model: process.env.OPENAI_COMPATIBLE_MODEL || envConfig.OPENAI_COMPATIBLE_MODEL || '',
+    requiresModel: true,
+    modelHint: '填自建服务支持的模型名',
   },
 };
 
@@ -9384,8 +9511,16 @@ function providerProfile(provider) {
  */
 function providerUnavailableReason(provider) {
   const key = String(provider || 'deepseek').toLowerCase();
-  if (key === 'compatible' && !PROVIDERS.compatible.baseUrl) {
-    return '「其他（OpenAI 兼容协议）」尚未配置服务地址，请联系管理员设置 OPENAI_COMPATIBLE_BASE_URL';
+  const prof = PROVIDERS[key];
+  if (!prof) return '不支持的服务商类型';
+  if (key === 'compatible') {
+    // 「其他」既是地址也是模型都靠运维配置
+    if (!prof.baseUrl) {
+      return '「其他（OpenAI 兼容）」尚未配置服务地址，请联系管理员设置 OPENAI_COMPATIBLE_BASE_URL';
+    }
+    if (!prof.model) {
+      return '「其他（OpenAI 兼容）」尚未配置模型，请联系管理员设置 OPENAI_COMPATIBLE_MODEL';
+    }
   }
   return null;
 }
@@ -9417,8 +9552,11 @@ async function resolveApiKey(userId) {
         const prof = providerProfile(rec.provider);
         resolved = {
           apiKey: plain,
+          // 地址由服务商决定（用户不填 URL）；模型允许该 Key 单独覆盖，
+          // 因为火山方舟要「推理接入点 ID」、OpenRouter/硅基流动要指定具体模型名，
+          // 各家默认模型不足以覆盖。留空则用服务商默认。
           baseUrl: prof.baseUrl,
-          model: prof.model,
+          model: rec.model || prof.model,
           provider: String(rec.provider || 'deepseek'),
           source: 'user',
           keyId: rec.id,
@@ -9466,6 +9604,8 @@ function validateApiKeyInput(body, { requireKey }) {
     const provider = String(body.provider || '').trim();
     if (provider && !PROVIDERS[provider]) return '不支持的服务商类型';
   }
+  const model = String(body?.model || '').trim();
+  if (model.length > 100) return '模型名不能超过 100 个字符';
   if (requireKey) {
     const apiKey = String(body?.apiKey || '').trim();
     if (!apiKey) return '请填写 API Key';
@@ -9493,7 +9633,14 @@ app.get('/api/user/api-keys', authenticate, async (req, res) => {
         // 只下发当前部署真能用的服务商（「其他」未配地址时不出现在下拉里）
         providers: Object.entries(PROVIDERS)
           .filter(([value]) => !providerUnavailableReason(value))
-          .map(([value, p]) => ({ value, label: p.label, model: p.model })),
+          .map(([value, p]) => ({
+            value,
+            group: p.group || '其他',
+            label: p.label,
+            model: p.model || '',
+            modelHint: p.modelHint || '',
+            requiresModel: !!p.requiresModel,
+          })),
       },
     });
   } catch (e) {
@@ -9521,10 +9668,11 @@ app.post('/api/user/api-keys', authenticate, async (req, res) => {
     const created = await userApiKeyDAO.createApiKey(userId, {
       id,
       name: String(b.name).trim(),
-      // 服务商决定请求打到哪家；接口地址与模型由平台按服务商内置，用户不用填
+      // 服务商决定请求打到哪家（用户不填 URL）；
+      // 模型可选覆盖——方舟要 ep-xxx、OpenRouter 要完整模型名，默认值覆盖不到
       provider: PROVIDERS[b.provider] ? b.provider : 'deepseek',
       baseUrl: null,
-      model: null,
+      model: String(b.model || '').trim() || null,
       apiKeyEnc: await encryptSecret(plain),
       keyHint: keyHintOf(plain),
     });
@@ -9559,6 +9707,9 @@ app.put('/api/user/api-keys/:id', authenticate, async (req, res) => {
     };
     if (b.provider !== undefined && PROVIDERS[b.provider]) {
       fields.provider = b.provider;
+    }
+    if (b.model !== undefined) {
+      fields.model = String(b.model || '').trim() || null;
     }
     if (plain) {
       if (plain.length < API_KEY_MIN_LEN) return res.status(400).json({ success: false, error: 'API Key 长度不足' });
@@ -9621,7 +9772,8 @@ app.post('/api/user/api-keys/:id/verify', authenticate, async (req, res) => {
     // 用该 Key 的服务商配置验证：与真实调用完全一致（选择服务商的唯一意义就在这里）
     const prof = providerProfile(rec.provider);
     const base = prof.baseUrl;
-    const model = prof.model;
+    const model = rec.model || prof.model;
+    if (!model) return res.json({ success: false, error: '该服务商需要先填写模型名' });
     const r = await fetch(`${base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${plain}` },

@@ -65,9 +65,12 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="服务商" width="140">
+        <el-table-column label="服务商 / 模型" min-width="200">
           <template #default="{ row }">
-            {{ providerLabel(row.provider) }}
+            <div class="provider-cell">
+              <span class="provider-name">{{ providerLabel(row.provider) }}</span>
+              <span class="provider-model">{{ row.model || providerModel(row.provider) || '未指定' }}</span>
+            </div>
           </template>
         </el-table-column>
 
@@ -126,16 +129,39 @@
         </el-form-item>
 
         <el-form-item label="服务商" prop="provider">
-          <el-select v-model="form.provider" style="width: 100%">
-            <el-option
-              v-for="p in providers"
-              :key="p.value"
-              :label="p.label"
-              :value="p.value"
-            />
+          <el-select v-model="form.provider" filterable style="width: 100%">
+            <el-option-group
+              v-for="g in providerGroups"
+              :key="g.name"
+              :label="g.name"
+            >
+              <el-option
+                v-for="p in g.items"
+                :key="p.value"
+                :label="p.label"
+                :value="p.value"
+              />
+            </el-option-group>
           </el-select>
           <div class="field-hint">
-            选服务商即可：接口地址与模型由平台自动确定（{{ providerModel(form.provider) }}），无需手填 URL。
+            接口地址由服务商自动确定，无需手填 URL。
+            默认模型：{{ providerModel(form.provider) || '需在下方填写' }}
+          </div>
+        </el-form-item>
+
+        <!-- 模型：默认留空即用服务商推荐模型；方舟/OpenRouter 等必须指定时必填 -->
+        <el-form-item label="模型" prop="model">
+          <el-input
+            v-model="form.model"
+            :placeholder="currentProvider?.modelHint || `留空使用默认：${providerModel(form.provider)}`"
+          />
+          <div class="field-hint">
+            <template v-if="currentProvider?.requiresModel">
+              <span class="required-hint">该服务商必须指定模型</span>——{{ currentProvider.modelHint }}
+            </template>
+            <template v-else>
+              可留空（用服务商推荐模型），也可填该服务商支持的其它模型名。
+            </template>
           </div>
         </el-form-item>
 
@@ -168,7 +194,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { userApiKeyApi } from '@/api/index'
@@ -194,24 +220,65 @@ const form = reactive({
   name: '',
   provider: 'deepseek',
   apiKey: '',
+  model: '',
 })
 
+interface ProviderOption {
+  value: string
+  group: string
+  label: string
+  model: string
+  modelHint: string
+  requiresModel: boolean
+}
+
 // 服务商清单由后端返回（两边各硬编码一份会悄悄发错地址）
-const providers = ref<Array<{ value: string; label: string; model: string }>>([
-  { value: 'deepseek', label: 'DeepSeek', model: 'deepseek-v4-pro' },
+const providers = ref<ProviderOption[]>([
+  { value: 'deepseek', group: '国内', label: 'DeepSeek', model: 'deepseek-v4-pro', modelHint: '', requiresModel: false },
 ])
+
+// 「国内 / 国外 / 其他」分组，避免二十多个选项平铺成一长串
+const providerGroups = computed(() => {
+  const order = ['国内', '国外', '其他']
+  const map = new Map<string, ProviderOption[]>()
+  for (const p of providers.value) {
+    const g = p.group || '其他'
+    if (!map.has(g)) map.set(g, [])
+    map.get(g)!.push(p)
+  }
+  return order.filter((g) => map.has(g)).map((g) => ({ name: g, items: map.get(g)! }))
+})
+
+const currentProvider = computed(() => providers.value.find((p) => p.value === form.provider) || null)
+
+// 换服务商后重新校验模型：方舟/OpenRouter 需要模型，切回 DeepSeek 又不必填
+watch(() => form.provider, () => {
+  if (dialogVisible.value) formRef.value?.validateField('model').catch(() => {})
+})
 
 function providerLabel(value: string): string {
   return providers.value.find((p) => p.value === value)?.label || value || 'DeepSeek'
 }
 
 function providerModel(value: string): string {
-  return providers.value.find((p) => p.value === value)?.model || '平台默认模型'
+  return providers.value.find((p) => p.value === value)?.model || ''
 }
 
 const rules = computed<FormRules>(() => ({
   name: [{ required: true, message: '请填写名称', trigger: 'blur' }],
   provider: [{ required: true, message: '请选择服务商', trigger: 'change' }],
+  // 始终挂一个 validator：动态把规则置空会让「必填」在切换服务商后仍不生效
+  model: [{
+    trigger: 'blur',
+    validator: (_rule: any, value: string, cb: (e?: Error) => void) => {
+      const need = providers.value.find((p) => p.value === form.provider)?.requiresModel
+      if (need && !String(value || '').trim()) {
+        cb(new Error('该服务商必须填写模型'))
+        return
+      }
+      cb()
+    },
+  }],
   apiKey: editingId.value
     // 编辑时允许留空（表示不换 Key）
     ? []
@@ -234,7 +301,7 @@ async function load() {
     platformKeyAvailable.value = res.platformKeyAvailable
     platformKeyHint.value = res.platformKeyHint
     if (res.providers && res.providers.length) {
-      providers.value = res.providers
+      providers.value = res.providers as ProviderOption[]
     }
   } finally {
     loading.value = false
@@ -246,6 +313,7 @@ function resetForm() {
   form.name = ''
   form.provider = 'deepseek'
   form.apiKey = ''
+  form.model = ''
   formRef.value?.clearValidate()
 }
 
@@ -259,6 +327,7 @@ function openEdit(row: UserApiKey) {
   editingId.value = row.id
   form.name = row.name
   form.provider = row.provider || 'deepseek'
+  form.model = row.model || ''
   dialogVisible.value = true
 }
 
@@ -271,6 +340,7 @@ async function handleSave() {
     const payload = {
       name: form.name.trim(),
       provider: form.provider,
+      model: form.model.trim(),
     }
     const res = editingId.value
       ? await userApiKeyApi.update(editingId.value, {
@@ -418,6 +488,26 @@ onMounted(load)
 .never-verified {
   font-size: 12px;
   color: var(--el-text-color-placeholder);
+}
+
+.provider-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.provider-name {
+  font-size: 13px;
+  color: var(--el-text-color-primary);
+}
+
+.provider-model {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.required-hint {
+  color: var(--el-color-warning);
 }
 
 .security-note {

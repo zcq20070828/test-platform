@@ -141,6 +141,41 @@ t('UI 不要求手填接口地址与模型，但**必须**选服务商', () => {
   assert.ok(/无需手填 URL|无需手填/.test(APIKEY_VIEW), '未说明地址由平台自动确定');
 });
 
+t('服务商覆盖国内外主流大模型（不能只有 deepseek/openai）', () => {
+  // 用户反馈：「服务商的选项太少了，没覆盖国内可用的大模型的国内外服务商」
+  const block = SERVER.slice(SERVER.indexOf('const PROVIDERS = {'), SERVER.indexOf('/** 取服务商配置'));
+  const ids = [...block.matchAll(/^ {2}([a-z][a-z0-9]*): \{/gm)].map((m) => m[1]);
+  assert.ok(ids.length >= 18, `只有 ${ids.length} 个服务商：${ids.join(',')}`);
+
+  // 国内主流
+  for (const p of ['dashscope', 'zhipu', 'moonshot', 'volcengine', 'hunyuan', 'qianfan', 'spark', 'siliconflow', 'minimax', 'stepfun', 'sensenova', 'baichuan']) {
+    assert.ok(ids.includes(p), `缺少国内服务商 ${p}`);
+  }
+  // 国外主流
+  for (const p of ['openai', 'xai', 'gemini', 'mistral', 'groq', 'together', 'openrouter', 'deepinfra', 'deepseek']) {
+    assert.ok(ids.includes(p), `缺少国外服务商 ${p}`);
+  }
+
+  // 每个服务商都要有地址与分组
+  for (const id of ids) {
+    const m = block.match(new RegExp(`^ {2}${id}: \\{([\\s\\S]*?)^ {2}\\},`, 'm'));
+    assert.ok(m, `解析 ${id} 失败`);
+    assert.ok(/group: '(国内|国外|其他)'/.test(m[1]), `${id} 缺少分组`);
+    const hasUrl = /baseUrl: 'https?:/.test(m[1]) || /OPENAI_COMPATIBLE_BASE_URL/.test(m[1]);
+    assert.ok(hasUrl, `${id} 缺少 baseUrl`);
+  }
+
+  // 端点必须都是各家官方域名，不能全指向同一个
+  const urls = [...block.matchAll(/baseUrl: '(https?:\/\/[^']+)'/g)].map((m) => m[1]);
+  assert.ok(new Set(urls).size >= 15, `端点重复过多，只有 ${new Set(urls).size} 个不同地址`);
+});
+
+t('需要指定模型的服务商有 requiresModel 标记（方舟/OpenRouter 等）', () => {
+  assert.ok(/requiresModel: true/.test(SERVER), '缺少 requiresModel 标记');
+  assert.ok(/model: rec\.model \|\| prof\.model/.test(SERVER), '未支持按 Key 覆盖模型');
+  assert.ok(/provider: PROVIDERS\[b\.provider\]/.test(SERVER), '新增未写 provider');
+});
+
 t('服务商决定请求地址与模型（Key 本身看不出属于哪家）', () => {
   assert.ok(/const PROVIDERS = \{/.test(SERVER), '缺少服务商映射表');
   for (const p of ['deepseek', 'openai']) {
@@ -152,7 +187,8 @@ t('服务商决定请求地址与模型（Key 本身看不出属于哪家）', (
   const rk = SERVER.slice(SERVER.indexOf('async function resolveApiKey'), SERVER.indexOf('/** 只要 Key 字符串时用这个'));
   assert.ok(/providerProfile\(rec\.provider\)/.test(rk), 'resolveApiKey 未按服务商取配置');
   assert.ok(/baseUrl: prof\.baseUrl/.test(rk), '未使用服务商 baseUrl');
-  assert.ok(/model: prof\.model/.test(rk), '未使用服务商 model');
+  // 模型允许该 Key 覆盖（方舟要 ep-xxx、OpenRouter 要完整模型名），留空才用服务商默认
+  assert.ok(/model: rec\.model \|\| prof\.model/.test(rk), '未支持「该 Key 覆盖模型，留空用服务商默认」');
 });
 
 t('「其他」服务商未配地址时不出现在下拉里（避免注定调不通的选项）', () => {
@@ -173,6 +209,22 @@ t('新增接口里 b = req.body 必须在任何 b.xxx 之前（TDZ 回归）', (
   const useBefore = [...block.slice(0, declIdx).matchAll(/\bb\./g)];
   assert.strictEqual(useBefore.length, 0,
     `const b 之前就用了 b.*（会抛 TDZ）: ${useBefore.slice(0, 3).map((m) => m[0]).join(',')}`);
+});
+
+t('模型必填校验用 validator 而非动态删规则（否则切换服务商后失效）', () => {
+  // 实测踩过：:prop="... ? 'model' : undefined" + 动态置空 rules，
+  // 选了火山方舟（requiresModel）留空模型仍能保存成功。
+  assert.ok(/prop="model"/.test(APIKEY_VIEW), 'model 的 prop 不是固定值');
+  assert.ok(!/:prop="currentProvider/.test(APIKEY_VIEW), '仍用动态 prop（undefined 会跳过校验）');
+  assert.ok(/validator: \(_rule/.test(APIKEY_VIEW), '未使用 validator');
+  assert.ok(/该服务商必须填写模型/.test(APIKEY_VIEW), '缺少必填提示');
+  assert.ok(/watch\(\(\) => form\.provider/.test(APIKEY_VIEW), '切换服务商后未重校验');
+});
+
+t('服务商下拉按国内/国外分组（二十多个平铺不可用）', () => {
+  assert.ok(/el-option-group/.test(APIKEY_VIEW), '未使用分组渲染');
+  assert.ok(/providerGroups/.test(APIKEY_VIEW), '缺少分组计算');
+  assert.ok(/filterable/.test(APIKEY_VIEW), '缺少搜索（选项多时必需）');
 });
 
 t('verify 按该 Key 的服务商验证（否则验证结果不代表真实调用）', () => {
@@ -205,28 +257,30 @@ t('名称由用户自定义，UI 不暗示特定服务商', () => {
   assert.ok(/自定义名称/.test(nameInput), '缺少「自定义名称」提示');
 });
 
-t('前端提交体带 provider 但不带 baseUrl / model', () => {
+t('前端提交体带 provider 与 model，但不带 baseUrl', () => {
   const fn = APIKEY_VIEW.slice(APIKEY_VIEW.indexOf('async function handleSave'));
   const body = fn.slice(0, fn.indexOf('const res ='));
   assert.ok(/provider: form\.provider/.test(body), '未提交 provider（导致地址无法确定）');
   assert.ok(!/baseUrl/.test(body), '仍在提交 baseUrl');
-  assert.ok(!/model\s*:/.test(body), '仍在提交 model');
+  assert.ok(/model: form\.model/.test(body), '未提交 model（方舟/OpenRouter 必须指定）');
 });
 
-t('后端接受并校验 provider，但拒绝用户自定义 baseUrl / model', () => {
+t('后端接受并校验 provider 与 model，但拒绝用户自定义 baseUrl', () => {
   const fn = SERVER.slice(SERVER.indexOf('function validateApiKeyInput'), SERVER.indexOf('function validateApiKeyInput') + 900);
   assert.ok(!/body\?\.baseUrl/.test(fn), '仍在校验用户传入的 baseUrl');
   assert.ok(/不支持的服务商类型/.test(fn), '缺少 provider 合法性校验');
   const create = SERVER.slice(SERVER.indexOf("app.post('/api/user/api-keys',"), SERVER.indexOf("app.put('/api/user/api-keys/:id',"));
   assert.ok(/baseUrl: null/.test(create), '新增未强制 baseUrl=null');
-  assert.ok(/model: null/.test(create), '新增未强制 model=null');
+  assert.ok(/model: String\(b\.model/.test(create), '新增未接受用户填的模型');
   assert.ok(/provider: PROVIDERS\[b\.provider\]/.test(create), '新增未按用户选择写入 provider');
 });
 
-t('解析 Key 时不使用用户自定义的地址/模型（只认服务商映射）', () => {
+t('地址恒由服务商决定，模型允许该 Key 覆盖', () => {
   const fn = SERVER.slice(SERVER.indexOf('async function resolveApiKey'), SERVER.indexOf('/** 只要 Key 字符串时用这个'));
-  assert.ok(!/rec\.base_url/.test(fn), '仍在使用用户配置的地址');
-  assert.ok(!/rec\.model/.test(fn), '仍在使用用户配置的模型');
+  // 地址永远不取自用户配置：用户手填 URL 写错时会被误判成平台故障
+  assert.ok(!/rec\.base_url/.test(fn), '仍在用用户配置的地址');
+  // 模型是例外：火山方舟用推理接入点 ID、OpenRouter 用完整模型名，默认值覆盖不到
+  assert.ok(/rec\.model/.test(fn), '未允许按 Key 覆盖模型');
 });
 
 t('接口不回传明文 Key', () => {
