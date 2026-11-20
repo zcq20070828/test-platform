@@ -169,13 +169,29 @@ async function invoke(params) {
       compressed: (pairwise.mode || 'full') !== 'full',
     } : null;
 
-    // 工具结果会被 JSON.stringify 后塞进 LLM messages：组合数过大时必须裁剪输出，
-    // 否则单条工具结果可达十几 MB，既撑爆上下文也拖高堆内存。
-    const PAIRWISE_OUTPUT_LIMIT = Number(process.env.NINEDEM_PAIRWISE_OUTPUT_LIMIT) || 200;
+    // 组合数口径（2026-11-20 按用户口径修正）：
+    //   - 「要不要压缩」由 executor.js 的 PAIRWISE_ENUMERATION_LIMIT = 65536 决定
+    //     （全组合 ≤65536 全枚举，超过才走 2-wise 贪心）。这条**不许动**。
+    //   - 这里只处理「塞进 LLM 上下文太大」的问题，与上面的压缩口径无关。
+    //     早先写成 200，等于把 65536 以内本该全枚举的组合又砍回 200 条，
+    //     与既定口径冲突（用户指出）。
+    //
+    // 现在的分层做法：
+    //   - 全量 pairwise 明细**不进** LLM messages（否则 8 字段就有 12MB，撑爆上下文）；
+    //   - 但也不丢：随工具结果完整返回给调用方（服务端内存里有），
+    //     需要明细时由系统直接用它生成用例，不经过模型；
+    //   - 给模型的是 meta（总数/模式/因子数），足够它写「组合覆盖」说明。
+    const PAIRWISE_OUTPUT_LIMIT = Number(process.env.NINEDEM_PAIRWISE_OUTPUT_LIMIT) || 65536;
+    // 进 LLM 上下文的明细条数上限（只是为了让模型看到样例，不是业务口径）
+    const PAIRWISE_PROMPT_SAMPLE = Number(process.env.NINEDEM_PAIRWISE_PROMPT_SAMPLE) || 50;
+    // 全量明细（不进 prompt，供服务端生成用例用）
+    const pairwiseFull = Array.isArray(pairwise) ? pairwise : [];
+
     function capPairwise(container) {
       const arr = container && container.pairwise;
-      if (!Array.isArray(arr) || arr.length <= PAIRWISE_OUTPUT_LIMIT) return container;
-      const capped = arr.slice(0, PAIRWISE_OUTPUT_LIMIT);
+      if (!Array.isArray(arr) || arr.length <= PAIRWISE_PROMPT_SAMPLE) return container;
+      // 给模型的只是样例；真实条数写在 meta 里，避免模型误判「总共就这么多」
+      const capped = arr.slice(0, PAIRWISE_PROMPT_SAMPLE);
       capped.mode = arr.mode;
       capped.originalTotal = arr.originalTotal;
       capped.excludedFields = arr.excludedFields;
@@ -186,8 +202,8 @@ async function invoke(params) {
       return container;
     }
     if (pairwiseMeta) {
-      pairwiseMeta.outputLimit = PAIRWISE_OUTPUT_LIMIT;
-      pairwiseMeta.outputTruncated = (pairwise?.length || 0) > PAIRWISE_OUTPUT_LIMIT;
+      pairwiseMeta.outputLimit = PAIRWISE_PROMPT_SAMPLE;
+      pairwiseMeta.outputTruncated = (pairwise?.length || 0) > PAIRWISE_PROMPT_SAMPLE;
     }
     const resultForOutput = result.data ? { ...result, data: capPairwise({ ...result.data }) } : result;
 
@@ -221,6 +237,8 @@ async function invoke(params) {
         totalDeterministicCases: (designStats ? designStats.uniqueCases : 0) + dimensionGen.stats.total,
       },
       design,
+      // 全量组合明细：供服务端确定性生成用例，不随 prompt 下发（体积可能很大）
+      pairwiseFull,
       dimensionCases: dimensionGen.cases,
       dimensionChecklist: dimensionGen.checklist,
       dimensionChecklistText: renderChecklist(dimensionGen.checklist),

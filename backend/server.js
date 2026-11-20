@@ -11146,6 +11146,73 @@ function buildApiTestCasesMarkdown(apis, existingText = '') {
   return lines.join('\n');
 }
 
+/**
+ * 九维必测用例确定性补齐（2026-11-20）
+ *
+ * 背景：9dem_executor 已经把 42 个九维必测点展开成现成用例（dimensionCases），
+ * 里面维度/层级/前置条件/输入/步骤/预期结果全都是确定性的。但模型经常只落地
+ * 「黑盒9法」那部分（偏 ② 数据），把 dimensionCases 整段丢掉 ——
+ * 实测任务 8c33a87f 最终 96 条用例的维度**全是「② 数据」**，
+ * 九维必测点覆盖只有 19%，两轮定向修复后仍然 19%
+ * （外科式修复只能改已有行的字段，物理上无法新增缺失的用例）。
+ *
+ * 既然如此，就不该指望模型：缺哪个维度的必测用例，系统直接补。
+ * 这本来就是确定性工作，和「接口用例补齐」是同一类。
+ *
+ * @param {string} text 现有交付物
+ * @param {Array} dimensionCases 工具返回的九维必测用例
+ * @param {Object} coverage 门禁的维度覆盖结果（用于判断缺哪些维度）
+ * @returns {{text:string, added:number, skipped:number}}
+ */
+function buildDimensionCasesMarkdown(text, dimensionCases, coverage) {
+  if (!Array.isArray(dimensionCases) || !dimensionCases.length) {
+    return { text, added: 0, skipped: 0 };
+  }
+
+  // 已有用例里出现过的维度（按「① 用户」这种带圈数字判断）
+  const present = new Set();
+  const { cases: existingCases } = parseCaseTableForCount(text);
+  for (const c of existingCases) {
+    const dim = String(c.dimension || '');
+    const m = dim.match(/[①②③④⑤⑥⑦⑧⑨]/);
+    if (m) present.add(m[0]);
+  }
+  const missingDims = coverage && Array.isArray(coverage.missingDimensions)
+    ? new Set(coverage.missingDimensions.map((k) => k))
+    : null;
+
+  // 只补「完全缺失的维度」里的必测点：已有该维度的用例时不再重复堆——
+  // 覆盖矩阵只要求每维有必测点，重复补会让用例数虚高、审核员按重复扣分。
+  const dimKeyOfLabel = (label) => {
+    const m = String(label || '').match(/[①②③④⑤⑥⑦⑧⑨]/);
+    return m ? m[0] : '';
+  };
+
+  const toAdd = [];
+  for (const c of dimensionCases) {
+    const mark = dimKeyOfLabel(c.dimension);
+    if (!mark) continue;
+    // 该维度已经有用例 → 跳过（避免重复）
+    if (present.has(mark)) continue;
+    toAdd.push(c);
+  }
+  if (!toAdd.length) return { text, added: 0, skipped: dimensionCases.length };
+
+  const esc = (v) => String(v == null ? '' : v).replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
+  const lines = [];
+  lines.push('');
+  lines.push('## 九维必测点用例（系统按必测矩阵补齐）');
+  lines.push('');
+  lines.push(`> 以下 ${toAdd.length} 条由系统按九维必测矩阵确定性生成（每个必测点一条），补齐上文未覆盖的维度。维度、层级、预期结果均为确定性内容，可直接执行。`);
+  lines.push('');
+  lines.push('| 用例编号 | 所属模块 | 用例名称 | 维度 | 层级 | 前置条件 | 输入数据 | 执行步骤 | 预期结果 | 优先级 | 关联需求 |');
+  lines.push('|---|---|---|---|---|---|---|---|---|---|---|');
+  for (const c of toAdd) {
+    lines.push(`| ${esc(c.id)} | ${esc(c.module || '全模块')} | ${esc(c.name)} | ${esc(c.dimension)} | ${esc(c.layer)} | ${esc(c.precondition)} | ${esc(c.input)} | ${esc(c.steps)} | ${esc(c.expected)} | ${esc(c.priority || '中')} | ${esc(c.trace || '九维必测')} |`);
+  }
+  return { text: `${text}\n${lines.join('\n')}`, added: toAdd.length, skipped: dimensionCases.length - toAdd.length };
+}
+
 function appendToPrimaryDeliverable(text, extra) {
   if (!extra) return text;
   const blocks = [...String(text || '').matchAll(/```([a-zA-Z]*)\s*\n([\s\S]*?)```/g)];
@@ -11388,6 +11455,9 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
               { role: 'system', content: systemPrompt },
               { role: 'user', content: taskInput },
             ];
+        // 收集工具返回的九维必测用例：门禁判覆盖不足时用它确定性补齐
+        // （不指望模型「记得」把 dimensionCases 落进交付物，2026-11-20）
+        let toolDimensionCases = null;
         let iter = 0;
         while (toolCalls.length > 0 && iter < MAX_TOOL_ITERS) {
           iter++;
@@ -11445,7 +11515,18 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                   const a = JSON.parse((tc.function && tc.function.arguments) || '{}');
                   // 直接传完整参数,让各 invoker 自行解析(通用化)
                   const out = await skillMod[exec.main](a);
-                  toolResult = JSON.stringify(out);
+                  // pairwiseFull 是「全量组合明细」，给服务端用的（体积可达十几 MB），
+                  // 绝不能进 LLM 上下文。下发给模型前剔除，模型看 summary.pairwise 的计数即可。
+                  // 9dem-executor 返回的九维必测用例，留一份给门禁后的确定性补齐
+                  if (out && typeof out === 'object' && Array.isArray(out.dimensionCases) && out.dimensionCases.length) {
+                    toolDimensionCases = out.dimensionCases;
+                  }
+                  if (out && typeof out === 'object' && 'pairwiseFull' in out) {
+                    const { pairwiseFull, ...forModel } = out;
+                    toolResult = JSON.stringify(forModel);
+                  } else {
+                    toolResult = JSON.stringify(out);
+                  }
                   skillExecutions.push({
                     skillId,
                     at: new Date().toISOString(),
@@ -11519,6 +11600,24 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
         let textBeforeRepair = text;
 
         while (repairRound <= CASE_QUALITY_MAX_REPAIR_ROUNDS) {
+          // 九维必测点确定性补齐：放在门禁之前，让本轮检查就看到补齐后的结果。
+          // 只在工具确实返回了必测用例时才补，避免凭空造用例。
+          if (toolDimensionCases && toolDimensionCases.length) {
+            const gatePreview = checkCaseQuality(text, {
+              originalInput: taskInput || '',
+              minUsabilityRate: CASE_QUALITY_MIN_RATE,
+              requireDimension: true,
+              minProbeCoverage: CASE_QUALITY_MIN_PROBE_COVERAGE,
+            });
+            if (gatePreview.applicable && gatePreview.dimensions && !gatePreview.dimensions.pass) {
+              const backfill = buildDimensionCasesMarkdown(text, toolDimensionCases, gatePreview.dimensions);
+              if (backfill.added > 0) {
+                text = backfill.text;
+                console.log(`[DimBackfill] ${agentId} 已补齐 ${backfill.added} 条九维必测用例（跳过重复 ${backfill.skipped} 条）`);
+              }
+            }
+          }
+
           // 自动修复占位输入（不依赖模型）
           const fixed = applyCaseInputRepairs(text);
           if (fixed.applied > 0) {
@@ -13748,7 +13847,7 @@ async function executeTaskWithReview(task, userId = null) {
  */
 async function callReviewersInParallel(taskId, agentName, output, retryCount = 0) {
   const reviewPromises = REVIEWER_AGENTS.map(reviewerId => {
-    return callSingleReviewer(reviewerId, taskId, agentName, output, retryCount);
+    return callSingleReviewer(reviewerId, taskId, agentName, output, retryCount, {}, userId);
   });
 
   return Promise.all(reviewPromises);
@@ -13824,7 +13923,7 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
     }, 20000);
 
     try {
-      const result = await callSingleReviewer(reviewerId, taskId, agentName, output, retryCount, reviewContext);
+      const result = await callSingleReviewer(reviewerId, taskId, agentName, output, retryCount, reviewContext, userId);
       clearInterval(reviewHeartbeat);
 
       console.log(`[Review] Parallel [${i + 1}/${total}] ${reviewerId} scored ${result.score}, veto=${result.veto}`);
@@ -14659,7 +14758,7 @@ async function cleanupWorkflowFiles(workflowId) {
 
 // ========== 文件管理工具函数结束 ==========
 
-async function callSingleReviewer(reviewerId, taskId, agentName, output, retryCount = 0, reviewContext = {}) {
+async function callSingleReviewer(reviewerId, taskId, agentName, output, retryCount = 0, reviewContext = {}, userId = null) {
   const reviewerInfo = AGENTS[reviewerId] || {};
   const reviewerName = reviewerInfo.name || reviewerId;
 
