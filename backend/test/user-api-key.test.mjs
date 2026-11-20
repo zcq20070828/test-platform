@@ -130,12 +130,72 @@ t('验证接口真实发请求（不是只校验格式）', () => {
 // 用户明确要求：用 Key 调大模型不需要配置接口地址。
 // 若还让用户填地址/模型/服务商，就等于把「地址写错、模型名不存在」这类
 // 与 Key 无关的故障甩给用户，而且平台也无法保证一致性。
-t('UI 不再要求填写接口地址 / 模型 / 服务商', () => {
-  for (const banned of ['接口地址', '默认模型', '服务商']) {
-    assert.ok(!new RegExp(`label="${banned}"`).test(APIKEY_VIEW), `UI 仍有「${banned}」输入项`);
+t('UI 不要求手填接口地址与模型，但**必须**选服务商', () => {
+  // 用户原话：「用 key 去调大模型不用配置接口地址的吧」
+  // 以及追问：「你不用根据服务商就知道用户配置的 key 是要调用那个服务商提供的大模型？」
+  // —— 所以地址/模型不填，服务商必须选。
+  for (const banned of ['接口地址', '默认模型']) {
+    assert.ok(!new RegExp(`<el-form-item label="${banned}"`).test(APIKEY_VIEW), `UI 仍有「${banned}」输入项`);
   }
-  // 但页面要说明「只需 Key」，避免用户找不到
-  assert.ok(/只需填名称和 Key/.test(APIKEY_VIEW), '缺少「只需填 Key」的说明');
+  assert.ok(/<el-form-item label="服务商"/.test(APIKEY_VIEW), '缺少服务商选择项');
+  assert.ok(/无需手填 URL|无需手填/.test(APIKEY_VIEW), '未说明地址由平台自动确定');
+});
+
+t('服务商决定请求地址与模型（Key 本身看不出属于哪家）', () => {
+  assert.ok(/const PROVIDERS = \{/.test(SERVER), '缺少服务商映射表');
+  for (const p of ['deepseek', 'openai']) {
+    assert.ok(new RegExp(`${p}: \\{[^}]*baseUrl`).test(SERVER), `缺少 ${p} 的地址映射`);
+  }
+  const fn = SERVER.slice(SERVER.indexOf('function providerProfile'), SERVER.indexOf('function providerProfile') + 400);
+  assert.ok(/PROVIDERS\[/.test(fn), 'providerProfile 未查表');
+  // resolveApiKey 必须按记录的服务商取地址，而不是写死 DeepSeek
+  const rk = SERVER.slice(SERVER.indexOf('async function resolveApiKey'), SERVER.indexOf('/** 只要 Key 字符串时用这个'));
+  assert.ok(/providerProfile\(rec\.provider\)/.test(rk), 'resolveApiKey 未按服务商取配置');
+  assert.ok(/baseUrl: prof\.baseUrl/.test(rk), '未使用服务商 baseUrl');
+  assert.ok(/model: prof\.model/.test(rk), '未使用服务商 model');
+});
+
+t('「其他」服务商未配地址时不出现在下拉里（避免注定调不通的选项）', () => {
+  assert.ok(/providerUnavailableReason/.test(SERVER), '缺少可用性判断');
+  assert.ok(/OPENAI_COMPATIBLE_BASE_URL/.test(SERVER), '未支持环境变量配置兼容端点');
+  assert.ok(/filter\(\(\[value\]\) => !providerUnavailableReason\(value\)\)/.test(SERVER),
+    '列表接口未过滤不可用服务商');
+  assert.ok(/尚未配置服务地址/.test(SERVER), '缺少对用户的明确提示');
+});
+
+t('新增接口里 b = req.body 必须在任何 b.xxx 之前（TDZ 回归）', () => {
+  // 实测踩过：providerUnavailableReason(b.provider) 写在 const b = req.body 之前，
+  // 直接抛 Cannot access 'b' before initialization → 前端只看到「保存 API Key 失败」。
+  const start = SERVER.indexOf("app.post('/api/user/api-keys'");
+  const block = SERVER.slice(start, SERVER.indexOf("app.put('/api/user/api-keys/:id'"));
+  const declIdx = block.indexOf('const b = req.body');
+  assert.ok(declIdx > 0, '找不到 const b = req.body');
+  const useBefore = [...block.slice(0, declIdx).matchAll(/\bb\./g)];
+  assert.strictEqual(useBefore.length, 0,
+    `const b 之前就用了 b.*（会抛 TDZ）: ${useBefore.slice(0, 3).map((m) => m[0]).join(',')}`);
+});
+
+t('verify 按该 Key 的服务商验证（否则验证结果不代表真实调用）', () => {
+  const fn = SERVER.slice(SERVER.indexOf("app.post('/api/user/api-keys/:id/verify'"), SERVER.indexOf("app.post('/api/user/api-keys/:id/verify'") + 2600);
+  assert.ok(/providerProfile\(rec\.provider\)/.test(fn), 'verify 未按服务商取地址');
+});
+
+t('意图引擎与评估器能按服务商注入端点（否则这两条链仍打 DeepSeek）', () => {
+  const engine = fs.readFileSync(path.join(ROOT, 'backend', 'llm', 'intent-engine.js'), 'utf8');
+  assert.ok(/function configure\(cfg = \{\}\)/.test(engine), 'intent-engine 缺少 configure');
+  assert.ok(/function currentConfig\(/.test(engine), 'intent-engine 缺少 currentConfig');
+  assert.ok(/configure,\s*\n\s*currentConfig,/.test(engine), '未导出 configure');
+  const ev = fs.readFileSync(path.join(ROOT, 'qclaw-skills', 'evaluation-system', 'backend', 'llm-evaluator.js'), 'utf8');
+  assert.ok(/export function setEndpoint/.test(ev), 'llm-evaluator 缺少 setEndpoint');
+  assert.ok(/\$\{_apiBase\}\/chat\/completions/.test(ev), '评估器未使用动态端点');
+  // server.js 里两处都要注入
+  assert.ok(/engine\.configure\(\{ apiKey: rk\.apiKey/.test(SERVER), '技能执行未注入 intent-engine 配置');
+  assert.ok(/llmEval\.setEndpoint\(\{ baseUrl: rk\.baseUrl/.test(SERVER), '评估器未注入端点');
+});
+
+t('服务商清单由后端下发，前端不硬编码第二份', () => {
+  assert.ok(/providers: Object\.entries\(PROVIDERS\)/.test(SERVER), '列表接口未下发服务商清单');
+  assert.ok(/res\.providers/.test(APIKEY_VIEW), '前端未使用后端下发的清单');
 });
 
 t('名称由用户自定义，UI 不暗示特定服务商', () => {
@@ -145,29 +205,26 @@ t('名称由用户自定义，UI 不暗示特定服务商', () => {
   assert.ok(/自定义名称/.test(nameInput), '缺少「自定义名称」提示');
 });
 
-t('前端提交体只带 name / apiKey（不传 baseUrl / model / provider）', () => {
+t('前端提交体带 provider 但不带 baseUrl / model', () => {
   const fn = APIKEY_VIEW.slice(APIKEY_VIEW.indexOf('async function handleSave'));
   const body = fn.slice(0, fn.indexOf('const res ='));
+  assert.ok(/provider: form\.provider/.test(body), '未提交 provider（导致地址无法确定）');
   assert.ok(!/baseUrl/.test(body), '仍在提交 baseUrl');
   assert.ok(!/model\s*:/.test(body), '仍在提交 model');
-  assert.ok(!/provider/.test(body), '仍在提交 provider');
 });
 
-t('后端忽略用户提交的 baseUrl / model / provider', () => {
-  const fn = SERVER.slice(SERVER.indexOf('function validateApiKeyInput'), SERVER.indexOf('function validateApiKeyInput') + 800);
+t('后端接受并校验 provider，但拒绝用户自定义 baseUrl / model', () => {
+  const fn = SERVER.slice(SERVER.indexOf('function validateApiKeyInput'), SERVER.indexOf('function validateApiKeyInput') + 900);
   assert.ok(!/body\?\.baseUrl/.test(fn), '仍在校验用户传入的 baseUrl');
-  assert.ok(!/body\?\.provider/.test(fn), '仍在校验用户传入的 provider');
-  // 新增时恒为 null / 'deepseek'
+  assert.ok(/不支持的服务商类型/.test(fn), '缺少 provider 合法性校验');
   const create = SERVER.slice(SERVER.indexOf("app.post('/api/user/api-keys',"), SERVER.indexOf("app.put('/api/user/api-keys/:id',"));
   assert.ok(/baseUrl: null/.test(create), '新增未强制 baseUrl=null');
   assert.ok(/model: null/.test(create), '新增未强制 model=null');
-  assert.ok(/provider: 'deepseek'/.test(create), '新增未强制 provider');
+  assert.ok(/provider: PROVIDERS\[b\.provider\]/.test(create), '新增未按用户选择写入 provider');
 });
 
-t('解析 Key 时地址与模型恒取平台配置（用户旧数据也不生效）', () => {
+t('解析 Key 时不使用用户自定义的地址/模型（只认服务商映射）', () => {
   const fn = SERVER.slice(SERVER.indexOf('async function resolveApiKey'), SERVER.indexOf('/** 只要 Key 字符串时用这个'));
-  assert.ok(/baseUrl: platform\.baseUrl/.test(fn), '未强制平台 baseUrl');
-  assert.ok(/model: platform\.model/.test(fn), '未强制平台 model');
   assert.ok(!/rec\.base_url/.test(fn), '仍在使用用户配置的地址');
   assert.ok(!/rec\.model/.test(fn), '仍在使用用户配置的模型');
 });
@@ -241,7 +298,9 @@ t('健康检查按用户 Key 探测', () => {
 });
 
 t('评估器与知识库增强也走默认 Key', () => {
-  assert.ok(/llmEval\.setApiKey\(await resolveApiKeyString\(req\.user/.test(SERVER), '评估器未按用户');
+  // 改成先 resolveApiKey 拿整份配置（含服务商端点），再注入评估器
+  assert.ok(/llmEval\.setApiKey\(rk\.apiKey\)/.test(SERVER), '评估器未按用户设置 Key');
+  assert.ok(/const rk = await resolveApiKey\(req\.user\?\.id/.test(SERVER), '评估器未按用户解析');
   assert.ok(/async function enhanceDocumentWithLLM\(content, name, kbType, userId = null\)/.test(SERVER), '知识库增强未接受 userId');
   const fn = SERVER.slice(SERVER.indexOf('async function enhanceDocumentWithLLM'), SERVER.indexOf('async function enhanceDocumentWithLLM') + 1200);
   assert.ok(/await resolveApiKey\(userId\)/.test(fn), '知识库增强未按用户解析');

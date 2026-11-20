@@ -9341,12 +9341,60 @@ function invalidateUserApiKeyCache(userId) {
  *
  * @returns {Promise<{apiKey:string, baseUrl:string, model:string, source:'user'|'platform'|'none', keyId:string|null}>}
  */
+/**
+ * 服务商 → 接口地址 + 默认模型
+ *
+ * 为什么必须有服务商：**Key 本身看不出属于哪家**。
+ * 「sk-」前缀 DeepSeek、OpenAI、Kimi、Moonshot 都在用，只凭 Key 无法判断
+ * 该把请求发到哪个域名——把 OpenAI 的 Key 发到 api.deepseek.com 必然 401。
+ * 所以让用户选一次服务商，地址与模型由平台内置，用户不用记 URL。
+ */
+const PROVIDERS = {
+  deepseek: {
+    label: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-v4-pro',
+  },
+  openai: {
+    label: 'OpenAI',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o',
+  },
+  // 其他 OpenAI 兼容服务（Kimi / 通义 / 智谱 / 自建网关）：
+  // 地址与模型由运维通过环境变量指定，用户在界面上只选「其他」、不填 URL。
+  // 没配置时拒用而不是悄悄打到 openai.com——把 A 家的 Key 发到 B 家只会得到
+  // 令人困惑的 401，用户根本查不出原因。
+  compatible: {
+    label: '其他（OpenAI 兼容协议）',
+    baseUrl: (process.env.OPENAI_COMPATIBLE_BASE_URL || envConfig.OPENAI_COMPATIBLE_BASE_URL || '').replace(/\/+$/, ''),
+    model: process.env.OPENAI_COMPATIBLE_MODEL || envConfig.OPENAI_COMPATIBLE_MODEL || 'gpt-4o',
+  },
+};
+
+/** 取服务商配置；未知服务商回落 DeepSeek，避免整条链路直接失败 */
+function providerProfile(provider) {
+  const key = String(provider || 'deepseek').toLowerCase();
+  const prof = PROVIDERS[key] || PROVIDERS.deepseek;
+  return { ...prof, key: PROVIDERS[key] ? key : 'deepseek' };
+}
+
+/**
+ * 该服务商是否可用（「其他」需要在环境变量里配好地址）
+ * 返回 null 表示可用，否则返回给用户看的错误说明。
+ */
+function providerUnavailableReason(provider) {
+  const key = String(provider || 'deepseek').toLowerCase();
+  if (key === 'compatible' && !PROVIDERS.compatible.baseUrl) {
+    return '「其他（OpenAI 兼容协议）」尚未配置服务地址，请联系管理员设置 OPENAI_COMPATIBLE_BASE_URL';
+  }
+  return null;
+}
+
 async function resolveApiKey(userId) {
   const uid = userId ? String(userId) : '';
   const platform = {
     apiKey: PLATFORM_API_KEY,
-    baseUrl: 'https://api.deepseek.com',
-    model: 'deepseek-v4-pro',
+    ...providerProfile('deepseek'),
     source: PLATFORM_API_KEY ? 'platform' : 'none',
     keyId: null,
   };
@@ -9364,12 +9412,14 @@ async function resolveApiKey(userId) {
     if (rec && rec.api_key_enc) {
       const plain = await decryptSecret(rec.api_key_enc);
       if (plain) {
+        // 地址与模型由**服务商**决定，而不是用户手填 URL：
+        // 既解决了「Key 属于哪家」的判断，也不会因为用户写错地址而误判成平台故障。
+        const prof = providerProfile(rec.provider);
         resolved = {
           apiKey: plain,
-          // 用户只提供 Key：接口地址与模型一律用平台配置，
-          // 避免「用户填错地址/模型名」被记成平台故障（2026-11-20）
-          baseUrl: platform.baseUrl,
-          model: platform.model,
+          baseUrl: prof.baseUrl,
+          model: prof.model,
+          provider: String(rec.provider || 'deepseek'),
           source: 'user',
           keyId: rec.id,
         };
@@ -9411,6 +9461,11 @@ function validateApiKeyInput(body, { requireKey }) {
   const name = String(body?.name || '').trim();
   if (!name) return '请填写名称';
   if (name.length > 100) return '名称不能超过 100 个字符';
+  // 服务商必须选：Key 本身看不出属于哪家，选错就会打到错误的服务上（2026-11-20）
+  if (body && body.provider !== undefined) {
+    const provider = String(body.provider || '').trim();
+    if (provider && !PROVIDERS[provider]) return '不支持的服务商类型';
+  }
   if (requireKey) {
     const apiKey = String(body?.apiKey || '').trim();
     if (!apiKey) return '请填写 API Key';
@@ -9434,6 +9489,11 @@ app.get('/api/user/api-keys', authenticate, async (req, res) => {
         hasDefault: keys.some((k) => k.isDefault),
         platformKeyAvailable: !!PLATFORM_API_KEY,
         platformKeyHint: PLATFORM_API_KEY ? keyHintOf(PLATFORM_API_KEY) : '',
+        // 服务商清单由后端给，前端不再硬编码一份（两边不一致会悄悄发错地址）
+        // 只下发当前部署真能用的服务商（「其他」未配地址时不出现在下拉里）
+        providers: Object.entries(PROVIDERS)
+          .filter(([value]) => !providerUnavailableReason(value))
+          .map(([value, p]) => ({ value, label: p.label, model: p.model })),
       },
     });
   } catch (e) {
@@ -9447,18 +9507,22 @@ app.post('/api/user/api-keys', authenticate, async (req, res) => {
   const err = validateApiKeyInput(req.body, { requireKey: true });
   if (err) return res.status(400).json({ success: false, error: err });
 
+  const b = req.body || {};
   try {
     const count = await userApiKeyDAO.countApiKeys(userId);
     if (count >= 20) return res.status(400).json({ success: false, error: '最多只能保存 20 个 API Key' });
 
-    const b = req.body || {};
+    // 「其他」没配地址时直接拦住，别让用户存下一把注定调不通的 Key
+    const unavailable = providerUnavailableReason(b.provider || 'deepseek');
+    if (unavailable) return res.status(400).json({ success: false, error: unavailable });
+
     const plain = String(b.apiKey).trim();
     const id = randomUUID();
     const created = await userApiKeyDAO.createApiKey(userId, {
       id,
       name: String(b.name).trim(),
-      // 服务商/接口地址/模型统一走平台配置：用户只提供一把 Key
-      provider: 'deepseek',
+      // 服务商决定请求打到哪家；接口地址与模型由平台按服务商内置，用户不用填
+      provider: PROVIDERS[b.provider] ? b.provider : 'deepseek',
       baseUrl: null,
       model: null,
       apiKeyEnc: await encryptSecret(plain),
@@ -9489,10 +9553,13 @@ app.put('/api/user/api-keys/:id', authenticate, async (req, res) => {
 
     const b = req.body || {};
     const plain = String(b.apiKey || '').trim();
-    // 只改名称/Key；服务商、地址与模型由平台统一决定，不接受用户覆盖
+    // 可改名称与服务商（换服务商 = 换请求目标）；地址与模型仍由服务商映射决定
     const fields = {
       name: String(b.name).trim(),
     };
+    if (b.provider !== undefined && PROVIDERS[b.provider]) {
+      fields.provider = b.provider;
+    }
     if (plain) {
       if (plain.length < API_KEY_MIN_LEN) return res.status(400).json({ success: false, error: 'API Key 长度不足' });
       fields.apiKeyEnc = await encryptSecret(plain);
@@ -9551,9 +9618,10 @@ app.post('/api/user/api-keys/:id/verify', authenticate, async (req, res) => {
     const plain = await decryptSecret(rec.api_key_enc);
     if (!plain) return res.json({ success: false, error: 'Key 解密失败，请重新录入' });
 
-    // 用平台配置的地址与模型验证：与真实调用完全一致
-    const base = 'https://api.deepseek.com';
-    const model = 'deepseek-v4-pro';
+    // 用该 Key 的服务商配置验证：与真实调用完全一致（选择服务商的唯一意义就在这里）
+    const prof = providerProfile(rec.provider);
+    const base = prof.baseUrl;
+    const model = prof.model;
     const r = await fetch(`${base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${plain}` },
@@ -11173,6 +11241,19 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                   const exec = SKILL_EXECUTORS[skillId];
                   const mod = await import(pathToFileURL(exec.modulePath).href);
                   const skillMod = mod.default || mod;
+                  // 意图模式（mode='intent'）会自己调大模型：把当前用户默认 Key
+                  // 与其服务商端点注入 intent-engine，否则它会用平台默认配置
+                  // （用户的 Key 配的是 OpenAI，却被打到 DeepSeek，必然失败）。2026-11-20
+                  try {
+                    const engineMod = await import(pathToFileURL(path.join(__dirname, 'llm', 'intent-engine.js')).href);
+                    const engine = engineMod.default || engineMod;
+                    const rk = await resolveApiKey(userId);
+                    if (typeof engine.configure === 'function') {
+                      engine.configure({ apiKey: rk.apiKey, baseUrl: rk.baseUrl, model: rk.model });
+                    }
+                  } catch (cfgErr) {
+                    console.warn(`[Skill] 注入 intent-engine 配置失败: ${cfgErr.message}`);
+                  }
                   const a = JSON.parse((tc.function && tc.function.arguments) || '{}');
                   // 直接传完整参数,让各 invoker 自行解析(通用化)
                   const out = await skillMod[exec.main](a);
@@ -15894,8 +15975,14 @@ app.post('/api/evaluation/llm', authenticate, async (req, res) => {
 
   const llmEval = await import('file://' + path.join(SKILLS_DIR, 'evaluation-system/backend/llm-evaluator.js'
   ));
-  // 评估同样使用「该用户的默认 Key」（2026-11-20）
-  llmEval.setApiKey(await resolveApiKeyString(req.user?.id || req.user?.sub));
+  // 评估同样使用「该用户的默认 Key」，并按服务商设置端点与模型（2026-11-20）
+  {
+    const rk = await resolveApiKey(req.user?.id || req.user?.sub);
+    llmEval.setApiKey(rk.apiKey);
+    if (typeof llmEval.setEndpoint === 'function') {
+      llmEval.setEndpoint({ baseUrl: rk.baseUrl, model: rk.model });
+    }
+  }
 
   // ── 创建评估运行记录 ────────────────────────────────────────
   let evalRunId = null;

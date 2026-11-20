@@ -5,7 +5,7 @@
         <h2 class="apikey-title"><MsIcon name="key" :size="22" /> API KEY 配置</h2>
         <p class="apikey-subtitle">
           在这里管理你自己的大模型 API Key。平台调用大模型时优先使用你标记为「默认」的那一个；
-          没有配置时才会使用平台统一提供的 Key。只需填名称和 Key，其它都不用管。
+          没有配置时才会使用平台统一提供的 Key。选择服务商即可，接口地址由平台按服务商自动确定，无需手填。
         </p>
       </div>
       <div class="header-actions">
@@ -65,6 +65,12 @@
           </template>
         </el-table-column>
 
+        <el-table-column label="服务商" width="140">
+          <template #default="{ row }">
+            {{ providerLabel(row.provider) }}
+          </template>
+        </el-table-column>
+
         <el-table-column label="Key" width="170">
           <template #default="{ row }">
             <code class="key-hint">{{ row.keyHint || '****' }}</code>
@@ -119,6 +125,20 @@
           <el-input v-model="form.name" placeholder="自定义名称，例如：我的主力 Key / 测试专用 / 团队共享" maxlength="100" show-word-limit />
         </el-form-item>
 
+        <el-form-item label="服务商" prop="provider">
+          <el-select v-model="form.provider" style="width: 100%">
+            <el-option
+              v-for="p in providers"
+              :key="p.value"
+              :label="p.label"
+              :value="p.value"
+            />
+          </el-select>
+          <div class="field-hint">
+            选服务商即可：接口地址与模型由平台自动确定（{{ providerModel(form.provider) }}），无需手填 URL。
+          </div>
+        </el-form-item>
+
         <el-form-item label="API Key" prop="apiKey">
           <el-input
             v-model="form.apiKey"
@@ -132,7 +152,7 @@
               出于安全考虑不回显已保存的 Key。留空则保持原 Key 不变。
             </template>
             <template v-else>
-              只需填 Key 本身，接口地址与模型由平台统一配置；保存后只能看到末 4 位，无法再次查看明文。
+              保存后只能看到末 4 位，无法再次查看明文。
             </template>
           </div>
         </el-form-item>
@@ -172,11 +192,26 @@ const formRef = ref<FormInstance>()
 
 const form = reactive({
   name: '',
+  provider: 'deepseek',
   apiKey: '',
 })
 
+// 服务商清单由后端返回（两边各硬编码一份会悄悄发错地址）
+const providers = ref<Array<{ value: string; label: string; model: string }>>([
+  { value: 'deepseek', label: 'DeepSeek', model: 'deepseek-v4-pro' },
+])
+
+function providerLabel(value: string): string {
+  return providers.value.find((p) => p.value === value)?.label || value || 'DeepSeek'
+}
+
+function providerModel(value: string): string {
+  return providers.value.find((p) => p.value === value)?.model || '平台默认模型'
+}
+
 const rules = computed<FormRules>(() => ({
   name: [{ required: true, message: '请填写名称', trigger: 'blur' }],
+  provider: [{ required: true, message: '请选择服务商', trigger: 'change' }],
   apiKey: editingId.value
     // 编辑时允许留空（表示不换 Key）
     ? []
@@ -198,6 +233,9 @@ async function load() {
     hasDefault.value = res.hasDefault
     platformKeyAvailable.value = res.platformKeyAvailable
     platformKeyHint.value = res.platformKeyHint
+    if (res.providers && res.providers.length) {
+      providers.value = res.providers
+    }
   } finally {
     loading.value = false
   }
@@ -206,6 +244,7 @@ async function load() {
 function resetForm() {
   editingId.value = ''
   form.name = ''
+  form.provider = 'deepseek'
   form.apiKey = ''
   formRef.value?.clearValidate()
 }
@@ -219,6 +258,7 @@ function openEdit(row: UserApiKey) {
   resetForm()
   editingId.value = row.id
   form.name = row.name
+  form.provider = row.provider || 'deepseek'
   dialogVisible.value = true
 }
 
@@ -227,9 +267,10 @@ async function handleSave() {
   if (!valid) return
   saving.value = true
   try {
-    // 只提交名称与 Key：接口地址、模型均由平台统一决定
+    // 提交名称、服务商与 Key；接口地址与模型由服务商自动决定，不需要用户填
     const payload = {
       name: form.name.trim(),
+      provider: form.provider,
     }
     const res = editingId.value
       ? await userApiKeyApi.update(editingId.value, {

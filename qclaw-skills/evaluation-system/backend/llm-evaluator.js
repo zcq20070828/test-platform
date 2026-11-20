@@ -26,9 +26,20 @@ let _deepseekApiKey = '';
 // 工具函数
 // ─────────────────────────────────────────────
 
+// 服务商端点与模型：Key 本身看不出属于哪家，必须由服务商决定打到哪、用哪个模型
+// （2026-11-20，随「用户级 API Key」一起改造）
+let _apiBase = 'https://api.deepseek.com';
+let _apiModel = 'deepseek-v4-pro';
+
 export function setApiKey(key) {
   _deepseekApiKey = key;
   console.log(`[LLMEvaluator] v${EVALUATOR_VERSION} initialized, API key set (${key ? key.slice(0,8)+'...' : 'empty'})`);
+}
+
+/** 设置端点与模型（server.js 按用户默认 Key 的服务商注入） */
+export function setEndpoint({ baseUrl, model } = {}) {
+  if (baseUrl) _apiBase = String(baseUrl).replace(/\/+$/, '');
+  if (model) _apiModel = model;
 }
 
 function getApiKey() {
@@ -38,28 +49,28 @@ function getApiKey() {
 }
 
 /**
- * 调用 DeepSeek Chat API
+ * 调用大模型 Chat API
  * @param {string} systemPrompt
  * @param {string} userPrompt
  * @param {object} opts  { temperature, max_tokens }
  */
 async function callDeepSeek(systemPrompt, userPrompt, opts = {}) {
   const apiKey = getApiKey();
-  if (!apiKey) throw new Error('DeepSeek API key 未配置');
+  if (!apiKey) throw new Error('API key 未配置');
 
   const { temperature = 0.3, max_tokens = 2000 } = opts;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120000);
 
   try {
-    const resp = await fetch('https://api.deepseek.com/chat/completions', {
+    const resp = await fetch(`${_apiBase}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'deepseek-chat',
+        model: _apiModel,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -200,14 +211,14 @@ async function callDeepSeekForDeliverable(systemPrompt, userPrompt) {
   const timeout = setTimeout(() => controller.abort(), 180000); // 3分钟超时
 
   try {
-    const resp = await fetch('https://api.deepseek.com/chat/completions', {
+    const resp = await fetch(`${_apiBase}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'deepseek-chat',
+        model: _apiModel,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
