@@ -211,6 +211,62 @@ t('新增接口里 b = req.body 必须在任何 b.xxx 之前（TDZ 回归）', (
     `const b 之前就用了 b.*（会抛 TDZ）: ${useBefore.slice(0, 3).map((m) => m[0]).join(',')}`);
 });
 
+// ---------------- 模型不能被兜底成 DeepSeek ----------------
+// 用户原话：「模型不能默认是 deepseek-v4-pro 吧，不是每个服务商都能提供 deepseek-v4-pro 的」
+t('调用链路里不再把 deepseek-v4-pro 当兜底模型名', () => {
+  // 只允许出现在：PROVIDERS 的 deepseek 条目、注释、以及平台兜底默认值
+  const offenders = [];
+  const lines = SERVER.split('\n');
+  lines.forEach((ln, i) => {
+    if (!ln.includes('deepseek-v4-pro')) return;
+    const trimmed = ln.trim();
+    // 注释行放行
+    if (trimmed.startsWith('//') || trimmed.startsWith('*')) return;
+    // PROVIDERS 里 deepseek 自己的 model 定义放行
+    if (/model: 'deepseek-v4-pro',/.test(ln)) return;
+    offenders.push(`line ${i + 1}: ${trimmed.slice(0, 90)}`);
+  });
+  assert.strictEqual(offenders.length, 0,
+    `仍有非注释处把 deepseek-v4-pro 当通用值：\n  ${offenders.join('\n  ')}`);
+});
+
+t('模型缺失时明确报错，而不是猜一个 DeepSeek 模型', () => {
+  assert.ok(/未解析出可用模型/.test(SERVER), 'server.js 缺少数模型报错');
+  const engine = fs.readFileSync(path.join(ROOT, 'backend', 'llm', 'intent-engine.js'), 'utf8');
+  assert.ok(/NO_LLM_MODEL/.test(engine), 'intent-engine 缺少数模型错误码');
+  const ev = fs.readFileSync(path.join(ROOT, 'qclaw-skills', 'evaluation-system', 'backend', 'llm-evaluator.js'), 'utf8');
+  assert.ok(/未解析出可用模型/.test(ev), 'llm-evaluator 缺少数模型报错');
+  // 三个默认值都必须是空，而不是具体模型名
+  assert.ok(/let DEEPSEEK_MODEL = process\.env\.DEEPSEEK_MODEL \|\| ''/.test(engine), 'intent-engine 仍有默认模型名');
+  assert.ok(/let _apiModel = ''/.test(ev), 'llm-evaluator 仍有默认模型名');
+});
+
+t('上下文预算按模型而定（别家窗口远小于 DeepSeek 1M）', () => {
+  assert.ok(/contextChars/.test(SERVER), '缺少按服务商的上下文预算');
+  assert.ok(/function enforceContextBudget\(messages, budgetChars\)/.test(SERVER), '预算未参数化');
+  assert.ok(/enforceContextBudget\([\s\S]{0,400}resolvedKey\.contextChars\)/.test(SERVER), '调用处未传预算');
+  // 至少 moonshot 的预算必须明显小于 deepseek
+  const block = SERVER.slice(SERVER.indexOf('const PROVIDERS = {'), SERVER.indexOf('/** 取服务商配置'));
+  const ds = block.match(/deepseek: \{[\s\S]*?contextChars: (\d+)/);
+  const ms = block.match(/moonshot: \{[\s\S]*?contextChars: (\d+)/);
+  assert.ok(ds && ms, '解析 contextChars 失败');
+  assert.ok(Number(ms[1]) < Number(ds[1]), `moonshot(${ms[1]}) 预算应小于 deepseek(${ds[1]})`);
+});
+
+t('成本计算用实际模型，不假设 DeepSeek 单价', () => {
+  assert.ok(/const model = result\.model \|\| 'unknown'/.test(SERVER), '成本计算未用实际模型');
+  assert.ok(/result\.model = rk\.model/.test(SERVER), 'spawn 未回传实际模型');
+});
+
+t('每个服务商都有 contextChars', () => {
+  const block = SERVER.slice(SERVER.indexOf('const PROVIDERS = {'), SERVER.indexOf('/** 取服务商配置'));
+  const entries = [...block.matchAll(/^ {2}([a-z][a-z0-9]*): \{([\s\S]*?)^ {2}\},/gm)];
+  assert.ok(entries.length >= 18, `只解析到 ${entries.length} 个服务商`);
+  for (const [, id, body] of entries) {
+    assert.ok(/contextChars/.test(body), `${id} 缺少 contextChars`);
+  }
+});
+
 t('模型必填校验用 validator 而非动态删规则（否则切换服务商后失效）', () => {
   // 实测踩过：:prop="... ? 'model' : undefined" + 动态置空 rules，
   // 选了火山方舟（requiresModel）留空模型仍能保存成功。

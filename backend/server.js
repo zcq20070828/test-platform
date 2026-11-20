@@ -3254,7 +3254,9 @@ function workflowToTaskRow(wf, wfId) {
     // 从 workflow_results JSON 聚合的 token/model，供前端列表展示
     inputTokens,
     outputTokens,
-    model: lastModel || 'deepseek-v4-pro',
+    // 不兜底具体模型名：聚合不到就留空，前端显示「—」，
+    // 免得换服务商后列表仍显示 deepseek-v4-pro（2026-11-20）
+    model: lastModel || null,
     // 标记为 workflow 类型（前端可选用）
     isWorkflow: true
   };
@@ -6776,7 +6778,7 @@ async function enhanceDocumentWithLLM(content, name, kbType, userId = null) {
       method: 'POST',
       headers: deepseekHeaders,
       body: JSON.stringify({
-        model: 'deepseek-v4-pro',
+        model: resolved.model,
         messages: [
           { role: 'system', content: '你是一个知识库文档解析专家,专注于结构化增强文档内容以提升检索质量。请直接输出增强后的文档内容,不要添加解释性说明。' },
           { role: 'user', content: prompt }
@@ -9356,24 +9358,28 @@ const PROVIDERS = {
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-v4-pro',
+    contextChars: 600000, // 1M tokens 窗口，留余量
   },
   dashscope: {
     group: '国内',
     label: '阿里云百炼（通义千问）',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     model: 'qwen-plus',
+    contextChars: 400000, // qwen-plus 128K~1M 视版本，取保守值
   },
   zhipu: {
     group: '国内',
     label: '智谱 AI（GLM）',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     model: 'glm-4-plus',
+    contextChars: 400000, // GLM-4 128K
   },
   moonshot: {
     group: '国内',
     label: '月之暗面（Kimi）',
     baseUrl: 'https://api.moonshot.cn/v1',
-    model: 'moonshot-v1-8k',
+    model: 'moonshot-v1-32k',
+    contextChars: 80000, // 32K 窗口；8K 版本会不够用
   },
   volcengine: {
     group: '国内',
@@ -9382,6 +9388,7 @@ const PROVIDERS = {
     // 方舟用「推理接入点 ID」而不是模型名，必须由用户填写
     model: '',
     requiresModel: true,
+    contextChars: 300000,
     modelHint: '填方舟的推理接入点 ID（ep-xxxx）或模型名（如 doubao-pro-32k）',
   },
   hunyuan: {
@@ -9389,24 +9396,28 @@ const PROVIDERS = {
     label: '腾讯混元',
     baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
     model: 'hunyuan-turbo',
+    contextChars: 200000, // 混元 32K~256K
   },
   qianfan: {
     group: '国内',
     label: '百度千帆（文心一言）',
     baseUrl: 'https://qianfan.baidubce.com/v2',
-    model: 'ernie-4.0-8k',
+    model: 'ernie-4.0-turbo-8k',
+    contextChars: 80000,
   },
   spark: {
     group: '国内',
     label: '讯飞星火',
     baseUrl: 'https://spark-api-open.xf-yun.com/v1',
     model: 'generalv3.5',
+    contextChars: 80000,
   },
   siliconflow: {
     group: '国内',
     label: '硅基流动 SiliconFlow',
     baseUrl: 'https://api.siliconflow.cn/v1',
-    model: 'Qwen/Qwen2.5-7B-Instruct',
+    model: 'Qwen/Qwen2.5-72B-Instruct',
+    contextChars: 200000, // 视所选模型而定
     modelHint: '可填硅基流动上的任意模型，如 deepseek-ai/DeepSeek-V2.5',
   },
   minimax: {
@@ -9414,24 +9425,28 @@ const PROVIDERS = {
     label: 'MiniMax',
     baseUrl: 'https://api.minimax.chat/v1',
     model: 'abab6.5s-chat',
+    contextChars: 200000,
   },
   stepfun: {
     group: '国内',
     label: '阶跃星辰 StepFun',
     baseUrl: 'https://api.stepfun.com/v1',
-    model: 'step-1-8k',
+    model: 'step-2-16k',
+    contextChars: 80000,
   },
   sensenova: {
     group: '国内',
     label: '商汤日日新',
     baseUrl: 'https://api.sensenova.cn/compatible-mode/v1',
     model: 'SenseChat-5',
+    contextChars: 100000,
   },
   baichuan: {
     group: '国内',
     label: '百川智能',
     baseUrl: 'https://api.baichuan-ai.com/v1',
     model: 'Baichuan4',
+    contextChars: 80000,
   },
 
   // ── 国外 ──────────────────────────────────────────────────────────────
@@ -9440,42 +9455,49 @@ const PROVIDERS = {
     label: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4o',
+    contextChars: 200000, // 128K tokens
   },
   xai: {
     group: '国外',
     label: 'xAI（Grok）',
     baseUrl: 'https://api.x.ai/v1',
     model: 'grok-beta',
+    contextChars: 300000,
   },
   gemini: {
     group: '国外',
     label: 'Google Gemini',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     model: 'gemini-1.5-flash',
+    contextChars: 600000, // 1M tokens
   },
   mistral: {
     group: '国外',
     label: 'Mistral AI',
     baseUrl: 'https://api.mistral.ai/v1',
     model: 'mistral-large-latest',
+    contextChars: 200000,
   },
   groq: {
     group: '国外',
     label: 'Groq',
     baseUrl: 'https://api.groq.com/openai/v1',
     model: 'llama-3.3-70b-versatile',
+    contextChars: 60000, // 128K tokens 但输出预算小
   },
   together: {
     group: '国外',
     label: 'Together AI',
     baseUrl: 'https://api.together.xyz/v1',
     model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+    contextChars: 300000,
   },
   openrouter: {
     group: '国外',
     label: 'OpenRouter（聚合）',
     baseUrl: 'https://openrouter.ai/api/v1',
     model: 'openai/gpt-4o-mini',
+    contextChars: 200000,
     modelHint: '填 OpenRouter 的模型全名，如 anthropic/claude-3.5-sonnet',
   },
   deepinfra: {
@@ -9483,6 +9505,7 @@ const PROVIDERS = {
     label: 'DeepInfra',
     baseUrl: 'https://api.deepinfra.com/v1/openai',
     model: 'meta-llama/Llama-3.3-70B-Instruct',
+    contextChars: 300000,
   },
 
   // ── 其他 ──────────────────────────────────────────────────────────────
@@ -9494,6 +9517,7 @@ const PROVIDERS = {
     baseUrl: (process.env.OPENAI_COMPATIBLE_BASE_URL || envConfig.OPENAI_COMPATIBLE_BASE_URL || '').replace(/\/+$/, ''),
     model: process.env.OPENAI_COMPATIBLE_MODEL || envConfig.OPENAI_COMPATIBLE_MODEL || '',
     requiresModel: true,
+    contextChars: Number(process.env.OPENAI_COMPATIBLE_CONTEXT_CHARS) || 200000,
     modelHint: '填自建服务支持的模型名',
   },
 };
@@ -9502,7 +9526,12 @@ const PROVIDERS = {
 function providerProfile(provider) {
   const key = String(provider || 'deepseek').toLowerCase();
   const prof = PROVIDERS[key] || PROVIDERS.deepseek;
-  return { ...prof, key: PROVIDERS[key] ? key : 'deepseek' };
+  return {
+    ...prof,
+    key: PROVIDERS[key] ? key : 'deepseek',
+    // 上下文预算也由服务商决定，缺省时退回平台默认值
+    contextChars: Number(prof.contextChars) > 0 ? Number(prof.contextChars) : DEFAULT_MAX_CONTEXT_CHARS,
+  };
 }
 
 /**
@@ -9527,9 +9556,15 @@ function providerUnavailableReason(provider) {
 
 async function resolveApiKey(userId) {
   const uid = userId ? String(userId) : '';
+  // 平台兜底：默认 DeepSeek，但允许运维用 PLATFORM_API_PROVIDER / _MODEL 覆盖，
+  // 免得「平台换了 Key 是别家的」时还要改代码（2026-11-20）
+  const platformProf = providerProfile(
+    process.env.PLATFORM_API_PROVIDER || envConfig.PLATFORM_API_PROVIDER || 'deepseek'
+  );
   const platform = {
     apiKey: PLATFORM_API_KEY,
-    ...providerProfile('deepseek'),
+    ...platformProf,
+    model: process.env.PLATFORM_API_MODEL || envConfig.PLATFORM_API_MODEL || platformProf.model,
     source: PLATFORM_API_KEY ? 'platform' : 'none',
     keyId: null,
   };
@@ -9558,6 +9593,7 @@ async function resolveApiKey(userId) {
           baseUrl: prof.baseUrl,
           model: rec.model || prof.model,
           provider: String(rec.provider || 'deepseek'),
+          contextChars: prof.contextChars,
           source: 'user',
           keyId: rec.id,
         };
@@ -9935,7 +9971,7 @@ async function checkGatewayHealth(userId) {
           'Authorization': `Bearer ${resolved.apiKey}`
         },
         body: JSON.stringify({
-          model: resolved.model || 'deepseek-v4-pro',
+          model: resolved.model,
           messages: [{ role: 'user', content: 'ping' }],
           max_tokens: 2
         }),
@@ -11813,6 +11849,12 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
       if (resultFromAPI && resultFromAPI.usage) {
         result.usage = resultFromAPI.usage;
       }
+      // 带上本次实际使用的模型：成本计算不能假设是 DeepSeek 单价（2026-11-20）
+      try {
+        const rk = await resolveApiKey(userId);
+        result.model = rk.model || null;
+        result.provider = rk.provider || (rk.source === 'platform' ? 'deepseek' : null);
+      } catch (_) { /* 取不到就留空，成本按 default 估 */ }
       return result;
     }
   } catch (err) {
@@ -12441,7 +12483,7 @@ function getAgentToolSchemas(agentId) {
 //      assistant(tool_calls)一并移除,保证配对完整);
 //   4) 极端情况(需求本身超预算)才截断需求 user 消息(带明确标记,极少见)。
 // ============================================================================
-const MAX_CONTEXT_CHARS = 600000;
+const DEFAULT_MAX_CONTEXT_CHARS = 600000; // 仅在无法解析模型时使用（DeepSeek 1M 窗口）
 const TOOL_RESULT_CAP = 4000;          // 单个工具结果超过此长度则截断(保留头部)
 const CTX_TRUNCATE_MARK = '\n\n…[上下文已截断:为适配模型上下文窗口,超出部分已被裁剪,原长度 ';
 
@@ -12454,8 +12496,11 @@ const isSystemMsg = (m) => m && m.role === 'system';
 const isUserReqMsg = (m) => m && m.role === 'user';   // 用户需求,受保护,不截断
 const isToolMsg = (m) => m && m.role === 'tool';       // 工具结果,可压缩
 
-function enforceContextBudget(messages) {
+function enforceContextBudget(messages, budgetChars) {
   if (!Array.isArray(messages) || messages.length === 0) return messages;
+  // 预算按「本次实际使用的模型」定：moonshot-v1-32k 只有 32K 窗口，
+  // 用 DeepSeek 的 600K 字符预算会把请求直接打成 400（2026-11-20）
+  const MAX_CONTEXT_CHARS = Number(budgetChars) > 0 ? Number(budgetChars) : DEFAULT_MAX_CONTEXT_CHARS;
   const out = messages.map(m => ({ ...m })); // 浅拷贝,避免改动原数组
   // 注意:totalChars 必须统计正在被裁剪的 out(而非原 messages),
   // 否则裁剪后的缩减无法被预算检查感知,会过度裁剪甚至误伤需求。
@@ -12552,7 +12597,7 @@ async function callDeepSeekRewrite(messages, options = {}) {
         Authorization: `Bearer ${resolved.apiKey}`,
       },
       body: JSON.stringify({
-        model: resolved.model || 'deepseek-v4-pro',
+        model: resolved.model,
         messages,
         temperature: 0,
         max_tokens: maxTokens,
@@ -12765,7 +12810,7 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
 
       // 构建调试日志(实际请求体由下方 Deepseek fetch 直接构造)
       console.log(`[GatewayAPI] Making direct Deepseek API call...`);
-      console.log(`[GatewayAPI]   Model: deepseek-v4-pro, stream: true`);
+      console.log(`[GatewayAPI]   Model: ${resolvedKey.model || '(未解析)'}, stream: true`);
       console.log(`[GatewayAPI]   System prompt length: ${systemPrompt.length} chars`);
       console.log(`[GatewayAPI]   User message length: ${taskInput?.length || 0} chars`);
       console.log(`[GatewayAPI]   Timeout: ${perAttemptTimeout / 1000}s`);
@@ -12781,7 +12826,13 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${resolvedKey.apiKey}`
       };
-      const deepseekModel = resolvedKey.model || 'deepseek-v4-pro';
+      // 模型必须来自「服务商映射 或 用户为该 Key 指定的模型」。
+      // 绝不能兜底成 deepseek-v4-pro：那把阿里/Kimi 的 Key 会收到 DeepSeek 的模型名，
+      // 服务商直接报 model not found（2026-11-20）。
+      const deepseekModel = resolvedKey.model;
+      if (!deepseekModel) {
+        throw new Error(`服务商「${resolvedKey.provider || '未知'}」未解析出可用模型，请在 API KEY 配置里指定模型`);
+      }
       const deepseekBase = String(resolvedKey.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
       if (resolvedKey.source === 'user') {
         console.log(`[GatewayAPI]   使用用户默认 Key (${resolvedKey.keyId})`);
@@ -12807,7 +12858,7 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
           messages: enforceContextBudget(messagesOverride || [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: taskInput }
-          ]),
+          ], resolvedKey.contextChars),
           ...toolChoiceConfig,
           // 用例生成对同一条需求应尽量稳定，降低不同轮次条目数量/粒度漂移
           ...(agentId === 'test-case-generator' ? { temperature: 0 } : {}),
@@ -14940,7 +14991,9 @@ async function executeTaskAsync(task) {
         const usage = result.usage || {};
         const inputTokens = usage.prompt_tokens || usage.input_tokens || 0;
         const outputTokens = usage.completion_tokens || usage.output_tokens || 0;
-        const model = 'deepseek-v4-pro'; // 当前使用的模型
+        // 用「实际使用的模型」算价，而不是写死 DeepSeek——
+        // 换了服务商后按 DeepSeek 单价计费会失真（2026-11-20）
+        const model = result.model || 'unknown';
         const modelPrice = tokenPrices[model] || tokenPrices['default'] || { input: 0.009, output: 0.027 };
 
         // 计算 token 成本 (元/1K tokens)

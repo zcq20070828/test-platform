@@ -29,7 +29,8 @@ let _deepseekApiKey = '';
 // 服务商端点与模型：Key 本身看不出属于哪家，必须由服务商决定打到哪、用哪个模型
 // （2026-11-20，随「用户级 API Key」一起改造）
 let _apiBase = 'https://api.deepseek.com';
-let _apiModel = 'deepseek-v4-pro';
+// 模型由调用方按服务商注入；不预设具体模型名，避免把 DeepSeek 的模型发给别家
+let _apiModel = '';
 
 export function setApiKey(key) {
   _deepseekApiKey = key;
@@ -57,6 +58,7 @@ function getApiKey() {
 async function callDeepSeek(systemPrompt, userPrompt, opts = {}) {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('API key 未配置');
+  if (!_apiModel) throw new Error('未解析出可用模型（请检查 API KEY 配置里的服务商与模型）');
 
   const { temperature = 0.3, max_tokens = 2000 } = opts;
   const controller = new AbortController();
