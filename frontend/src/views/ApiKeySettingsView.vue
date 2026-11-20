@@ -145,25 +145,27 @@
           </el-select>
           <div class="field-hint">
             接口地址由服务商自动确定，无需手填 URL。
-            <template v-if="providerModel(form.provider)">
-              该服务商推荐模型：<strong>{{ providerModel(form.provider) }}</strong>
-            </template>
-            <template v-else>该服务商需在下方指定模型。</template>
           </div>
         </el-form-item>
 
         <!-- 模型：默认留空即用服务商推荐模型；方舟/OpenRouter 等必须指定时必填 -->
         <el-form-item label="模型" prop="model">
+          <!-- placeholder 只写「可留空」：模型名放在下方说明里。
+               把模型名写进 placeholder 会看起来像输入框已有内容，且与上面
+               服务商那行的「推荐模型」重复（用户 2026-11-20 反馈）。 -->
           <el-input
             v-model="form.model"
-            :placeholder="currentProvider?.modelHint || (providerModel(form.provider) ? `留空使用：${providerModel(form.provider)}` : '请填写该服务商支持的模型名')"
+            :placeholder="currentProvider?.requiresModel ? '必填' : '可留空'"
           />
           <div class="field-hint">
             <template v-if="currentProvider?.requiresModel">
               <span class="required-hint">该服务商必须指定模型</span>——{{ currentProvider.modelHint }}
             </template>
+            <template v-else-if="providerModel(form.provider)">
+              留空则使用 {{ providerModel(form.provider) }}；也可以填该服务商支持的其它模型名。
+            </template>
             <template v-else>
-              可留空（用服务商推荐模型），也可填该服务商支持的其它模型名。
+              可填该服务商支持的模型名。
             </template>
           </div>
         </el-form-item>
