@@ -18,10 +18,32 @@
 
 'use strict';
 
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
-const DEEPSEEK_BASE_URL =
+// 默认取平台配置；运行时可通过 configure() 注入「该用户默认 Key 对应的服务商」，
+// 因为 Key 本身看不出属于哪家（sk- 前缀 DeepSeek / OpenAI / Kimi 都在用），
+// 必须由服务商决定请求打到哪个地址、用哪个模型（2026-11-20）。
+let DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
+let DEEPSEEK_BASE_URL =
   process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/chat/completions';
-const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro';
+let DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro';
+
+/**
+ * 注入运行时配置（供 server.js 按当前用户的默认 Key 调用）
+ * @param {{apiKey?:string, baseUrl?:string, model?:string}} cfg
+ */
+function configure(cfg = {}) {
+  if (cfg.apiKey !== undefined) DEEPSEEK_API_KEY = cfg.apiKey || '';
+  if (cfg.baseUrl) {
+    // 允许直接给完整 /chat/completions 地址，也允许给服务商根地址
+    const b = String(cfg.baseUrl).replace(/\/+$/, '');
+    DEEPSEEK_BASE_URL = /\/chat\/completions$/.test(b) ? b : `${b}/chat/completions`;
+  }
+  if (cfg.model) DEEPSEEK_MODEL = cfg.model;
+}
+
+/** 当前配置（便于排查「到底发给谁」） */
+function currentConfig() {
+  return { baseUrl: DEEPSEEK_BASE_URL, model: DEEPSEEK_MODEL, hasKey: !!DEEPSEEK_API_KEY };
+}
 
 function clip(s, max = 1200) {
   if (s == null) return null;
@@ -512,6 +534,8 @@ async function kbDigest({ kind, intent, execResult }) {
 }
 
 module.exports = {
+  configure,
+  currentConfig,
   isAvailable,
   chatJSON,
   extractJson,

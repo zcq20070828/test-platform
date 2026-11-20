@@ -790,6 +790,8 @@ export interface ApiKeyListResult {
   hasDefault: boolean
   platformKeyAvailable: boolean
   platformKeyHint: string
+  // 后端下发的服务商清单：前端不硬编码，避免两边不一致导致发错地址
+  providers: Array<{ value: string; label: string; model: string }>
 }
 
 // request() 返回 { success, data }，其中 data 是后端原始响应体
@@ -810,14 +812,16 @@ export const userApiKeyApi = {
       hasDefault: !!payload.hasDefault,
       platformKeyAvailable: !!payload.platformKeyAvailable,
       platformKeyHint: payload.platformKeyHint || '',
+      providers: Array.isArray(payload.providers) ? payload.providers : [],
     }
   },
 
   // 新增；第一条会自动设为默认（后端行为）
-  // 只传名称与 Key：接口地址与模型由平台统一配置（2026-11-20）
+  // 传名称 + 服务商 + Key：接口地址与模型由服务商自动决定（2026-11-20）
   async create(payload: {
     name: string
     apiKey: string
+    provider?: string
   }): Promise<{ ok: boolean; message: string; id?: string; isDefault?: boolean }> {
     const res = await request<any>('/api/user/api-keys', {
       method: 'POST',
@@ -829,10 +833,11 @@ export const userApiKeyApi = {
       : { ok: false, message: res.error || '保存失败' }
   },
 
-  // 修改；apiKey 留空表示「不换 Key，只改名称」
+  // 修改；apiKey 留空表示「不换 Key，只改名称/服务商」
   async update(id: string, payload: {
     name: string
     apiKey?: string
+    provider?: string
   }): Promise<{ ok: boolean; message: string }> {
     const res = await request<any>(`/api/user/api-keys/${id}`, {
       method: 'PUT',
