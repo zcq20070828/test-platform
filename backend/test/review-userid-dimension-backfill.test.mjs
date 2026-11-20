@@ -187,7 +187,10 @@ t('用例生成必须调用 9dem_planner（提示词不再用「若确需」）'
 t('模型漏调 planner 时系统确定性补算（不依赖模型自觉）', () => {
   assert.ok(/PlannerBackfill/.test(SERVER), '缺少 planner 补算逻辑');
   const fn = SERVER.slice(SERVER.indexOf("if (agentId === 'test-case-generator')", SERVER.indexOf('PlannerBackfill') - 2000));
-  assert.ok(/skillExecutions\.some\(\(e\) => e\.skillId === '9dem-planner'\)/.test(fn), '没有检查是否已调用过 planner');
+  // 「调过」必须要求成功：实测任务 21bf3dc9 模型调用了但返回
+  // 「dimensions 必须是非空数组」，那种情况仍要补算
+  assert.ok(/skillExecutions\.some\(/.test(fn) && /9dem-planner/.test(fn), '没有检查是否已调用过 planner');
+  assert.ok(/e\.result\.success !== false/.test(fn), '未要求调用成功（失败也会被当成已规划）');
   assert.ok(/autoInvoked: true/.test(fn), '补算结果未标记来源（审计时分不清是模型调的还是系统补的）');
   assert.ok(/维度规划（系统确定性补算 9dem_planner）/.test(SERVER), '补算结论没有写进交付物');
 });
