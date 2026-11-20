@@ -95,21 +95,36 @@ t('2-wise 保留全部因子（每行包含 12 个键）', () => {
 
 (async () => {
   // 工具结果体积必须可被 LLM 接受
+  //
+  // 口径（2026-11-20 按用户要求修正）：
+  //   - 「要不要压缩组合」由 executor.js 的 PAIRWISE_ENUMERATION_LIMIT=65536 决定，
+  //     所以 ≤65536 的组合明细必须**完整保留**（不再砍到 200 条）。
+  //   - 但整份结果不能塞进 LLM 上下文：pairwiseFull 是给服务端用的全量明细，
+  //     由 server.js 在下发 prompt 前剔除（只留 summary.pairwise 的计数）。
   console.log('\n【通过 invoker 验证工具结果体积】');
   for (const n of [8, 10, 12, 20]) {
     const fields = Array.from({ length: n }, (_, i) => ({ name: 'field' + i, type: 'string', minLength: 1, maxLength: 20 }));
     const out = await invoker.invoke({ fields, dimensions: ['data'] });
-    const wire = JSON.stringify(out);
-    const kb = wire.length / 1024;
-    const capped = out.summary.pairwise.outputTruncated;
-    const shown = out.dimensionsResult.data.pairwise.length;
-    console.log(`  fields=${n} 工具结果=${kb.toFixed(0)}KB 输出组合=${shown} 原组合=${out.summary.dataPairwiseCount.toLocaleString()} 截断=${capped}`);
-    assert.ok(kb < 500, `${n} 字段工具结果超 500KB（${kb.toFixed(0)}KB），会撑爆 LLM 上下文`);
-    assert.ok(shown <= 200, `${n} 字段输出组合超过 200 条`);
+
+    // 模拟 server.js 下发 prompt 前的剔除动作
+    const { pairwiseFull, ...forModel } = out;
+    const kb = JSON.stringify(forModel).length / 1024;
+
+    const total = out.summary.dataPairwiseCount;
+    const shown = forModel.dimensionsResult?.data?.pairwise?.length || 0;
+    const fullKept = Array.isArray(pairwiseFull) ? pairwiseFull.length : 0;
+
+    console.log(`  fields=${n} 下发模型=${kb.toFixed(0)}KB 明细样例=${shown} 全量保留=${fullKept} 原组合=${total.toLocaleString()}`);
+
+    assert.ok(kb < 500, `${n} 字段下发内容超 500KB（${kb.toFixed(0)}KB），会撑爆 LLM 上下文`);
+    // 全量明细必须完整保留，不能因为「怕大」就砍掉业务数据
+    assert.strictEqual(fullKept, total, `${n} 字段全量明细被削减（${fullKept} != ${total}）`);
+    // 进 prompt 的只是样例，不该是全量
+    assert.ok(shown <= 200, `${n} 字段进 prompt 的样例过多（${shown}）`);
     assert.ok(out.summary.pairwise && typeof out.summary.pairwise.compressed === 'boolean');
   }
   pass += 4;
-  console.log('  ✅ 4 种字段规模下工具结果均 < 500KB 且组合数已裁剪');
+  console.log('  ✅ 4 种字段规模：下发模型 < 500KB，全量明细完整保留');
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);
