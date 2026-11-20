@@ -4,6 +4,7 @@
  */
 
 // 数据库 DAO(必须在最前面)
+import { randomUUID } from 'node:crypto';
 import { pool, query, getConnection, close, testConnection } from './database/db.js';
 import * as taskDAO from './database/task-dao.js';
 import * as userDAO from './database/user-dao.js';
@@ -21,6 +22,7 @@ import {
   RECORD_EVENT_TYPES as TIMELINE_EVENT_TYPES,
 } from './database/task-timeline-dao.js';
 import * as performanceDAO from './database/performance-dao.js';
+import * as userApiKeyDAO from './database/user-api-key-dao.js'; // 用户级 API Key（2026-11-20）
 import { init as initWebCompat, create as createWebCompatReport, findByUser as getWebCompatByUser, countByUser as countWebCompatByUser, findById as getWebCompatById } from './database/web-compatibility-dao.js';
 import { getToolList, generateInstallScript, getTool as getToolInfo, checkToolsStatus, installToolBackend, upgradeToolBackend, isToolInstalledBackend } from './tool-registry.js';
 import {
@@ -6755,20 +6757,22 @@ function parseDocumentContent(filePath, timeoutMs = 5000) {
  * 对原始文档进行结构化解析,提取摘要、关键点、标签
  * 这不是简单摘要,而是增强原文的可检索性
  */
-async function enhanceDocumentWithLLM(content, name, kbType) {
+async function enhanceDocumentWithLLM(content, name, kbType, userId = null) {
   const prompt = `你是一个知识库文档解析专家。请对以下文档进行结构化增强,使其更适合语义检索。\n\n要求:\n1. 保留原文所有内容(不删减)\n2. 在文档开头添加一段简洁摘要(3-5句话)\n3. 提取5-10个关键概念/术语,作为标签附在末尾\n4. 保持markdown格式\n\n文档名称:${name}\n知识库类型:${kbType}\n\n---\n${content.slice(0, 8000)}`;
 
-  // 直接调用 Deepseek API
+  // 直接调用 Deepseek API（优先用该用户的默认 Key，2026-11-20）
+  const resolved = await resolveApiKey(userId);
   const deepseekHeaders = {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+    'Authorization': `Bearer ${resolved.apiKey}`
   };
+  const enhanceBase = String(resolved.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120000);
 
   try {
-    const response = await fetch('https://api.deepseek.com/chat/completions', {
+    const response = await fetch(`${enhanceBase}/chat/completions`, {
       method: 'POST',
       headers: deepseekHeaders,
       body: JSON.stringify({
@@ -9299,17 +9303,278 @@ function broadcast(message) {
 // 真实Agent调用(直连 Deepseek,已完全剥离 QClaw 网关依赖)
 // ============================================================================
 
-// Deepseek API Key(直连,不依赖任何外部网关)
-// 优先从环境变量 / .env 读取,不再硬编码密钥
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || envConfig.DEEPSEEK_API_KEY || '';
-if (!DEEPSEEK_API_KEY) {
+// 平台级兜底 Key：环境变量 / .env。用户在「API KEY配置」里配了默认 Key 时用用户的，
+// 没配才用这个——这样老部署（只有 .env）行为不变，新用户也能自带 Key。
+const PLATFORM_API_KEY = process.env.DEEPSEEK_API_KEY || envConfig.DEEPSEEK_API_KEY || '';
+const DEEPSEEK_API_KEY = PLATFORM_API_KEY;
+if (!PLATFORM_API_KEY) {
   console.warn('[Deepseek] 未配置 DEEPSEEK_API_KEY,agent 调用将失败,请在 .env 中配置');
 }
 // 启动时打印(只露末 4 位,避免日志泄露 Key 前缀)
-const maskedKey = DEEPSEEK_API_KEY
-  ? `${DEEPSEEK_API_KEY.slice(0, 3)}***${DEEPSEEK_API_KEY.slice(-4)}`
+const maskedKey = PLATFORM_API_KEY
+  ? `${PLATFORM_API_KEY.slice(0, 3)}***${PLATFORM_API_KEY.slice(-4)}`
   : '(未配置)';
-console.log(`[Deepseek] API Key: ${maskedKey}`);
+console.log(`[Deepseek] 平台级 API Key: ${maskedKey}`);
+
+// ---------------------------------------------------------------------------
+// 用户级 API Key 解析（2026-11-20）
+// ---------------------------------------------------------------------------
+// 需求：「其他要使用 API KEY 的地方都使用默认 API KEY」。
+//
+// 解析顺序：该用户 is_default=1 的 Key → 平台级 .env Key → 空串（调用方报错）。
+// 加一层缓存是为了避免每次 AI 调用都查一次库：智能体一轮任务会发几十次请求，
+// 每次查库纯属浪费；但缓存必须能被「改/删/设默认」立即失效，否则用户改了 Key
+// 却发现平台还在用旧的——这是最难排查的一类问题。
+const USER_KEY_CACHE = new Map(); // userId -> { at, value, ttlMs }
+const USER_KEY_CACHE_TTL = 60_000;
+
+function invalidateUserApiKeyCache(userId) {
+  if (!userId) return;
+  USER_KEY_CACHE.delete(String(userId));
+}
+
+/**
+ * 取该用户实际应使用的 Key 与接口地址
+ *
+ * @returns {Promise<{apiKey:string, baseUrl:string, model:string, source:'user'|'platform'|'none', keyId:string|null}>}
+ */
+async function resolveApiKey(userId) {
+  const uid = userId ? String(userId) : '';
+  const platform = {
+    apiKey: PLATFORM_API_KEY,
+    baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-v4-pro',
+    source: PLATFORM_API_KEY ? 'platform' : 'none',
+    keyId: null,
+  };
+  if (!uid) return platform;
+
+  const cached = USER_KEY_CACHE.get(uid);
+  if (cached && Date.now() - cached.at < USER_KEY_CACHE_TTL) {
+    // 缓存命中，但平台 Key 可能为空——保持当时的结论即可
+    return cached.value;
+  }
+
+  let resolved = platform;
+  try {
+    const rec = await userApiKeyDAO.getDefaultApiKeyRecord(uid);
+    if (rec && rec.api_key_enc) {
+      const plain = await decryptSecret(rec.api_key_enc);
+      if (plain) {
+        resolved = {
+          apiKey: plain,
+          baseUrl: rec.base_url || platform.baseUrl,
+          model: rec.model || platform.model,
+          source: 'user',
+          keyId: rec.id,
+        };
+      } else {
+        // 密文解不开（LOCAL_JWT_SECRET 换过）：不能静默回退成平台 Key，
+        // 否则用户会以为在用自己配的 Key，实际在消耗平台额度。
+        console.warn(`[ApiKey] 用户 ${uid} 的默认 Key 解密失败，回退平台 Key`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[ApiKey] 解析用户 ${uid} 默认 Key 失败: ${e.message}`);
+  }
+
+  USER_KEY_CACHE.set(uid, { at: Date.now(), value: resolved });
+  return resolved;
+}
+
+/** 只要 Key 字符串时用这个（绝大多数调用点） */
+async function resolveApiKeyString(userId) {
+  return (await resolveApiKey(userId)).apiKey;
+}
+
+// ---------------------------------------------------------------------------
+// 用户级 API Key 管理接口（2026-11-20）
+// ---------------------------------------------------------------------------
+// 权限：所有登录用户都能管理**自己的** Key（不加 requireAdmin）。
+// 隔离：所有查询都带 user_id = 当前用户，任何接口都不接受从 body/query 指定 userId，
+//       避免越权读写别人的 Key。
+// 安全：明文只进不出——新增/修改时写入即加密，之后任何接口都只返回末 4 位。
+const API_KEY_MIN_LEN = 16;
+
+function keyHintOf(plain) {
+  const s = String(plain || '');
+  if (s.length <= 8) return '****';
+  return `${s.slice(0, 3)}***${s.slice(-4)}`;
+}
+
+function validateApiKeyInput(body, { requireKey }) {
+  const name = String(body?.name || '').trim();
+  if (!name) return '请填写名称';
+  if (name.length > 100) return '名称不能超过 100 个字符';
+  const provider = String(body?.provider || 'deepseek').trim();
+  if (!['deepseek', 'openai', 'other'].includes(provider)) return '不支持的服务商类型';
+  if (requireKey) {
+    const apiKey = String(body?.apiKey || '').trim();
+    if (!apiKey) return '请填写 API Key';
+    if (apiKey.length < API_KEY_MIN_LEN) return `API Key 长度不足（至少 ${API_KEY_MIN_LEN} 位）`;
+    if (!/^[\x21-\x7e]+$/.test(apiKey)) return 'API Key 含非法字符（只允许可见 ASCII）';
+  }
+  const baseUrl = String(body?.baseUrl || '').trim();
+  if (baseUrl && !/^https?:\/\//i.test(baseUrl)) return '接口地址必须以 http:// 或 https:// 开头';
+  return null;
+}
+
+/** 列出当前用户的 Key（含平台 Key 是否可用的提示，便于用户判断要不要配） */
+app.get('/api/user/api-keys', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  try {
+    const keys = await userApiKeyDAO.listApiKeys(userId);
+    res.json({
+      success: true,
+      data: {
+        keys,
+        hasDefault: keys.some((k) => k.isDefault),
+        platformKeyAvailable: !!PLATFORM_API_KEY,
+        platformKeyHint: PLATFORM_API_KEY ? keyHintOf(PLATFORM_API_KEY) : '',
+      },
+    });
+  } catch (e) {
+    console.error('[ApiKey] 列表失败', e.message);
+    res.status(500).json({ success: false, error: '读取 API Key 列表失败' });
+  }
+});
+
+app.post('/api/user/api-keys', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  const err = validateApiKeyInput(req.body, { requireKey: true });
+  if (err) return res.status(400).json({ success: false, error: err });
+
+  try {
+    const count = await userApiKeyDAO.countApiKeys(userId);
+    if (count >= 20) return res.status(400).json({ success: false, error: '最多只能保存 20 个 API Key' });
+
+    const b = req.body || {};
+    const plain = String(b.apiKey).trim();
+    const id = randomUUID();
+    const created = await userApiKeyDAO.createApiKey(userId, {
+      id,
+      name: String(b.name).trim(),
+      provider: String(b.provider || 'deepseek').trim(),
+      baseUrl: String(b.baseUrl || '').trim() || null,
+      model: String(b.model || '').trim() || null,
+      apiKeyEnc: await encryptSecret(plain),
+      keyHint: keyHintOf(plain),
+    });
+    invalidateUserApiKeyCache(userId);
+    res.json({
+      success: true,
+      message: created.isDefault ? 'API Key 已保存，并已设为默认' : 'API Key 已保存',
+      data: { id: created.id, isDefault: created.isDefault },
+    });
+  } catch (e) {
+    console.error('[ApiKey] 新增失败', e.message);
+    res.status(500).json({ success: false, error: '保存 API Key 失败' });
+  }
+});
+
+app.put('/api/user/api-keys/:id', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  const keyId = req.params.id;
+  // 修改时 Key 可以留空表示「不改 Key，只改名称/地址/模型」
+  const err = validateApiKeyInput(req.body, { requireKey: false });
+  if (err) return res.status(400).json({ success: false, error: err });
+
+  try {
+    const rec = await userApiKeyDAO.getApiKeyRecord(userId, keyId);
+    if (!rec) return res.status(404).json({ success: false, error: 'API Key 不存在' });
+
+    const b = req.body || {};
+    const plain = String(b.apiKey || '').trim();
+    const fields = {
+      name: String(b.name).trim(),
+      provider: String(b.provider || rec.provider).trim(),
+      baseUrl: String(b.baseUrl ?? rec.base_url ?? '').trim() || null,
+      model: String(b.model ?? rec.model ?? '').trim() || null,
+    };
+    if (plain) {
+      if (plain.length < API_KEY_MIN_LEN) return res.status(400).json({ success: false, error: 'API Key 长度不足' });
+      fields.apiKeyEnc = await encryptSecret(plain);
+      fields.keyHint = keyHintOf(plain);
+    }
+    await userApiKeyDAO.updateApiKey(userId, keyId, fields);
+    invalidateUserApiKeyCache(userId);
+    res.json({ success: true, message: 'API Key 已更新' });
+  } catch (e) {
+    console.error('[ApiKey] 更新失败', e.message);
+    res.status(500).json({ success: false, error: '更新 API Key 失败' });
+  }
+});
+
+app.delete('/api/user/api-keys/:id', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  try {
+    const r = await userApiKeyDAO.deleteApiKey(userId, req.params.id);
+    if (!r.ok) return res.status(404).json({ success: false, error: 'API Key 不存在' });
+    invalidateUserApiKeyCache(userId);
+    res.json({
+      success: true,
+      message: r.newDefaultId ? 'API Key 已删除，已自动把最早的一条设为默认' : 'API Key 已删除',
+      data: { newDefaultId: r.newDefaultId },
+    });
+  } catch (e) {
+    console.error('[ApiKey] 删除失败', e.message);
+    res.status(500).json({ success: false, error: '删除 API Key 失败' });
+  }
+});
+
+app.post('/api/user/api-keys/:id/default', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  try {
+    const ok = await userApiKeyDAO.setDefaultApiKey(userId, req.params.id);
+    if (!ok) return res.status(404).json({ success: false, error: 'API Key 不存在' });
+    invalidateUserApiKeyCache(userId);
+    res.json({ success: true, message: '已设为默认 API Key' });
+  } catch (e) {
+    console.error('[ApiKey] 设默认失败', e.message);
+    res.status(500).json({ success: false, error: '设置默认 API Key 失败' });
+  }
+});
+
+/**
+ * 验证一条 Key 是否可用
+ *
+ * 真实发一次最小请求（max_tokens=2），而不是只看格式：
+ * 用户最容易踩的坑是「Key 打错一个字符」或「余额为零」，光校验格式发现不了。
+ */
+app.post('/api/user/api-keys/:id/verify', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  try {
+    const rec = await userApiKeyDAO.getApiKeyRecord(userId, req.params.id);
+    if (!rec) return res.status(404).json({ success: false, error: 'API Key 不存在' });
+    const plain = await decryptSecret(rec.api_key_enc);
+    if (!plain) return res.json({ success: false, error: 'Key 解密失败，请重新录入' });
+
+    const base = String(rec.base_url || 'https://api.deepseek.com').replace(/\/+$/, '');
+    const model = rec.model || 'deepseek-v4-pro';
+    const r = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${plain}` },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 2 }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      const hint = r.status === 401 ? 'Key 无效或已过期'
+        : r.status === 402 ? '账户余额不足'
+        : r.status === 404 ? `接口地址或模型名不存在（model=${model}）`
+        : r.status === 429 ? '请求过于频繁，请稍后再试'
+        : `服务返回 HTTP ${r.status}`;
+      return res.json({ success: false, error: `${hint}${text ? `：${text.slice(0, 200)}` : ''}` });
+    }
+    await userApiKeyDAO.markApiKeyVerified(userId, req.params.id);
+    res.json({ success: true, message: 'Key 验证通过，可以正常调用' });
+  } catch (e) {
+    const msg = e.name === 'TimeoutError' || e.name === 'AbortError'
+      ? '验证超时（20 秒），请检查接口地址与网络'
+      : e.message;
+    res.json({ success: false, error: msg });
+  }
+});
 
 // ========== 智能体会话跟踪与清理 ==========
 
@@ -9418,26 +9683,36 @@ const GATEWAY_HEALTH = {
  * 检查 Deepseek API 是否可用(带缓存的健康检查)
  * 注意:现在使用 Deepseek 直接调用,不再依赖 Gateway agent auth
  */
-async function checkGatewayHealth() {
+async function checkGatewayHealth(userId) {
   const now = Date.now();
   if (now - GATEWAY_HEALTH.lastCheck < GATEWAY_HEALTH.checkIntervalMs) {
     return GATEWAY_HEALTH.lastStatus === 'ok';
   }
   GATEWAY_HEALTH.lastCheck = now;
 
+  // 用该用户实际会用的 Key 探测：用户配了自己的 Key 时，平台 Key 是否可用
+  // 与他无关（反之亦然）。端点可达性判定不受影响。
+  const resolved = await resolveApiKey(userId);
+  if (!resolved.apiKey) {
+    GATEWAY_HEALTH.lastStatus = 'unavailable';
+    console.warn('[GatewayHealth] 无可用 API Key（用户未配置默认 Key 且平台 Key 未设置）');
+    return false;
+  }
+  const base = String(resolved.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
+
   // 1 次重试，避免瞬时网络抖动/429 直接判定不可用
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
       const controller = new AbortController();
       const tid = setTimeout(() => controller.abort(), 10000);
-      const res = await fetch('https://api.deepseek.com/chat/completions', {
+      const res = await fetch(`${base}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+          'Authorization': `Bearer ${resolved.apiKey}`
         },
         body: JSON.stringify({
-          model: 'deepseek-v4-pro',
+          model: resolved.model || 'deepseek-v4-pro',
           messages: [{ role: 'user', content: 'ping' }],
           max_tokens: 2
         }),
@@ -9462,16 +9737,29 @@ async function checkGatewayHealth() {
 }
 
 // DeepSeek 余额检查：缓存 60s，余额不足时提前失败，避免把 402 拖进审核/重试流程
-const DEEPSEEK_BALANCE = { at: 0, available: null, balance: 0, currency: '', checking: null };
-async function checkDeepSeekBalance() {
-  if (Date.now() - DEEPSEEK_BALANCE.at < 60000 && DEEPSEEK_BALANCE.available !== null) {
-    return DEEPSEEK_BALANCE;
+//
+// 2026-11-20 按 Key 隔离：余额是「每个 Key 各自的」。
+// 过去只有一份全局缓存，用户配了自己的 Key 后，判断能否执行任务时会看到
+// 平台 Key 的余额（或反过来别人看到你的），结论完全错位。
+// 现在以「实际会用的 Key」为缓存键，平台 Key 和各用户 Key 各存一份。
+const DEEPSEEK_BALANCE = new Map(); // cacheKey -> { at, available, balance, currency, checking, error }
+
+async function checkDeepSeekBalance(userId) {
+  const resolved = await resolveApiKey(userId);
+  if (!resolved.apiKey) return { available: null, balance: 0, currency: '', error: '未配置 API Key' };
+  const cacheKey = resolved.keyId || `platform:${resolved.apiKey.slice(-8)}`;
+  const cached = DEEPSEEK_BALANCE.get(cacheKey);
+  if (cached && Date.now() - cached.at < 60000 && cached.available !== null) {
+    return cached;
   }
-  if (DEEPSEEK_BALANCE.checking) return DEEPSEEK_BALANCE.checking;
-  DEEPSEEK_BALANCE.checking = (async () => {
+  if (cached?.checking) return cached.checking;
+
+  const entry = cached || { at: 0, available: null, balance: 0, currency: '' };
+  entry.checking = (async () => {
     try {
-      const res = await fetch('https://api.deepseek.com/user/balance', {
-        headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}` },
+      const base = String(resolved.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
+      const res = await fetch(`${base}/user/balance`, {
+        headers: { Authorization: `Bearer ${resolved.apiKey}` },
         signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) return { available: null, balance: 0, currency: '', error: `balance HTTP ${res.status}` };
@@ -9479,18 +9767,20 @@ async function checkDeepSeekBalance() {
       const infos = Array.isArray(data.balance_infos) ? data.balance_infos : [];
       const total = infos.reduce((sum, x) => sum + (parseFloat(x.total_balance) || 0), 0);
       const available = data.is_available !== false && total > 0;
-      Object.assign(DEEPSEEK_BALANCE, {
+      Object.assign(entry, {
         at: Date.now(), available, balance: total,
         currency: (infos[0] && infos[0].currency) || '',
       });
-      return DEEPSEEK_BALANCE;
+      DEEPSEEK_BALANCE.set(cacheKey, entry);
+      return entry;
     } catch (e) {
       return { available: null, balance: 0, currency: '', error: e.message };
     } finally {
-      DEEPSEEK_BALANCE.checking = null;
+      entry.checking = null;
     }
   })();
-  return DEEPSEEK_BALANCE.checking;
+  DEEPSEEK_BALANCE.set(cacheKey, entry);
+  return entry.checking;
 }
 
 /**
@@ -10710,7 +11000,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
   // ========== Deepseek 可用性健康检查（仅告警，不阻断任务） ==========
   // 健康检查只有 5-10 秒预算，一次网络抖动/429 就把长任务判死是错误的；
   // 真正的 API 调用在 callOpenClawAPI 内自带重试与 600s 超时，让它给出准确错误。
-  const gatewayHealthy = await checkGatewayHealth();
+  const gatewayHealthy = await checkGatewayHealth(userId);
   if (!gatewayHealthy) {
     console.warn(`[GatewayHealth] Deepseek 健康检查未通过，仍尝试真实调用 agent=${agentId}（实际失败会由 API 层返回具体状态码）`);
   }
@@ -11103,7 +11393,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                 const out = await callDeepSeekRewrite([
                   { role: 'system', content: '你是测试用例评审专家，只输出要求格式的 Markdown 表格，不输出任何解释文字。' },
                   { role: 'user', content: `${prompt}\n\n【原始需求（改写预期结果时以此为准）】\n${requestContext}` },
-                ], { timeoutMs: REPAIR_TIMEOUT_MS, maxTokens: 16000 });
+                ], { timeoutMs: REPAIR_TIMEOUT_MS, maxTokens: 16000, userId });
                 console.log(`[CaseGate] 批次${bi + 1}/${batches.length} 返回 ${(out.content || '').length} 字`);
                 reportBatchProgress(bi, true);
                 return out.content || '';
@@ -12010,17 +12300,20 @@ function enforceContextBudget(messages) {
 async function callDeepSeekRewrite(messages, options = {}) {
   const timeoutMs = Number(options.timeoutMs) || 300000;
   const maxTokens = Number(options.maxTokens) || 16000;
+  // 门禁达标后的局部改写同样走用户默认 Key（2026-11-20）
+  const resolved = await resolveApiKey(options.userId);
+  const base = String(resolved.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch('https://api.deepseek.com/chat/completions', {
+    const res = await fetch(`${base}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+        Authorization: `Bearer ${resolved.apiKey}`,
       },
       body: JSON.stringify({
-        model: 'deepseek-v4-pro',
+        model: resolved.model || 'deepseek-v4-pro',
         messages,
         temperature: 0,
         max_tokens: maxTokens,
@@ -12243,11 +12536,17 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
       console.log(`[GatewayAPI]   isStreamRequest: ${isStreamRequest}`);
 
       // 直接调用 Deepseek API(绕过 Gateway agent auth 问题)
+      // 用户配了默认 Key 就用用户的，否则用平台 Key（2026-11-20）
+      const resolvedKey = await resolveApiKey(userId);
       const deepseekHeaders = {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+        'Authorization': `Bearer ${resolvedKey.apiKey}`
       };
-      const deepseekModel = 'deepseek-v4-pro';
+      const deepseekModel = resolvedKey.model || 'deepseek-v4-pro';
+      const deepseekBase = String(resolvedKey.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
+      if (resolvedKey.source === 'user') {
+        console.log(`[GatewayAPI]   使用用户默认 Key (${resolvedKey.keyId})`);
+      }
 
       console.log(`[GatewayAPI] Making direct Deepseek API call...`);
       console.log(`[GatewayAPI]   model=${deepseekModel}, stream=true`);
@@ -12260,7 +12559,7 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
         ? { tools, tool_choice: effectiveForceToolCall ? 'required' : 'auto' }
         : (tools.length ? { tools } : {});
 
-      const response = await fetch('https://api.deepseek.com/chat/completions', {
+      const response = await fetch(`${deepseekBase}/chat/completions`, {
         method: 'POST',
         headers: deepseekHeaders,
         body: JSON.stringify({
@@ -12768,7 +13067,7 @@ async function executeTaskWithReview(task, userId = null) {
               const rewritten = await callDeepSeekRewrite([
                 { role: 'system', content: '你是测试用例评审专家，按问题清单局部修改交付物，输出完整 Markdown，不输出解释。' },
                 { role: 'user', content: `${patchGuide}\n\n---\n【现有交付物】\n${task.result}` },
-              ], { timeoutMs: CASE_QUALITY_REPAIR_TIMEOUT_MS * 2, maxTokens: 32000 });
+              ], { timeoutMs: CASE_QUALITY_REPAIR_TIMEOUT_MS * 2, maxTokens: 32000, userId: task.userId });
 
               const patched = String(rewritten.content || '').trim();
               // 校验：改写结果必须仍是用例交付物，且条数不能大幅缩水（防止模型只回一段说明）
@@ -14330,7 +14629,7 @@ async function executeTaskAsync(task) {
 
   try {
     // 余额不足时提前失败，避免 402 被审核/重试流程放大成“任务完成”
-    const balance = await checkDeepSeekBalance();
+    const balance = await checkDeepSeekBalance(task.userId);
     if (balance && balance.available === false) {
       const msg = `DeepSeek 账户余额不足（当前 ${balance.balance} ${balance.currency || ''}），请充值后重试`;
       console.error(`[Task] ${task.id} blocked: ${msg}`);
@@ -15575,7 +15874,8 @@ app.post('/api/evaluation/llm', authenticate, async (req, res) => {
 
   const llmEval = await import('file://' + path.join(SKILLS_DIR, 'evaluation-system/backend/llm-evaluator.js'
   ));
-  llmEval.setApiKey(DEEPSEEK_API_KEY);
+  // 评估同样使用「该用户的默认 Key」（2026-11-20）
+  llmEval.setApiKey(await resolveApiKeyString(req.user?.id || req.user?.sub));
 
   // ── 创建评估运行记录 ────────────────────────────────────────
   let evalRunId = null;

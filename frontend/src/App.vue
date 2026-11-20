@@ -86,10 +86,12 @@ const menuItems = computed(() => {
     { path: '/web-compatibility', icon: 'Monitor', msIcon: 'devices', tone: 'cyan', title: '兼容性测试' }
   ]
 
-  // 仅管理员可见的菜单项
-  if (store.isAdmin) {
-    items.push({ path: '/admin', icon: 'Tools', msIcon: 'settings', tone: 'slate', title: '管理员功能' })
-  }
+  // 「系统设置与管理」（原「管理员功能」，2026-11-20 改名并放开权限）
+  //
+  // 放开原因：里面的「API KEY配置」是每个用户配置自己 Key 的地方，必须人人可用。
+  // 其余 tab（统计数据/用户管理/系统设置/工具管理）仍由各组件内部按 isAdmin 自控，
+  // 非管理员看到的是「无权访问」提示——把权限判断下沉到 tab 级，而不是整页拦住。
+  items.push({ path: '/admin', icon: 'Tools', msIcon: 'settings', tone: 'slate', title: '系统设置与管理' })
 
   return items
 })

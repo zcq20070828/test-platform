@@ -770,6 +770,113 @@ export const evaluationApi = {
   }
 }
 
+// ─── 用户级 API Key 管理（2026-11-20）─────────────────────────────────────────
+// 所有登录用户都能管自己的 Key；后端按 token 里的用户隔离，前端不传 userId。
+export interface UserApiKey {
+  id: string
+  name: string
+  provider: string
+  baseUrl: string
+  model: string
+  keyHint: string
+  isDefault: boolean
+  lastVerifiedAt: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface ApiKeyListResult {
+  keys: UserApiKey[]
+  hasDefault: boolean
+  platformKeyAvailable: boolean
+  platformKeyHint: string
+}
+
+// request() 返回 { success, data }，其中 data 是后端原始响应体
+// （{ success, data, message, error }），所以业务字段在两层 data 之下。
+function unwrapApiKeyBody(raw: any) {
+  return raw && typeof raw === 'object' ? raw : {}
+}
+
+export const userApiKeyApi = {
+  // 列出自己的 Key（含「平台 Key 是否可用」提示）
+  async list(): Promise<ApiKeyListResult | null> {
+    const res = await request<any>('/api/user/api-keys')
+    if (!res.success) return null
+    const body = unwrapApiKeyBody(res.data)
+    const payload = body.data || {}
+    return {
+      keys: Array.isArray(payload.keys) ? payload.keys : [],
+      hasDefault: !!payload.hasDefault,
+      platformKeyAvailable: !!payload.platformKeyAvailable,
+      platformKeyHint: payload.platformKeyHint || '',
+    }
+  },
+
+  // 新增；第一条会自动设为默认（后端行为）
+  async create(payload: {
+    name: string
+    apiKey: string
+    provider?: string
+    baseUrl?: string
+    model?: string
+  }): Promise<{ ok: boolean; message: string; id?: string; isDefault?: boolean }> {
+    const res = await request<any>('/api/user/api-keys', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+    const body = unwrapApiKeyBody(res.data)
+    return res.success
+      ? { ok: true, message: body.message || '已保存', id: body.data?.id, isDefault: body.data?.isDefault }
+      : { ok: false, message: res.error || '保存失败' }
+  },
+
+  // 修改；apiKey 留空表示「不换 Key，只改名称/地址/模型」
+  async update(id: string, payload: {
+    name: string
+    apiKey?: string
+    provider?: string
+    baseUrl?: string
+    model?: string
+  }): Promise<{ ok: boolean; message: string }> {
+    const res = await request<any>(`/api/user/api-keys/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    })
+    const body = unwrapApiKeyBody(res.data)
+    return { ok: res.success, message: res.success ? (body.message || '已更新') : (res.error || '更新失败') }
+  },
+
+  async remove(id: string): Promise<{ ok: boolean; message: string; newDefaultId?: string | null }> {
+    const res = await request<any>(`/api/user/api-keys/${id}`, { method: 'DELETE' })
+    const body = unwrapApiKeyBody(res.data)
+    return {
+      ok: res.success,
+      message: res.success ? (body.message || '已删除') : (res.error || '删除失败'),
+      newDefaultId: body.data?.newDefaultId ?? null,
+    }
+  },
+
+  // 指定默认（每个用户只能有一个，后端用事务保证）
+  async setDefault(id: string): Promise<{ ok: boolean; message: string }> {
+    const res = await request<any>(`/api/user/api-keys/${id}/default`, { method: 'POST', body: JSON.stringify({}) })
+    const body = unwrapApiKeyBody(res.data)
+    return { ok: res.success, message: res.success ? (body.message || '已设为默认') : (res.error || '设置失败') }
+  },
+
+  // 真实发一次最小请求验证 Key 是否可用（不是只校验格式）
+  async verify(id: string): Promise<{ ok: boolean; message: string }> {
+    const res = await request<any>(`/api/user/api-keys/${id}/verify`, { method: 'POST', body: JSON.stringify({}) })
+    const body = unwrapApiKeyBody(res.data)
+    // 验证失败时后端仍返回 HTTP 200 + success:false（业务失败，不是请求失败）
+    const bizOk = body.success !== false
+    return {
+      ok: res.success && bizOk,
+      message: bizOk ? (body.message || '验证通过') : (body.error || '验证失败'),
+    }
+  },
+}
+
 // ─── 管理员系统配置 API ────────────────────────────────────────────────────────
 export const adminApi = {
   // 获取所有系统配置
