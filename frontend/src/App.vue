@@ -70,20 +70,30 @@ const menuItems = computed(() => {
       tone: 'violet',
       title: '功能测试',
       children: [
-        { path: '/', icon: 'Odometer', msIcon: 'account_tree', tone: 'indigo', title: '分步测试' },
-        { path: '/workflow', icon: 'Connection', msIcon: 'schema', tone: 'indigo', title: '测试流水线' }
+        { path: '/', icon: 'Odometer', msIcon: 'account_tree', tone: 'indigo', title: '分步测试' }
+        // 【平台瘦身 2026-11-20】「测试流水线」入口从菜单移除（页面与路由保留但禁止访问）。
+        // 恢复方法：取消下一行注释，并把 router/index.ts 中 /workflow 的
+        //          meta.disabled / disabledTip 两行删掉。
+        // ,
+        // { path: '/workflow', icon: 'Connection', msIcon: 'schema', tone: 'indigo', title: '测试流水线' }
       ]
     },
     // 【平台瘦身 2026-10-14】「智能体」入口从菜单移除（页面保留、路由保留但禁止访问）。
     // 恢复方法：取消下一行注释即可（同时把 router/index.ts 中 /agents 的 meta.disabled 去掉）。
     // { path: '/agents', icon: 'User', msIcon: 'smart_toy', tone: 'violet', title: '智能体' },
-    { path: '/knowledge', icon: 'Collection', msIcon: 'menu_book', tone: 'blue', title: '知识库' },
-    { path: '/tasks', icon: 'List', msIcon: 'assignment', tone: 'amber', title: '任务' },
-    { path: '/test-runner', icon: 'VideoPlay', msIcon: 'play_circle', tone: 'rose', title: '自动化测试' },
-    { path: '/performance-test', icon: 'DataLine', msIcon: 'speed', tone: 'cyan', title: '性能测试' },
-    { path: '/evaluation', icon: 'DataAnalysis', msIcon: 'psychology', tone: 'violet', title: '智能评估' },
-    { path: '/security', icon: 'Lock', msIcon: 'shield', tone: 'teal', title: '安全测试' },
-    { path: '/web-compatibility', icon: 'Monitor', msIcon: 'devices', tone: 'cyan', title: '兼容性测试' }
+
+    // 【平台瘦身 2026-11-20】以下 5 个入口从菜单移除，页面与路由均保留但禁止访问。
+    // 恢复方法：逐项取消注释，并把 router/index.ts 中对应路由的
+    //          meta.disabled / disabledTip 两行删掉。
+    // { path: '/knowledge', icon: 'Collection', msIcon: 'menu_book', tone: 'blue', title: '知识库' },
+    // { path: '/test-runner', icon: 'VideoPlay', msIcon: 'play_circle', tone: 'rose', title: '自动化测试' },
+    // { path: '/performance-test', icon: 'DataLine', msIcon: 'speed', tone: 'cyan', title: '性能测试' },
+    // { path: '/evaluation', icon: 'DataAnalysis', msIcon: 'psychology', tone: 'violet', title: '智能评估' },
+    // { path: '/security', icon: 'Lock', msIcon: 'shield', tone: 'teal', title: '安全测试' },
+    // { path: '/web-compatibility', icon: 'Monitor', msIcon: 'devices', tone: 'cyan', title: '兼容性测试' },
+
+    // 保留：任务（所有模块的产物都在这里查）
+    { path: '/tasks', icon: 'List', msIcon: 'assignment', tone: 'amber', title: '任务' }
   ]
 
   // 「系统设置与管理」（原「管理员功能」，2026-11-20 改名并放开权限）
