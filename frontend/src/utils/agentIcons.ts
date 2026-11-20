@@ -6,6 +6,8 @@ export const AGENT_ICON_MAP: Record<string, string> = {
   'test-requirement-analyzer': 'search',
   'test-scheme-generator': 'assignment',
   'test-case-generator': 'checklist',
+  // AI 应用测试：与「用例生成」的 checklist 区分开
+  'ai-app-tester': 'psychology',
   'test-data-generator': 'analytics',
   'api-executor': 'cable',
   'ui-e2e-executor': 'desktop_windows',

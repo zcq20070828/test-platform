@@ -19,3 +19,10 @@ ALTER TABLE `task_quality_metrics`
 ALTER TABLE `task_quality_metrics`
   ADD COLUMN IF NOT EXISTS `polish_gain` decimal(5,4) DEFAULT NULL
     COMMENT '打磨带来的可用率提升（打磨后 - 打磨前），回退时为 0' AFTER `polish_rounds`;
+
+-- 被测对象类型（2026-11-20）：AI 应用用例按「七个风险维度 + AI 断言规则」判定，
+-- 传统软件按「九维 + 确定性断言」判定。两者维度键不重叠（user/data/... vs factuality/...），
+-- 前端若不区分会显示成「缺 ① 用户」这类对 AI 应用无意义的提示。
+ALTER TABLE `task_quality_metrics`
+  ADD COLUMN IF NOT EXISTS `target_kind` varchar(16) NOT NULL DEFAULT 'software'
+    COMMENT '被测对象类型：software 传统软件 / ai-app AI 应用' AFTER `agent_id`;

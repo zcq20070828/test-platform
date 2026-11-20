@@ -21,6 +21,7 @@ const EXCLUDED_AGENTS = ['test-master', 'ai-quality-reviewer-1', 'ai-quality-rev
 const AGENT_NAME_MAP: Record<string, string> = {
   'test-requirement-analyzer': '需求分析',
   'test-case-generator': '测试用例生成',
+  'ai-app-tester': 'AI应用测试',
   'test-data-generator': '测试数据生成',
   'defect-analyzer': '缺陷分析',
   'api-executor': '接口测试',
@@ -42,6 +43,12 @@ const AGENT_KEYWORDS: Record<string, { keywords: string[]; description: string }
   'test-case-generator': {
     keywords: ['用例', '测试用例', 'test case', 'case', '场景', '测试场景', '用例集', '用例设计', '边界', '等价类'],
     description: '生成测试用例、设计测试场景'
+  },
+  'ai-app-tester': {
+    // 只列「AI 应用特有」的词，避免把普通用例需求也抢过来——
+    // 匹配逻辑是取命中数最多的智能体，「用例」不该算作 AI 应用的信号
+    keywords: ['ai应用', 'ai测试', 'ai助手', '大模型', 'llm', 'rag', '知识库问答', '智能体', '幻觉', '提示注入', '越狱', 'gpt', 'deepseek'],
+    description: '测试 AI 应用：幻觉、提示注入、输出一致性、RAG 召回、工具调用合规'
   },
   'test-data-generator': {
     keywords: ['数据', '测试数据', 'test data', '数据集', '造数', '生成数据', '造数据', '数据准备', '数据生成'],
