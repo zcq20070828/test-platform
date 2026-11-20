@@ -578,5 +578,52 @@ t('工具内嵌套 spawn 也传 uid（避免子智能体回落平台 Key）', ()
   }
 });
 
+// ---------------- 错误归类：不能被响应体文字带偏 ----------------
+// 实测任务 9184ca57：智谱返回 429（限流），响应体里带「余额不足」字样，
+// 旧逻辑 `status === 402 || /余额不足/i.test(errorText)` 把它判成
+// 「DeepSeek 账户余额不足（402）」—— 文案和真实原因都不对，
+// 用户按提示去充值也解决不了问题。
+t('错误归类以状态码为准：429 不被响应体文字带偏', () => {
+  const fn = SERVER.slice(SERVER.indexOf('const isBalance = status === 402'), SERVER.indexOf('const isBalance = status === 402') + 900);
+  // 必须用「402 或 403+文本」的判定，不能只看文本
+  assert.ok(/status === 402/.test(fn), '缺少 402 判定');
+  assert.ok(/status === 403 &&/.test(fn), '403 + 余额文本应判为余额不足');
+  // 不允许出现「仅凭 errorText 就判 balance」的写法
+  assert.ok(!/const isBalance = \/Insufficient|const isBalance = .*\.test\(errorText\);/.test(fn),
+    '仍存在「只看响应体文字」的判定');
+});
+
+t('错误文案带真实服务商，不写死 DeepSeek', () => {
+  const idx = SERVER.indexOf('const isBalance = status === 402');
+  const block = SERVER.slice(idx, idx + 1400);
+  assert.ok(/providerLabel/.test(block), '未取真实服务商');
+  assert.ok(/resolvedKey\.provider/.test(block), '未从解析结果取 provider');
+  assert.ok(!/\? 'DeepSeek 账户余额不足/.test(block), '余额文案仍写死 DeepSeek');
+});
+
+t('429 有明确提示（限流/额度），不与余额不足混为一谈', () => {
+  const idx = SERVER.indexOf('const isBalance = status === 402');
+  const block = SERVER.slice(idx, idx + 1400);
+  assert.ok(/status === 429/.test(block), '缺少 429 的专门文案');
+  assert.ok(/请求过于频繁|并发超限|额度已用尽/.test(block), '429 缺少可读原因');
+});
+
+t('重写通道（callDeepSeekRewrite）的归类同样以状态码为准', () => {
+  const idx = SERVER.indexOf('const isBalance = res.status === 402');
+  assert.ok(idx > 0, 'callDeepSeekRewrite 未修正');
+  const block = SERVER.slice(idx, idx + 600);
+  assert.ok(/res\.status === 402/.test(block), '缺少 402 判定');
+  assert.ok(/res\.status === 403 &&/.test(block), '403 判定缺失');
+  assert.ok(/providerLabel/.test(block), '文案未带服务商');
+});
+
+t('任务前置余额检查的文案也带服务商', () => {
+  const idx = SERVER.indexOf('const balance = await checkDeepSeekBalance');
+  assert.ok(idx > 0);
+  const block = SERVER.slice(idx, idx + 600);
+  assert.ok(/balance\.provider/.test(block), '余额检查结果未带 provider');
+  assert.ok(!/const msg = `DeepSeek 账户余额不足/.test(block), '任务失败文案仍写死 DeepSeek');
+});
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
