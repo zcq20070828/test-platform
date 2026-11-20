@@ -174,6 +174,33 @@ t('补齐后的表头与主用例表一致（否则门禁解析不到新用例�
   }
 });
 
+// ---------------- 九维规划器不能被「静默跳过」 ----------------
+// 用户反馈「测试用例生成也没见调 planer 那个工具了」。
+// 实测连续 3 个任务的 timeline 里只有 9dem-executor，planner 一次没调。
+// 原因：提示词写的是「若确需先做维度规划…调用 9dem_planner」——纯可选措辞；
+// 而 REQUIRED_SKILLS_BY_AGENT 里只列了 9dem-executor，证据门禁也不管它。
+t('用例生成必须调用 9dem_planner（提示词不再用「若确需」）', () => {
+  assert.ok(!/若确需先做维度规划/.test(SERVER), '系统提示里仍是「若确需」这种可选措辞');
+  assert.ok(/必须先调用.*9dem_planner/.test(SERVER), '系统提示没有强制调用 planner');
+});
+
+t('模型漏调 planner 时系统确定性补算（不依赖模型自觉）', () => {
+  assert.ok(/PlannerBackfill/.test(SERVER), '缺少 planner 补算逻辑');
+  const fn = SERVER.slice(SERVER.indexOf("if (agentId === 'test-case-generator')", SERVER.indexOf('PlannerBackfill') - 2000));
+  assert.ok(/skillExecutions\.some\(\(e\) => e\.skillId === '9dem-planner'\)/.test(fn), '没有检查是否已调用过 planner');
+  assert.ok(/autoInvoked: true/.test(fn), '补算结果未标记来源（审计时分不清是模型调的还是系统补的）');
+  assert.ok(/维度规划（系统确定性补算 9dem_planner）/.test(SERVER), '补算结论没有写进交付物');
+});
+
+t('补算在证据门禁之前、用例门禁之前', () => {
+  const fill = SERVER.indexOf('PlannerBackfill');
+  const gate = SERVER.indexOf('// ── 执行证据门禁');
+  const caseGate = SERVER.indexOf('用例交付物确定性质量门禁');
+  assert.ok(fill > 0 && gate > 0 && caseGate > 0, '定位失败');
+  assert.ok(fill < gate, '补算应在证据门禁之前');
+  assert.ok(fill < caseGate, '补算应在本测用例门禁之前');
+});
+
 // ---------------- pairwise 口径 ----------------
 t('pairwise 输出上限不再把 65536 以内的组合砍掉', () => {
   const inv = fs.readFileSync(path.join(ROOT, 'qclaw-skills', '9dem-executor', 'backend', '9dem-invoker.js'), 'utf8');
