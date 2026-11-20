@@ -9,6 +9,8 @@ import { escapeHtml as escapeHtmlUtil } from '@/utils/safe-html'
 import MsIcon from '@/components/MsIcon.vue'
 import QualityCard from '@/components/QualityCard.vue'
 import { formatDateTime } from '@/utils/time'
+import { formatFailure, failureLabel } from '@/utils/failure-message'
+import { renderMarkdownSafe } from '@/utils/safe-html'
 import { summarizeTaskOutput } from '@/utils/tool-summary'
 
 const store = useMainStore()
@@ -150,6 +152,23 @@ function getStatusType(status: string) {
     pending: 'info', running: 'warning', completed: 'success', failed: 'danger', cancelled: 'warning'
   }
   return types[status] || 'info'
+}
+
+/** 详情页的失败说明（markdown → 清洗后的 HTML） */
+function renderFailure(task: any): string {
+  if (!task) return ''
+  const text = formatFailure(task.failure, task.error)
+  return renderMarkdownSafe(text)
+}
+
+/** 列表里的失败原因悬浮说明：优先用诊断，没有就退回原始错误 */
+function failureHint(row: any): string {
+  if (!row || row.status !== 'failed') return ''
+  if (row.failure && row.failure.title) {
+    return formatFailure(row.failure).replace(/[*_>`]/g, '').slice(0, 260)
+  }
+  const raw = String(row.error || '').trim()
+  return raw ? raw.slice(0, 200) : ''
 }
 
 function getStatusText(status: string) {
@@ -745,11 +764,23 @@ onMounted(() => {
         </template>
       </el-table-column>
 
-      <el-table-column prop="status" label="状态" width="100" align="center">
+      <el-table-column prop="status" label="状态" width="150" align="center">
         <template #default="{ row }">
           <el-tag :type="getStatusType(row.status)" size="small" effect="light">
             {{ getStatusText(row.status) }}
           </el-tag>
+          <!-- 失败原因类别（2026-11-20）：列表上就能看出是余额不足还是限流，
+               不用点进去翻技术错误。悬浮给完整原因与建议。 -->
+          <el-tooltip
+            v-if="row.status === 'failed' && failureHint(row)"
+            :content="failureHint(row)"
+            placement="top"
+            :show-after="300"
+          >
+            <el-tag type="danger" size="small" effect="plain" class="failure-chip">
+              {{ failureLabel(row.failure?.category) }}
+            </el-tag>
+          </el-tooltip>
         </template>
       </el-table-column>
 
@@ -932,6 +963,15 @@ onMounted(() => {
               <span class="cost-value saved-cost">¥{{ formatMoney(selectedTask.savedCost) }}</span>
             </el-descriptions-item>
           </el-descriptions>
+        </div>
+
+        <!-- 失败诊断（2026-11-20）：任务失败时把「技术错误」翻译成
+             「什么问题 + 可以怎么做」，用户不用猜是 Key 坏了还是网络问题 -->
+        <div v-if="selectedTask.status === 'failed'" class="section failure-section">
+          <h4 class="tab-label"><MsIcon name="error" :size="16" /> 失败原因</h4>
+          <div class="failure-card">
+            <div class="failure-content" v-html="renderFailure(selectedTask)"></div>
+          </div>
         </div>
 
         <div class="section">
@@ -1337,6 +1377,35 @@ onMounted(() => {
   background: var(--el-fill-color-lighter);
   border-radius: 6px;
 }
+.failure-chip {
+  margin-top: 4px;
+  max-width: 100%;
+}
+
+.failure-card {
+  background: var(--el-color-danger-light-9);
+  border: 1px solid var(--el-color-danger-light-5);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.failure-content {
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--el-text-color-primary);
+  word-break: break-word;
+}
+
+.failure-content :deep(p) { margin: 6px 0; }
+.failure-content :deep(ol) { margin: 6px 0 6px 20px; }
+.failure-content :deep(blockquote) {
+  margin: 8px 0 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--el-color-danger-light-5);
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
 .review-notes { margin-top: 14px; }
 .review-notes-head {
   display: flex;
