@@ -138,6 +138,8 @@ const pendingIntent = ref<{
   reason: string
   candidates: any[]
 } | null>(null)
+// 上一次问答的 askId：用户连续追问时带上它，模型才能接上上下文
+const lastAskId = ref<string | null>(null)
 
 // 当前选中的智能体对象
 const selectedAgent = computed(() => {
@@ -294,7 +296,73 @@ watch(() => store.tasks, (newTasks) => {
 
 
 
-// 发送任务(发送给当前选中的智能体)
+/**
+ * 判断这次提交应该「问」还是「做」
+ *
+ * 与后端 detectActionKind 保持同一套判断（有疑问句式 + 无明确产出动作）。
+ * 前端先判一次是为了**不让用户白等**：如果判成提问却先建了任务，
+ * 用户要等几十秒才发现系统在生成 14 万字，而他只想问一句话。
+ *
+ * 保守起见只在「明显是提问」时返回 true：
+ *   - 带附件 → 一律走生成（用户传材料基本是要产出东西）
+ *   - 含明确产出动作（生成/设计/分析/执行/写一份…）→ 走生成
+ *   - 只有疑问句式且无产出动作 → 提问
+ *
+ * 实测漏判过两类，已补：
+ *   「这个需求该怎么测才好」——「怎么测」不在原正则里，被当成生成任务
+ *   「有什么遗漏吗」        —— 只有句尾「吗」没有疑问词，被当成生成任务
+ */
+function shouldAskInsteadOfGenerate(text: string, hasFiles = false): boolean {
+  const t = String(text || '').trim()
+  if (!t) return false
+  if (hasFiles) return false
+  const isQuestion = /[?？]\s*$/.test(t)
+    // 「吗/呢」结尾几乎必是提问（「有什么遗漏吗」「这样对吗」）
+    || /[吗呢]\s*[?？]?\s*$/.test(t)
+    || /为什么|为啥|怎么没|怎么回事|什么原因|是不是|是否|能否|可否|如何|怎么(样|做|办|测|写|选|判|改)|哪里|哪儿|有没有|有什么|有哪些|解释|对不对|行不行/.test(t)
+  const hasAction = /生成|产出|输出|写一?份|做一?份|设计|创建|新建|补充|整理|汇总|分析|执行|跑一?遍|测一?下|重写|改成|改为/.test(t)
+  return isQuestion && !hasAction
+}
+
+/**
+ * 以「提问」方式提交
+ *
+ * 走 /api/ask：不创建任务、不落交付物、不占串行锁。
+ * 问答的实时进度与最终回答都通过 SSE 的 chat_message / agent_stream_* 回来，
+ * 消息面板无需特殊处理即可显示。
+ */
+async function submitAsQuestion(text: string, files?: AttachmentFile[]) {
+  const displayMessage = files && files.length > 0
+    ? text + '\n\n' + describeAttachments(files)
+    : text
+  store.messages.push({
+    id: Date.now().toString(),
+    role: 'user',
+    type: 'user',
+    content: displayMessage,
+    timestamp: new Date().toISOString(),
+  })
+  taskInput.value = ''
+  store.isLoading = true
+  try {
+    const res = await taskApi.ask(text, {
+      // 优先用用户当前选中的智能体；没选就让后端按问题内容自动判断
+      agent: selectedAgentId.value || undefined,
+      attachments: files && files.length ? toAttachmentPayloads(files) : undefined,
+      continueAskId: lastAskId.value || undefined,
+    })
+    if (!res.success) {
+      ElMessage.error(res.error || '提问失败')
+      return
+    }
+    lastAskId.value = res.askId || null
+  } catch (e: any) {
+    ElMessage.error('提问失败：' + (e?.message || e))
+  } finally {
+    store.isLoading = false
+  }
+}
+
 // 发送任务(发送给当前选中的智能体)
 // files: 附件列表（可选）
 // inputOverride: 来自子组件的当前输入值（用于解决 v-model 与 emit 的时序问题）
@@ -340,6 +408,20 @@ console.log('[Dashboard] handleSendTask called', {
 
   if (!taskInputValue.trim() && (!files || files.length === 0)) {
     console.log('[Dashboard] Early return: empty input')
+    return
+  }
+
+  // ========== 提问分流（2026-11-20）==========
+  //
+  // 用户在提交框里问「这个需求该怎么测」时，不该创建任务跑一次完整生成：
+  // 那会产出一个任务记录 + 一份交付物 + 三审，白等十几分钟，还污染任务列表。
+  // 判成纯提问就改走轻量问答通道（/api/ask，不建任务、不落交付物）。
+  //
+  // 判断条件是「有疑问句式且没有明确的产出动作」，与后端 detectActionKind 一致：
+  //   「这个需求该怎么测」→ 问       「帮我生成登录功能的用例」→ 产出
+  //   「为什么没覆盖到？」→ 问        「为什么没覆盖，重新生成」→ 产出（有动作）
+  if (shouldAskInsteadOfGenerate(taskInputValue, !!(files && files.length))) {
+    await submitAsQuestion(taskInputValue, files)
     return
   }
 

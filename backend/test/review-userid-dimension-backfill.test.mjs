@@ -133,14 +133,27 @@ t('toolDimensionCases 声明在 try 顶层，不在任何 if 分支内（跨路�
   const fnStart = SERVER.indexOf('async function spawnAgentSession(');
   assert.ok(fnStart > 0, '找不到 spawnAgentSession');
   // 截取函数体（大括号配对）
+  //
+  // 起始位置必须是「函数签名结束后的第一个 {」，不能直接取 fnStart 之后的第一个 {——
+  // 签名里可能有默认参数对象（如 options = {}），那对花括号会把深度算错、
+  // 函数体被截成 170 个字符（实测过）。这里从参数列表的右括号之后开始找。
+  const parenStart = SERVER.indexOf('(', fnStart);
+  let parenDepth = 0;
+  let parenEnd = -1;
+  for (let k = parenStart; k < SERVER.length; k += 1) {
+    if (SERVER[k] === '(') parenDepth += 1;
+    else if (SERVER[k] === ')') { parenDepth -= 1; if (parenDepth === 0) { parenEnd = k; break; } }
+  }
+  assert.ok(parenEnd > 0, '解析参数列表失败');
   let depth = 0;
-  let i = SERVER.indexOf('{', fnStart);
+  let i = SERVER.indexOf('{', parenEnd);
   let end = -1;
   for (; i < SERVER.length; i += 1) {
     if (SERVER[i] === '{') depth += 1;
     else if (SERVER[i] === '}') { depth -= 1; if (depth === 0) { end = i; break; } }
   }
   assert.ok(end > 0, '解析函数体失败');
+  assert.ok(end - fnStart > 5000, `函数体只有 ${end - fnStart} 字符，解析明显有误`);
   const body = SERVER.slice(fnStart, end + 1);
 
   const declIdx = body.indexOf('let toolDimensionCases = null;');
