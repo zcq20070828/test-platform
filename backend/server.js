@@ -11169,33 +11169,74 @@ function buildDimensionCasesMarkdown(text, dimensionCases, coverage) {
     return { text, added: 0, skipped: 0 };
   }
 
-  // 已有用例里出现过的维度（按「① 用户」这种带圈数字判断）
-  const present = new Set();
-  const { cases: existingCases } = parseCaseTableForCount(text);
-  for (const c of existingCases) {
-    const dim = String(c.dimension || '');
-    const m = dim.match(/[①②③④⑤⑥⑦⑧⑨]/);
-    if (m) present.add(m[0]);
-  }
-  const missingDims = coverage && Array.isArray(coverage.missingDimensions)
-    ? new Set(coverage.missingDimensions.map((k) => k))
-    : null;
-
-  // 只补「完全缺失的维度」里的必测点：已有该维度的用例时不再重复堆——
-  // 覆盖矩阵只要求每维有必测点，重复补会让用例数虚高、审核员按重复扣分。
-  const dimKeyOfLabel = (label) => {
+  // 门禁的判定有三个条件，补齐必须同时对准三个：
+  //   ① 该维度有没有用例
+  //   ② 该维度缺哪些「层级」（正常/边界/异常）
+  //   ③ 必测点有没有被覆盖（按关键字匹配，不是把必测点写进去就一定算）
+  //
+  // 早先只按 ① 判断（「这个维度已经有用例就跳过」），结果维度虽然存在、
+  // 层级却残缺失（实测任务 3df0c26a：① 用户缺边界层、④ 操作缺正常层、
+  // ⑤ 安全缺异常层），门禁仍然不通过，用户看到的就是「九维覆盖未达标」。
+  const dimKeyOf = (label) => {
     const m = String(label || '').match(/[①②③④⑤⑥⑦⑧⑨]/);
     return m ? m[0] : '';
   };
 
-  const toAdd = [];
-  for (const c of dimensionCases) {
-    const mark = dimKeyOfLabel(c.dimension);
+  // 现有用例按维度聚合层级（按「① 用户」这种带圈数字归属）
+  const existingLayers = new Map(); // mark -> Set(layer)
+  const existingDims = new Set();
+  const { cases: existingCases } = parseCaseTableForCount(text);
+  for (const c of existingCases) {
+    const mark = dimKeyOf(c.dimension);
     if (!mark) continue;
-    // 该维度已经有用例 → 跳过（避免重复）
-    if (present.has(mark)) continue;
+    existingDims.add(mark);
+    if (!existingLayers.has(mark)) existingLayers.set(mark, new Set());
+    const layer = String(c.layer || '').trim();
+    if (['正常', '边界', '异常'].includes(layer)) existingLayers.get(mark).add(layer);
+  }
+
+  // 门禁给出的「缺层级」清单（更权威：它算过所有用例，含无法归属到维度的行）
+  const missingLayersByMark = new Map(); // mark -> Set(layer)
+  const gateDims = coverage && Array.isArray(coverage.dimensions) ? coverage.dimensions : [];
+  for (const d of gateDims) {
+    const mark = dimKeyOf(d.label) || dimKeyOf(d.key);
+    if (!mark) continue;
+    const miss = Array.isArray(d.missingLayers) ? d.missingLayers : [];
+    if (miss.length) missingLayersByMark.set(mark, new Set(miss));
+  }
+  const toAdd = [];
+  const seenProbe = new Set();
+  for (const c of dimensionCases) {
+    const mark = dimKeyOf(c.dimension);
+    if (!mark) continue;
+    const layer = String(c.layer || '').trim();
+
+    // 该维度完全没用例 → 它所有必测点都要补
+    if (!existingDims.has(mark)) {
+      const probeKey0 = c.probeId || c.methodKey || c.id;
+      if (!seenProbe.has(probeKey0)) {
+        seenProbe.add(probeKey0);
+        toAdd.push(c);
+      }
+      continue;
+    }
+
+    // 维度已有用例 → 只补「该维度缺失层级」对应的必测点。
+    // 优先信门禁算出来的 missingLayers（它统计了全部可解析用例）；
+    // 拿不到时退回本地按维度算的层级缺口。
+    const gateMiss = missingLayersByMark.get(mark);
+    const localMissSet = new Set(
+      ['正常', '边界', '异常'].filter((k) => !(existingLayers.get(mark) || new Set()).has(k))
+    );
+    const needThisLayer = gateMiss ? gateMiss.has(layer) : localMissSet.has(layer);
+    if (!needThisLayer) continue;
+    // 必测点去重（同一 probeId 只补一次）
+    const probeKey = c.probeId || c.methodKey || c.id;
+    if (seenProbe.has(probeKey)) continue;
+    seenProbe.add(probeKey);
     toAdd.push(c);
   }
+
   if (!toAdd.length) return { text, added: 0, skipped: dimensionCases.length };
 
   const esc = (v) => String(v == null ? '' : v).replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
@@ -11203,7 +11244,7 @@ function buildDimensionCasesMarkdown(text, dimensionCases, coverage) {
   lines.push('');
   lines.push('## 九维必测点用例（系统按必测矩阵补齐）');
   lines.push('');
-  lines.push(`> 以下 ${toAdd.length} 条由系统按九维必测矩阵确定性生成（每个必测点一条），补齐上文未覆盖的维度。维度、层级、预期结果均为确定性内容，可直接执行。`);
+  lines.push(`> 以下 ${toAdd.length} 条由系统按九维必测矩阵确定性生成（每个必测点一条），补齐上文缺失的维度与层级。维度、层级、预期结果均为确定性内容，可直接执行。`);
   lines.push('');
   lines.push('| 用例编号 | 所属模块 | 用例名称 | 维度 | 层级 | 前置条件 | 输入数据 | 执行步骤 | 预期结果 | 优先级 | 关联需求 |');
   lines.push('|---|---|---|---|---|---|---|---|---|---|---|');
