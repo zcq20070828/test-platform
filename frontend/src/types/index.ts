@@ -225,6 +225,12 @@ export interface ChatMessage {
   workflowId?: string
   // 输出物版本标签（多轮迭代生成时展示 v1/v2）
   versionLabel?: string
+  // 本轮对话的执行模式（2026-11-20）：
+  //   question 问答不改交付物 / regenerate 全量重写 / surgical 定点修改
+  //   / append 追加 / refine 全局修订
+  intentMode?: 'question' | 'regenerate' | 'surgical' | 'append' | 'refine'
+  intentLabel?: string
+  intentNote?: string
   // 所属阶段名称（性能/安全等工作流事件消息）
   stage?: string
 }
@@ -234,6 +240,21 @@ export interface ApiResponse<T> {
   success: boolean
   data?: T
   error?: string
+  /** 业务错误码（如 INTENT_CONFIRM_REQUIRED），前端按码分流交互 */
+  code?: string
+  /** 服务端给的补充说明（如「意图不明确，请选择任务类型」） */
+  message?: string
+  /** 完整响应体：需要用户做选择的场景要把结构化数据带出来 */
+  details?: any
+}
+
+/** 意图确认候选（任务提交时识别不准，让用户三选一） */
+export interface IntentCandidate {
+  agentId: string
+  agentName: string
+  desc: string
+  score: number
+  hits: string[]
 }
 
 // SSE 事件类型

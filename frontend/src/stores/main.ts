@@ -1005,6 +1005,17 @@ export const useMainStore = defineStore('main', () => {
         return res.task
       } else {
         console.error('[Store] createTask failed:', res.error)
+        // 意图识别不准：后端返回 409 + 3 个候选，需要用户确认后重新提交。
+        // 这种情况不是失败，要走专门的交互（弹窗选类型），不能当错误提示。
+        if (res.code === 'INTENT_CONFIRM_REQUIRED') {
+          throw {
+            code: 'INTENT_CONFIRM_REQUIRED',
+            message: res.message || res.error || '需要确认任务类型',
+            status: 409,
+            candidates: res.details?.candidates || [],
+            actionKind: res.details?.actionKind,
+          }
+        }
         // 抛出真实后端错误,供调用方展示具体失败原因(而非笼统的"请确认已登录")
         throw { code: 'CREATE_FAILED', message: res.error || '任务创建失败', status: 500 }
       }
@@ -1348,6 +1359,10 @@ export const useMainStore = defineStore('main', () => {
             if (dup) {
               dup.isStreaming = false
               if (data.data.versionLabel) dup.versionLabel = data.data.versionLabel
+              // 执行模式与落地结果也要补到流式那条消息上，否则用户看不到「只改了哪几条」
+              if (data.data.intentMode) dup.intentMode = data.data.intentMode
+              if (data.data.intentLabel) dup.intentLabel = data.data.intentLabel
+              if (data.data.intentNote) dup.intentNote = data.data.intentNote
               return
             }
           }

@@ -65,12 +65,15 @@ t('失败分支在取 text 之前 return（不会走到成功逻辑）', () => {
 
 // ---------------- 阶段反馈 ----------------
 t('chat 轮开始有进度提示', () => {
-  assert.ok(/正在按对话指令修订交付物/.test(CHAT_FN), '缺少开始提示');
+  // 2026-11-20 起开场提示按执行模式动态生成（「📝 定点修改：…」等），
+  // 不再是一条固定文案——但「开始时要有一条提示」这个要求不变。
+  assert.ok(/content: `📝 \$\{intent\.label\}/.test(CHAT_FN), '缺少开始提示（应展示本轮执行模式）');
 });
 
 t('进度提示走 chat_message（前端唯一会渲染的通道）', () => {
   // task_progress 只更新任务列表状态，不写入聊天面板 —— 用它等于没提示
-  const idx = CHAT_FN.indexOf('正在按对话指令修订交付物');
+  const idx = CHAT_FN.indexOf('content: `📝 ${intent.label}');
+  assert.ok(idx > 0, '找不到开场提示');
   const around = CHAT_FN.slice(Math.max(0, idx - 400), idx + 200);
   assert.ok(/type: 'chat_message'/.test(around), '进度提示未使用 chat_message');
   assert.ok(/role: 'system'/.test(around), '进度提示应为 system 角色');

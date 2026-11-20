@@ -5,6 +5,7 @@ import { useMainStore } from '@/stores/main'
 import { ElMessage, ElMessageBox } from 'element-plus'
 // 【平台瘦身 2026-10-14】StatCard 随顶部统计卡片移除（组件文件保留，当前无其他引用方）
 import DashboardChatPanel from '@/components/DashboardChatPanel.vue'
+import IntentConfirmDialog from '@/components/IntentConfirmDialog.vue'
 import type { AttachmentFile, ChatMessage } from '@/types'
 import { getAuthHeaders, request, taskApi } from '@/api'
 import MsIcon from '@/components/MsIcon.vue'
@@ -124,6 +125,19 @@ const availableAgents = computed(() => {
 const selectedAgentId = ref<string>(
   localStorage.getItem('selectedAgentId') || 'test-requirement-analyzer'
 )
+
+// ── 意图确认（2026-11-20）──
+// 后端判断「这次要做什么」不清楚时不创建任务，返回 3 个候选；
+// 这里保存待确认的输入，用户选定后再提交。
+const intentDialogVisible = ref(false)
+const intentSubmitting = ref(false)
+const pendingIntent = ref<{
+  input: string
+  files: any[] | undefined
+  agentId: string
+  reason: string
+  candidates: any[]
+} | null>(null)
 
 // 当前选中的智能体对象
 const selectedAgent = computed(() => {
@@ -487,6 +501,19 @@ console.log('[Dashboard] handleSendTask called', {
         if (idx !== -1) store.messages.splice(idx, 1)
       }
     } catch (err: any) {
+      // 意图不明确：后端没有创建任务，而是返回 3 个候选让用户定夺。
+      // 保留用户消息在列表里（确认后直接重新提交，不用重新输入），弹出选择框。
+      if (err.code === 'INTENT_CONFIRM_REQUIRED') {
+        pendingIntent.value = {
+          input: fullMessage,
+          files: filesToSubmit,
+          agentId: targetAgentId,
+          reason: err.message,
+          candidates: err.candidates || [],
+        }
+        intentDialogVisible.value = true
+        return
+      }
       // 处理后端返回的 409 冲突错误 / 其它创建失败(展示真实后端错误)
       if (err.code === 'TASK_CONFLICT') {
         ElMessage.warning({
@@ -502,6 +529,42 @@ console.log('[Dashboard] handleSendTask called', {
     }
     taskInput.value = ''
   }
+}
+
+/**
+ * 用户在意图确认弹窗里选定了任务类型 → 按选定类型重新提交
+ *
+ * 用户输入与附件原样复用，不重新解析；提交成功后把弹窗里选的智能体
+ * 也设置成当前选中项，避免下一次提交又被问一遍同样的问题。
+ */
+async function onIntentConfirmed(agentId: string) {
+  const pending = pendingIntent.value
+  if (!pending) return
+  intentSubmitting.value = true
+  try {
+    selectedAgentId.value = agentId
+    const task = await store.createTask(agentId, pending.input, pending.files, { source: 'step', type: agentId })
+    if (task) {
+      intentDialogVisible.value = false
+      pendingIntent.value = null
+      ElMessage.success(`已按「${AGENT_NAME_MAP[agentId] || agentId}」开始执行`)
+    }
+  } catch (err: any) {
+    if (err.code === 'TASK_CONFLICT') {
+      ElMessage.warning({ message: err.message || '同一用户同一时间只能执行一个任务', duration: 5000 })
+    } else {
+      ElMessage.error('任务创建失败：' + (err?.message || '请稍后重试'))
+    }
+  } finally {
+    intentSubmitting.value = false
+  }
+}
+
+function onIntentCancelled() {
+  pendingIntent.value = null
+  // 取消时把用户消息也清掉，保持面板与实际状态一致
+  const idx = store.messages.length - 1
+  if (idx >= 0 && store.messages[idx]?.role === 'user') store.messages.splice(idx, 1)
 }
 
 
@@ -651,6 +714,16 @@ onUnmounted(() => {
         @clear="store.clearMessages()"
         @start-chat="enterChatMode"
         @exit-chat="exitChatMode"
+      />
+
+      <!-- 意图不明确时让用户三选一，而不是替用户猜一个智能体跑十几分钟 -->
+      <IntentConfirmDialog
+        v-model:visible="intentDialogVisible"
+        :reason="pendingIntent?.reason || ''"
+        :candidates="pendingIntent?.candidates || []"
+        :loading="intentSubmitting"
+        @confirm="onIntentConfirmed"
+        @cancel="onIntentCancelled"
       />
     </div>
   </div>

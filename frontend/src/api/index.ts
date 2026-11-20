@@ -101,7 +101,15 @@ export async function request<T>(
 
     if (!response.ok) {
       const data = await response.json().catch(() => ({}))
-      return { success: false, error: data.error || `HTTP ${response.status}` }
+      // 需要用户做选择的响应（如意图不明确时的候选列表）必须把结构化数据透出去，
+      // 只留 error 字符串的话前端拿不到 candidates，只能干瞪眼。
+      return {
+        success: false,
+        error: data.error || `HTTP ${response.status}`,
+        code: data.code,
+        message: data.message,
+        details: data,
+      } as ApiResponse<T>
     }
 
     // 204 / 空响应不强行 json()，避免正常请求被包装成失败

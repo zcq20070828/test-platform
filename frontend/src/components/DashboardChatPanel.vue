@@ -327,6 +327,35 @@ function formatTime(iso: string) {
 }
 
 /**
+ * 本轮执行模式的徽标配色（2026-11-20）
+ *
+ * 颜色按「对交付物的影响程度」分档，不是随便配的：
+ *   question 灰（没动交付物）/ surgical·append 绿（只动了点名的行）
+ *   / refine 蓝（整份改过）/ regenerate 橙（全新一版）
+ */
+function intentBadgeStyle(mode?: string): Record<string, string> {
+  const palette: Record<string, { bg: string; fg: string; bd: string }> = {
+    question: { bg: '#f5f5f5', fg: '#666', bd: '#d9d9d9' },
+    surgical: { bg: '#f6ffed', fg: '#389e0d', bd: '#b7eb8f' },
+    append: { bg: '#f6ffed', fg: '#389e0d', bd: '#b7eb8f' },
+    refine: { bg: '#e6f7ff', fg: '#088', bd: '#91d5ff' },
+    regenerate: { bg: '#fff7e6', fg: '#d46b08', bd: '#ffd591' },
+  }
+  // 用显式兜底值而不是 palette.refine：索引签名在 noUncheckedIndexedAccess 下是可能为 undefined
+  const fallback = { bg: '#e6f7ff', fg: '#088', bd: '#91d5ff' }
+  const c = palette[String(mode || '')] ?? fallback
+  return {
+    background: c.bg,
+    color: c.fg,
+    border: `1px solid ${c.bd}`,
+    borderRadius: '4px',
+    padding: '0 6px',
+    fontSize: '11px',
+    marginLeft: '6px',
+  }
+}
+
+/**
  * 简易 Markdown 渲染：代码块带复制按钮，标题加粗，列表缩进
  */
 // Markdown 渲染缓存：流式更新会高频触发整列表重渲染，历史消息内容不变却会被反复
@@ -675,7 +704,10 @@ onMounted(() => { scrollToBottom() })
                 <span class="live-dot"></span>执行中
               </span>
               <span v-if="msg.versionLabel" style="background:#e6f7ff;color:#088;border:1px solid #91d5ff;border-radius:4px;padding:0 6px;font-size:11px;margin-left:6px;">{{ msg.versionLabel }}</span>
+              <!-- 本轮执行模式：让用户知道这轮是问答、定点改了几条，还是重写了全文 -->
+              <span v-if="msg.intentLabel" :style="intentBadgeStyle(msg.intentMode)" :title="msg.intentNote || ''">{{ msg.intentLabel }}</span>
             </div>
+            <div v-if="msg.intentNote" class="intent-note" :class="{ 'intent-note-warn': msg.intentNote.startsWith('⚠️') }">{{ msg.intentNote }}</div>
             <div v-if="msg.thinking && msg.thinking.length > 0" class="thinking-section" :class="{ 'thinking-live': msg.isStreaming }">
               <el-collapse :model-value="msg.isStreaming ? ['thinking'] : []">
                 <el-collapse-item name="thinking">
@@ -1139,6 +1171,21 @@ onMounted(() => { scrollToBottom() })
   margin-bottom: 8px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--el-border-color-lighter);
+}
+/* 本轮落地结果说明：定点改了哪几条 / 问答未改动 / 未匹配到编号 */
+.intent-note {
+  font-size: 12px;
+  color: var(--el-color-success);
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin-bottom: 8px;
+}
+.intent-note-warn {
+  color: var(--el-color-warning);
+  background: #fff7e6;
+  border-color: #ffd591;
 }
 .agent-badge-icon { font-size: 14px; }
 .agent-badge-name { color: var(--el-color-primary); font-weight: 600; }
