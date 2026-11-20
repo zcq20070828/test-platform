@@ -42,10 +42,17 @@ const routes = [
     }
   },
   {
+    // 【平台瘦身 2026-11-20】模块已下线：路由保留、页面代码保留，但禁止访问。
+    // 恢复方法：删掉 meta 里的 disabled / disabledTip 两行，
+    //          并取消 App.vue 菜单中对应项的注释即可。
     path: '/knowledge',
     name: 'Knowledge',
     component: () => import('@/views/KnowledgeView.vue'),
-    meta: { requiresAuth: true }
+    meta: {
+      requiresAuth: true,
+      disabled: true,
+      disabledTip: '「知识库」模块已下线，暂不开放'
+    }
   },
   {
     path: '/tasks',
@@ -54,10 +61,17 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    // 【平台瘦身 2026-11-20】模块已下线：路由保留、页面代码保留，但禁止访问。
+    // 恢复方法：删掉 meta 里的 disabled / disabledTip 两行，
+    //          并取消 App.vue 菜单中对应项的注释即可。
     path: '/workflow',
     name: 'Workflow',
     component: () => import('@/views/WorkflowView.vue'),
-    meta: { requiresAuth: true }
+    meta: {
+      requiresAuth: true,
+      disabled: true,
+      disabledTip: '「测试流水线」模块已下线，暂不开放'
+    }
   },
   {
     // [已下线-性能监控] 2026-10-19 用户拍板：性能监控暂无业务价值，屏蔽入口。
@@ -110,22 +124,43 @@ const routes = [
     meta: { requiresAuth: true, requiresAdmin: true }
   },
   {
+    // 【平台瘦身 2026-11-20】模块已下线：路由保留、页面代码保留，但禁止访问。
+    // 恢复方法：删掉 meta 里的 disabled / disabledTip 两行，
+    //          并取消 App.vue 菜单中对应项的注释即可。
     path: '/performance-test',
     name: 'PerformanceTest',
     component: () => import('@/views/PerformanceTestView.vue'),
-    meta: { requiresAuth: true }
+    meta: {
+      requiresAuth: true,
+      disabled: true,
+      disabledTip: '「性能测试」模块已下线，暂不开放'
+    }
   },
   {
+    // 【平台瘦身 2026-11-20】模块已下线：路由保留、页面代码保留，但禁止访问。
+    // 恢复方法：删掉 meta 里的 disabled / disabledTip 两行，
+    //          并取消 App.vue 菜单中对应项的注释即可。
     path: '/security',
     name: 'Security',
     component: () => import('@/views/SecurityView.vue'),
-    meta: { requiresAuth: true }
+    meta: {
+      requiresAuth: true,
+      disabled: true,
+      disabledTip: '「安全测试」模块已下线，暂不开放'
+    }
   },
   {
+    // 【平台瘦身 2026-11-20】模块已下线：路由保留、页面代码保留，但禁止访问。
+    // 恢复方法：删掉 meta 里的 disabled / disabledTip 两行，
+    //          并取消 App.vue 菜单中对应项的注释即可。
     path: '/web-compatibility',
     name: 'WebCompatibility',
     component: () => import('@/views/WebCompatibilityView.vue'),
-    meta: { requiresAuth: true }
+    meta: {
+      requiresAuth: true,
+      disabled: true,
+      disabledTip: '「兼容性测试」模块已下线，暂不开放'
+    }
   },
   {
     path: '/settings',
@@ -149,16 +184,30 @@ const routes = [
     meta: { requiresAuth: true, title: '个人信息' }
   },
   {
+    // 【平台瘦身 2026-11-20】模块已下线：路由保留、页面代码保留，但禁止访问。
+    // 恢复方法：删掉 meta 里的 disabled / disabledTip 两行，
+    //          并取消 App.vue 菜单中对应项的注释即可。
     path: '/test-runner',
     name: 'TestRunner',
     component: () => import('@/views/TestRunnerView.vue'),
-    meta: { requiresAuth: true }
+    meta: {
+      requiresAuth: true,
+      disabled: true,
+      disabledTip: '「自动化测试」模块已下线，暂不开放'
+    }
   },
   {
+    // 【平台瘦身 2026-11-20】模块已下线：路由保留、页面代码保留，但禁止访问。
+    // 恢复方法：删掉 meta 里的 disabled / disabledTip 两行，
+    //          并取消 App.vue 菜单中对应项的注释即可。
     path: '/evaluation',
     name: 'Evaluation',
     component: () => import('@/views/EvaluationView.vue'),
-    meta: { requiresAuth: true }
+    meta: {
+      requiresAuth: true,
+      disabled: true,
+      disabledTip: '「智能评估」模块已下线，暂不开放'
+    }
   }
 ]
 
