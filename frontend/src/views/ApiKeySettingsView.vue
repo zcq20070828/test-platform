@@ -121,7 +121,7 @@
       v-model="dialogVisible"
       :title="editingId ? '编辑 API Key' : '新增 API Key'"
       width="520px"
-      @closed="resetForm"
+      @closed="onDialogClosed"
     >
       <el-form ref="formRef" :model="form" :rules="rules" label-width="88px">
         <el-form-item label="名称" prop="name">
@@ -129,7 +129,7 @@
         </el-form-item>
 
         <el-form-item label="服务商" prop="provider">
-          <el-select v-model="form.provider" filterable style="width: 100%">
+          <el-select v-model="form.provider" filterable style="width: 100%" @change="onProviderChange">
             <el-option-group
               v-for="g in providerGroups"
               :key="g.name"
@@ -148,25 +148,45 @@
           </div>
         </el-form-item>
 
-        <!-- 模型：默认留空即用服务商推荐模型；方舟/OpenRouter 等必须指定时必填 -->
+        <!-- 模型改为下拉选择（2026-11-20）：手填模型名是最容易出错的一步。
+             实测用户把 DeepSeek 的模型填成 deepseek-v4.1-flash → 服务商直接 400。
+             候选列表随「服务商」联动，并且优先用该 Key 向服务商实时拉取（最准）。 -->
         <el-form-item label="模型" prop="model">
-          <!-- placeholder 只写「可留空」：模型名放在下方说明里。
-               把模型名写进 placeholder 会看起来像输入框已有内容，且与上面
-               服务商那行的「推荐模型」重复（用户 2026-11-20 反馈）。 -->
-          <el-input
-            v-model="form.model"
-            :placeholder="currentProvider?.requiresModel ? '必填' : '可留空'"
-          />
+          <el-select
+            :key="`model-${form.provider}-${modelOptions.length}`"
+            :model-value="form.model"
+            filterable
+            clearable
+            :reserve-keyword="false"
+            :loading="modelsLoading"
+            :placeholder="modelsPlaceholder"
+            style="width: 100%"
+            @update:model-value="onModelChange"
+            @visible-change="onModelDropdown"
+          >
+            <el-option
+              v-for="m in modelOptions"
+              :key="m.id"
+              :label="m.id"
+              :value="m.id"
+            />
+          </el-select>
           <div class="field-hint">
             <template v-if="currentProvider?.requiresModel">
               <span class="required-hint">该服务商必须指定模型</span>——{{ currentProvider.modelHint }}
             </template>
             <template v-else-if="providerModel(form.provider)">
-              留空则使用 {{ providerModel(form.provider) }}；也可以填该服务商支持的其它模型名。
+              留空则使用 {{ providerModel(form.provider) }}。
             </template>
-            <template v-else>
-              可填该服务商支持的模型名。
+            <template v-else>可留空，将使用该服务商的首选模型。</template>
+            <template v-if="modelsSource === 'account'">
+              <br><span class="models-source ok">已按你的账号列出可用的 {{ modelOptions.length }} 个模型。</span>
             </template>
+            <template v-else-if="modelsSource === 'builtin' && modelsNote">
+              <br><span class="models-source warn">{{ modelsNote }}</span>
+            </template>
+            <span class="models-refresh" v-if="!modelsLoading" @click="loadProviderModels(true)">刷新清单</span>
+            <span class="models-refresh" v-else>加载中…</span>
           </div>
         </el-form-item>
 
@@ -235,6 +255,14 @@ interface ProviderOption {
   model: string
   modelHint: string
   requiresModel: boolean
+  /** 内置候选模型（后端下发），Key 拉取到真实清单后会替换 */
+  models?: string[]
+}
+
+interface ModelOption {
+  id: string
+  name: string
+  contextWindow: number | null
 }
 
 // 服务商清单由后端返回（两边各硬编码一份会悄悄发错地址）
@@ -258,10 +286,117 @@ const providerGroups = computed(() => {
 
 const currentProvider = computed(() => providers.value.find((p) => p.value === form.provider) || null)
 
-// 换服务商后重新校验模型：方舟/OpenRouter 需要模型，切回 DeepSeek 又不必填
-watch(() => form.provider, () => {
-  if (dialogVisible.value) formRef.value?.validateField('model').catch(() => {})
+// ── 模型下拉候选（随服务商联动，优先用 Key 实时拉取）──────────────────────
+const modelOptions = ref<ModelOption[]>([])
+const modelsLoading = ref(false)
+const modelsSource = ref<'account' | 'builtin' | ''>('')
+const modelsNote = ref('')
+// 已拉过清单的服务商，避免每次开弹窗都请求
+const modelsLoadedFor = ref('')
+
+const modelsPlaceholder = computed(() => {
+  if (modelsLoading.value) return '正在获取该服务商的模型…'
+  if (currentProvider.value?.requiresModel) return '必选，请选择模型'
+  return providerModel(form.provider) ? `留空使用 ${providerModel(form.provider)}` : '可留空'
 })
+
+/** 拉取当前服务商的模型清单 */
+async function loadProviderModels(force = false) {
+  const provider = form.provider
+  if (!provider) return
+  if (modelsLoading.value) return
+  if (!force && modelsLoadedFor.value === provider && modelOptions.value.length) return
+
+  modelsLoading.value = true
+  try {
+    // 编辑时用已保存的 Key（能拿到该账号真实可用清单）；新增时用已填的 Key
+    const res = await userApiKeyApi.listModels({
+      provider,
+      keyId: editingId.value || undefined,
+      apiKey: !editingId.value && form.apiKey.trim().length >= 16 ? form.apiKey.trim() : undefined,
+    })
+    // 关键：本轮请求期间用户可能已经换了服务商，过期结果必须丢弃，
+    // 否则会把上一家的模型填进当前下拉（选中值也会被覆盖成空）
+    if (form.provider !== provider) return
+
+    const next = (res && res.models.length)
+      ? res.models
+      : (currentProvider.value?.models || []).map((id) => ({ id, name: '', contextWindow: null }))
+
+    if (next.length) {
+      // 关键：把「当前已选中的模型」保留在候选里。
+      // 否则清单里没有这条时，el-select 找不到匹配项，
+      // 选中值会显示成 placeholder（实测编辑时模型值为 glm-4-air，
+      // 打开弹窗却显示「留空使用 …」）。
+      const current = String(form.model || '').trim()
+      const merged = current && !next.some((m) => m.id === current)
+        ? [{ id: current, name: '', contextWindow: null }, ...next]
+        : next
+      modelOptions.value = merged
+      modelsSource.value = res && res.models.length ? res.source : 'builtin'
+      modelsNote.value = (res && res.note) || ''
+      modelsLoadedFor.value = provider
+    }
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
+/** 打开下拉时才拉取，避免无谓请求 */
+function onModelDropdown(visible: boolean) {
+  if (visible) loadProviderModels(false)
+}
+
+/**
+ * 模型选择兜底
+ *
+ * Element Plus 2.14 的 filterable 下拉在「输入筛选」状态下，
+ * 某些交互会让选中值不落到 v-model（实测点了没写入，输入框仍为空）。
+ * 这里从 change 事件再确认一次，保证值一定写进去。
+ */
+function onModelChange(val: any) {
+  const v = typeof val === 'string' ? val : (val && val.id) || ''
+  if (v && form.model !== v) form.model = v
+}
+
+/**
+ * 服务商变化 → 重建模型候选
+ *
+ * ⚠ 这里**绝对不要**清空 `form.model`。
+ * watch 回调是异步（pre flush）执行的：openEdit 里
+ *   formInitializing = true → 赋值 provider/model → formInitializing = false
+ * 全是同步代码，watch 回调要等这次同步执行结束才跑，那时
+ * formInitializing 已经是 false 了。所以在 watch 里清 model 会把
+ * 刚回填的值抹掉 —— 这正是「编辑 glm-4-air 却显示留空使用 …」的根因
+ * （排查了很久，因为它看起来像 el-select 回显问题）。
+ *
+ * 清空逻辑改由用户的真实操作触发：模板上 el-select 的 @change
+ * 直接调 onProviderChange（用户手动换服务商时才会走到）。
+ */
+watch(() => form.provider, (next, prev) => {
+  if (next === prev) return
+  modelsLoadedFor.value = ''
+  modelsSource.value = ''
+  modelsNote.value = ''
+  const seed = providers.value.find((p) => p.value === next)?.models || []
+  modelOptions.value = seed.map((id) => ({ id, name: '', contextWindow: null }))
+  if (seed.length) modelsSource.value = 'builtin'
+  if (dialogVisible.value) {
+    loadProviderModels(false)
+    formRef.value?.validateField('model').catch(() => {})
+  }
+})
+
+/**
+ * 用户手动切换服务商
+ *
+ * 只有真人操作才需要清空模型：不同服务商的模型名不通用，
+ * 留着上一家的名字会直接 400「不支持的模型名」。
+ * 编辑回填不经过这里（回填是代码赋值，不触发 @change）。
+ */
+function onProviderChange() {
+  form.model = ''
+}
 
 function providerLabel(value: string): string {
   return providers.value.find((p) => p.value === value)?.label || value || 'DeepSeek'
@@ -315,6 +450,24 @@ async function load() {
   }
 }
 
+/**
+ * 弹窗关闭后的清理
+ *
+ * ⚠ 这里**不能**清空表单字段。
+ * el-dialog 的 @closed 在关闭动画结束后才触发（实测约 300~700ms）。
+ * 如果用户关闭后马上点「编辑」打开另一条，closed 会延迟到新弹窗
+ * **打开之后**才触发 —— 那时再 resetForm 就会把刚回填的 model 抹掉。
+ * 实测症状：编辑 glm-4-air 却显示「留空使用 glm-4-plus」。
+ *
+ * 表单复位统一放到 openCreate / openEdit 开头（打开前清），
+ * 关闭时只清校验态与瞬时 UI 状态。
+ */
+function onDialogClosed() {
+  formRef.value?.clearValidate()
+  modelsLoading.value = false
+}
+
+/** 表单复位（只在打开弹窗前调用，绝不由 @closed 触发） */
 function resetForm() {
   editingId.value = ''
   form.name = ''
@@ -326,7 +479,14 @@ function resetForm() {
 
 function openCreate() {
   resetForm()
+  // 先用内置候选垫着（同步），下拉立刻可用
+  const seed = providers.value.find((p) => p.value === form.provider)?.models || []
+  modelOptions.value = seed.map((id) => ({ id, name: '', contextWindow: null }))
+  modelsSource.value = seed.length ? 'builtin' : ''
+  modelsLoadedFor.value = ''
   dialogVisible.value = true
+  // 用户填完 Key 后可点「刷新清单」按账号拉取
+  loadProviderModels(false)
 }
 
 function openEdit(row: UserApiKey) {
@@ -335,7 +495,16 @@ function openEdit(row: UserApiKey) {
   form.name = row.name
   form.provider = row.provider || 'deepseek'
   form.model = row.model || ''
+  // 先用内置候选 + 当前值垫上，避免异步回来前显示成空
+  const seed = providers.value.find((p) => p.value === form.provider)?.models || []
+  const seeded = row.model && !seed.includes(row.model) ? [row.model, ...seed] : seed
+  modelOptions.value = seeded.map((id) => ({ id, name: '', contextWindow: null }))
+  modelsSource.value = seeded.length ? 'builtin' : ''
+  modelsLoadedFor.value = ''
   dialogVisible.value = true
+  // 不在这里异步拉清单：返回时机不确定，会把上面 seed 好的候选替换掉，
+  // 导致已选中的模型找不到匹配项而显示成 placeholder。
+  // 用户想按账号拉真实清单时点「刷新清单」即可。
 }
 
 async function handleSave() {
@@ -495,6 +664,28 @@ onMounted(load)
 .never-verified {
   font-size: 12px;
   color: var(--el-text-color-placeholder);
+}
+
+.model-option-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.model-option-meta {
+  float: right;
+  margin-left: 12px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.models-source.ok { color: var(--el-color-success); }
+.models-source.warn { color: var(--el-color-warning); }
+
+.models-refresh {
+  margin-left: 10px;
+  color: var(--el-color-primary);
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 .provider-cell {

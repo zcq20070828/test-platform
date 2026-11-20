@@ -798,6 +798,7 @@ export interface ApiKeyListResult {
     model: string
     modelHint: string
     requiresModel: boolean
+    models: string[]
   }>
 }
 
@@ -871,6 +872,35 @@ export const userApiKeyApi = {
     const res = await request<any>(`/api/user/api-keys/${id}/default`, { method: 'POST', body: JSON.stringify({}) })
     const body = unwrapApiKeyBody(res.data)
     return { ok: res.success, message: res.success ? (body.message || '已设为默认') : (res.error || '设置失败') }
+  },
+
+  /**
+   * 查某个服务商的可用模型清单（2026-11-20）
+   *
+   * 传 keyId 用已保存的 Key 拉该账号真实清单（source=account）；
+   * 传 apiKey 用刚填的 Key 现拉；都不传返回内置清单（source=builtin）。
+   */
+  async listModels(params: { provider: string; keyId?: string; apiKey?: string }): Promise<{
+    models: Array<{ id: string; name: string; contextWindow: number | null }>
+    defaultModel: string
+    source: 'account' | 'builtin'
+    note: string
+    currentModel: string
+  } | null> {
+    const q = new URLSearchParams({ provider: params.provider })
+    if (params.keyId) q.set('keyId', params.keyId)
+    if (params.apiKey) q.set('apiKey', params.apiKey)
+    const res = await request<any>(`/api/user/api-keys/models?${q.toString()}`)
+    if (!res.success) return null
+    const body = unwrapApiKeyBody(res.data)
+    const d = body.data || {}
+    return {
+      models: Array.isArray(d.models) ? d.models : [],
+      defaultModel: d.defaultModel || '',
+      source: d.source === 'account' ? 'account' : 'builtin',
+      note: d.note || '',
+      currentModel: d.currentModel || '',
+    }
   },
 
   // 真实发一次最小请求验证 Key 是否可用（不是只校验格式）

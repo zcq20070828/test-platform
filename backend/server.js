@@ -9524,6 +9524,75 @@ const PROVIDERS = {
   },
 };
 
+/**
+ * 各服务商的模型候选清单（兜底 / 下拉建议）
+ *
+ * 首选是用用户的 Key 实时调 {baseUrl}/models 拿该账号真实可用的模型
+ * （各家随时上下线，写死的清单一定会过期）。这里只作为：
+ *   1) 拉不到时的兜底
+ *   2) 还没填 Key 时，先给一份可选列表
+ * 只收通用对话模型；embedding / 语音 / 图像生成不适配 agent 调用，不收。
+ */
+const PROVIDER_MODELS = {
+  deepseek: ['deepseek-v4-pro', 'deepseek-flash'],
+  dashscope: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-long'],
+  zhipu: ['glm-4-plus', 'glm-4-air', 'glm-4-airx', 'glm-4-flash', 'glm-4-long'],
+  moonshot: ['moonshot-v1-32k', 'moonshot-v1-8k', 'moonshot-v1-128k'],
+  volcengine: ['doubao-pro-32k', 'doubao-pro-128k', 'doubao-lite-32k'],
+  hunyuan: ['hunyuan-turbo', 'hunyuan-pro', 'hunyuan-standard', 'hunyuan-lite'],
+  qianfan: ['ernie-4.0-turbo-8k', 'ernie-4.0-8k', 'ernie-3.5-8k', 'ernie-speed-8k'],
+  spark: ['generalv3.5', '4.0Ultra', 'generalv3', 'lite'],
+  siliconflow: ['Qwen/Qwen2.5-72B-Instruct', 'deepseek-ai/DeepSeek-V2.5', 'Qwen/Qwen2.5-7B-Instruct'],
+  minimax: ['abab6.5s-chat', 'abab6.5g-chat', 'abab5.5-chat'],
+  stepfun: ['step-2-16k', 'step-1-32k', 'step-1-8k'],
+  sensenova: ['SenseChat-5', 'SenseChat-4', 'SenseChat-Turbo'],
+  baichuan: ['Baichuan4', 'Baichuan3-Turbo', 'Baichuan2-Turbo'],
+  openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3-mini'],
+  xai: ['grok-beta', 'grok-2', 'grok-vision-beta'],
+  gemini: ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp'],
+  mistral: ['mistral-large-latest', 'mistral-small-latest', 'open-mistral-nemo'],
+  groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'],
+  together: ['meta-llama/Llama-3.3-70B-Instruct-Turbo', 'Qwen/Qwen2.5-72B-Instruct-Turbo'],
+  openrouter: ['openai/gpt-4o', 'anthropic/claude-3.5-sonnet', 'google/gemini-pro-1.5'],
+  deepinfra: ['meta-llama/Llama-3.3-70B-Instruct', 'Qwen/Qwen2.5-72B-Instruct'],
+  compatible: [],
+};
+
+/**
+ * 用一把 Key 向服务商查真实模型清单
+ *
+ * 各家的 /models 都是 OpenAI 兼容的 GET 接口（实测 DeepSeek/百炼/智谱/Kimi/
+ * 硅基流动 对无效 Key 返回 401 而非 404，说明端点存在）。统一按
+ * {baseUrl}/models 取；拿不到返回 null，由调用方回退内置清单。
+ *
+ * @returns {Promise<Array<{id:string,name:string,contextWindow:number|null}>|null>}
+ */
+async function fetchProviderModels(apiKey, baseUrl) {
+  if (!apiKey || !baseUrl) return null;
+  const base = String(baseUrl).replace(/\/+$/, '');
+  try {
+    const res = await fetch(`${base}/models`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const list = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : null);
+    if (!list) return null;
+    return list
+      .map((m) => ({
+        id: String(m.id || m.model || '').trim(),
+        name: m.name ? String(m.name) : '',
+        contextWindow: Number(m.context_window || m.context_length) || null,
+      }))
+      // 过滤明显不是对话模型的条目
+      .filter((m) => m.id && !/embed|whisper|tts|dall-e|stable-diffusion|rerank|moderation/i.test(m.id));
+  } catch {
+    return null;
+  }
+}
+
 /** 取服务商配置；未知服务商回落 DeepSeek，避免整条链路直接失败 */
 function providerProfile(provider) {
   const key = String(provider || 'deepseek').toLowerCase();
@@ -9678,6 +9747,8 @@ app.get('/api/user/api-keys', authenticate, async (req, res) => {
             model: p.model || '',
             modelHint: p.modelHint || '',
             requiresModel: !!p.requiresModel,
+            // 内置候选：前端下拉先有内容可选，选完 Key 后再按账号真实清单刷新
+            models: PROVIDER_MODELS[value] || [],
           })),
       },
     });
@@ -9799,6 +9870,91 @@ app.post('/api/user/api-keys/:id/default', authenticate, async (req, res) => {
  * 真实发一次最小请求（max_tokens=2），而不是只看格式：
  * 用户最容易踩的坑是「Key 打错一个字符」或「余额为零」，光校验格式发现不了。
  */
+/**
+ * 某服务商的可用模型清单（2026-11-20）
+ *
+ * 用途：新增/编辑 API Key 时模型名从下拉列表选，不再手填。
+ * 手填是最容易出错的一步 —— 实测用户把 DeepSeek 模型填成
+ * `deepseek-v4.1-flash`，服务商直接 400「不支持的模型名」，
+ * 而界面只显示一句失败原因。
+ *
+ * 取数优先级：
+ *   1) ?keyId= 已保存的 Key → 用它调服务商的 /models（最准，反映该账号真实可用集）
+ *   2) ?apiKey= 刚填还没保存的 Key（新增场景）→ 用这把 Key 现拉
+ *   3) 都没有 → 内置清单（前端仍可下拉）
+ * 始终返回 200 + 清单，用 ``source`` 标明来源，前端据此提示差别。
+ */
+app.get('/api/user/api-keys/models', authenticate, async (req, res) => {
+  const userId = req.user?.id || req.user?.sub;
+  const provider = String(req.query.provider || 'deepseek').toLowerCase();
+  const prof = PROVIDERS[provider];
+  if (!prof) return res.status(400).json({ success: false, error: '不支持的服务商类型' });
+
+  const unavailable = providerUnavailableReason(provider);
+  if (unavailable) return res.status(400).json({ success: false, error: unavailable });
+
+  const builtin = (PROVIDER_MODELS[provider] || []).map((id) => ({ id, name: '', contextWindow: null }));
+  const respondBuiltin = (note) => res.json({
+    success: true,
+    data: {
+      provider,
+      providerLabel: prof.label,
+      models: builtin,
+      defaultModel: prof.model || '',
+      source: 'builtin',
+      note: note || '',
+    },
+  });
+
+  const keyId = String(req.query.keyId || '').trim();
+  if (keyId) {
+    try {
+      const rec = await userApiKeyDAO.getApiKeyRecord(userId, keyId);
+      if (rec && rec.provider === provider) {
+        const plain = await decryptSecret(rec.api_key_enc);
+        const remote = await fetchProviderModels(plain, prof.baseUrl);
+        if (remote && remote.length) {
+          return res.json({
+            success: true,
+            data: {
+              provider,
+              providerLabel: prof.label,
+              models: remote,
+              defaultModel: prof.model || remote[0].id,
+              source: 'account',
+              currentModel: rec.model || '',
+            },
+          });
+        }
+        return respondBuiltin('这把 Key 未能返回模型清单（Key 可能无效，或该服务商不支持 /models），以下是内置可选清单');
+      }
+    } catch (e) {
+      console.warn(`[ApiKey] 拉取 ${provider} 模型清单失败: ${e.message}`);
+    }
+    return respondBuiltin();
+  }
+
+  const inlineKey = String(req.query.apiKey || '').trim();
+  if (inlineKey) {
+    const remote = await fetchProviderModels(inlineKey, prof.baseUrl);
+    if (remote && remote.length) {
+      return res.json({
+        success: true,
+        data: {
+          provider,
+          providerLabel: prof.label,
+          models: remote,
+          defaultModel: prof.model || remote[0].id,
+          source: 'account',
+        },
+      });
+    }
+    return respondBuiltin('这把 Key 没换回模型清单（可能还没生效或不支持查询），以下是内置可选清单');
+  }
+
+  return respondBuiltin();
+});
+
 app.post('/api/user/api-keys/:id/verify', authenticate, async (req, res) => {
   const userId = req.user?.id || req.user?.sub;
   try {
