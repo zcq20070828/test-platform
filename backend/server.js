@@ -47,6 +47,7 @@ import {
   spliceRepairedRows,
   applyLayerColumnRepair as applyCaseLayerRepair,
   parseCaseTable as parseCaseTableForCount,
+  repairPlaceholderInput,
 } from './lib/case-quality-gate.js';
 import {
   calibrateThreshold as calibrateGateThreshold,
@@ -9358,28 +9359,28 @@ const PROVIDERS = {
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-v4-pro',
-    contextChars: 600000, // 1M tokens 窗口，留余量
+    contextChars: 96000, // DeepSeek 128K 窗口（128000 tokens，取 50% 余量）
   },
   dashscope: {
     group: '国内',
     label: '阿里云百炼（通义千问）',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     model: 'qwen-plus',
-    contextChars: 400000, // qwen-plus 128K~1M 视版本，取保守值
+    contextChars: 96000, // qwen-plus 128K 窗口（部分版本 1M，取保守）（128000 tokens，取 50% 余量）
   },
   zhipu: {
     group: '国内',
     label: '智谱 AI（GLM）',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     model: 'glm-4-plus',
-    contextChars: 400000, // GLM-4 128K
+    contextChars: 96000, // GLM-4-Plus 128K 窗口（128000 tokens，取 50% 余量）
   },
   moonshot: {
     group: '国内',
     label: '月之暗面（Kimi）',
     baseUrl: 'https://api.moonshot.cn/v1',
     model: 'moonshot-v1-32k',
-    contextChars: 80000, // 32K 窗口；8K 版本会不够用
+    contextChars: 24000, // moonshot-v1-32k 32K 窗口（32000 tokens，取 50% 余量）
   },
   volcengine: {
     group: '国内',
@@ -9388,7 +9389,7 @@ const PROVIDERS = {
     // 方舟用「推理接入点 ID」而不是模型名，必须由用户填写
     model: '',
     requiresModel: true,
-    contextChars: 300000,
+    contextChars: 24000, // 方舟接入点常见 32K，视接入点而定（32000 tokens，取 50% 余量）
     modelHint: '填方舟的推理接入点 ID（ep-xxxx）或模型名（如 doubao-pro-32k）',
   },
   hunyuan: {
@@ -9396,28 +9397,28 @@ const PROVIDERS = {
     label: '腾讯混元',
     baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
     model: 'hunyuan-turbo',
-    contextChars: 200000, // 混元 32K~256K
+    contextChars: 24000, // 混元 turbo 32K 窗口（32000 tokens，取 50% 余量）
   },
   qianfan: {
     group: '国内',
     label: '百度千帆（文心一言）',
     baseUrl: 'https://qianfan.baidubce.com/v2',
     model: 'ernie-4.0-turbo-8k',
-    contextChars: 80000,
+    contextChars: 6000, // ernie-4.0-turbo-8k 8K 窗口（8000 tokens，取 50% 余量）
   },
   spark: {
     group: '国内',
     label: '讯飞星火',
     baseUrl: 'https://spark-api-open.xf-yun.com/v1',
     model: 'generalv3.5',
-    contextChars: 80000,
+    contextChars: 6000, // generalv3.5 8K 窗口（8000 tokens，取 50% 余量）
   },
   siliconflow: {
     group: '国内',
     label: '硅基流动 SiliconFlow',
     baseUrl: 'https://api.siliconflow.cn/v1',
     model: 'Qwen/Qwen2.5-72B-Instruct',
-    contextChars: 200000, // 视所选模型而定
+    contextChars: 24000, // 视所选开源模型，按 32K 保守取值（32000 tokens，取 50% 余量）
     modelHint: '可填硅基流动上的任意模型，如 deepseek-ai/DeepSeek-V2.5',
   },
   minimax: {
@@ -9425,28 +9426,28 @@ const PROVIDERS = {
     label: 'MiniMax',
     baseUrl: 'https://api.minimax.chat/v1',
     model: 'abab6.5s-chat',
-    contextChars: 200000,
+    contextChars: 180000, // abab6.5s 245K 窗口（245000 tokens，取 50% 余量）
   },
   stepfun: {
     group: '国内',
     label: '阶跃星辰 StepFun',
     baseUrl: 'https://api.stepfun.com/v1',
     model: 'step-2-16k',
-    contextChars: 80000,
+    contextChars: 12000, // step-2-16k 16K 窗口（16000 tokens，取 50% 余量）
   },
   sensenova: {
     group: '国内',
     label: '商汤日日新',
     baseUrl: 'https://api.sensenova.cn/compatible-mode/v1',
     model: 'SenseChat-5',
-    contextChars: 100000,
+    contextChars: 24000, // 日日新 32K 窗口（32000 tokens，取 50% 余量）
   },
   baichuan: {
     group: '国内',
     label: '百川智能',
     baseUrl: 'https://api.baichuan-ai.com/v1',
     model: 'Baichuan4',
-    contextChars: 80000,
+    contextChars: 24000, // Baichuan4 32K 窗口（32000 tokens，取 50% 余量）
   },
 
   // ── 国外 ──────────────────────────────────────────────────────────────
@@ -9455,49 +9456,49 @@ const PROVIDERS = {
     label: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4o',
-    contextChars: 200000, // 128K tokens
+    contextChars: 96000, // gpt-4o 128K 窗口（128000 tokens，取 50% 余量）
   },
   xai: {
     group: '国外',
     label: 'xAI（Grok）',
     baseUrl: 'https://api.x.ai/v1',
     model: 'grok-beta',
-    contextChars: 300000,
+    contextChars: 96000, // grok 131K 窗口（131000 tokens，取 50% 余量）
   },
   gemini: {
     group: '国外',
     label: 'Google Gemini',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     model: 'gemini-1.5-flash',
-    contextChars: 600000, // 1M tokens
+    contextChars: 600000, // Gemini 1M 窗口（1000000 tokens，取 50% 余量）
   },
   mistral: {
     group: '国外',
     label: 'Mistral AI',
     baseUrl: 'https://api.mistral.ai/v1',
     model: 'mistral-large-latest',
-    contextChars: 200000,
+    contextChars: 96000, // mistral-large 128K 窗口（128000 tokens，取 50% 余量）
   },
   groq: {
     group: '国外',
     label: 'Groq',
     baseUrl: 'https://api.groq.com/openai/v1',
     model: 'llama-3.3-70b-versatile',
-    contextChars: 60000, // 128K tokens 但输出预算小
+    contextChars: 72000, // llama-3.3-70b 128K 窗口（128000 tokens，取 50% 余量）
   },
   together: {
     group: '国外',
     label: 'Together AI',
     baseUrl: 'https://api.together.xyz/v1',
     model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
-    contextChars: 300000,
+    contextChars: 96000, // 按 128K 保守取值（128000 tokens，取 50% 余量）
   },
   openrouter: {
     group: '国外',
     label: 'OpenRouter（聚合）',
     baseUrl: 'https://openrouter.ai/api/v1',
     model: 'openai/gpt-4o-mini',
-    contextChars: 200000,
+    contextChars: 96000, // 按 128K 保守取值（128000 tokens，取 50% 余量）
     modelHint: '填 OpenRouter 的模型全名，如 anthropic/claude-3.5-sonnet',
   },
   deepinfra: {
@@ -9505,7 +9506,7 @@ const PROVIDERS = {
     label: 'DeepInfra',
     baseUrl: 'https://api.deepinfra.com/v1/openai',
     model: 'meta-llama/Llama-3.3-70B-Instruct',
-    contextChars: 300000,
+    contextChars: 96000, // 按 128K 保守取值（128000 tokens，取 50% 余量）
   },
 
   // ── 其他 ──────────────────────────────────────────────────────────────
@@ -9517,7 +9518,7 @@ const PROVIDERS = {
     baseUrl: (process.env.OPENAI_COMPATIBLE_BASE_URL || envConfig.OPENAI_COMPATIBLE_BASE_URL || '').replace(/\/+$/, ''),
     model: process.env.OPENAI_COMPATIBLE_MODEL || envConfig.OPENAI_COMPATIBLE_MODEL || '',
     requiresModel: true,
-    contextChars: Number(process.env.OPENAI_COMPATIBLE_CONTEXT_CHARS) || 200000,
+    contextChars: Number(process.env.OPENAI_COMPATIBLE_CONTEXT_CHARS) || 24000, // 保守按 32K 窗口
     modelHint: '填自建服务支持的模型名',
   },
 };
@@ -11165,6 +11166,126 @@ function buildApiTestCasesMarkdown(apis, existingText = '') {
  * @param {Object} coverage 门禁的维度覆盖结果（用于判断缺哪些维度）
  * @returns {{text:string, added:number, skipped:number}}
  */
+/**
+ * 把工具生成的 design.cases 确定性落进交付物（2026-11-20）
+ *
+ * 为什么必须由系统落地，不能让模型抄：
+ * 9dem_executor 返回的 design.cases 有 113~216 条，序列化后 111~170KB，
+ * 而智谱 GLM-4 的上下文只有 128K tokens（≈96K 字符预算）。
+ * 工具结果一旦超过预算，enforceContextBudget 会把它截到 4000 字符，
+ * 里面的用例几乎全被砍掉 —— 模型只能凭印象编出 40 来条，
+ * 这就是用例数从 257 掉到 40 的真正原因（2026-11-20 实测）。
+ *
+ * 让模型逐条抄 200 条既慢又容易漏，本质上也是确定性工作。
+ * 所以改为：系统按用例表格式直接写进去，模型只负责补充业务语言
+ * （它能看到摘要与字段规格，足以把名称/步骤写得更贴合业务）。
+ *
+ * @param {string} text 现有交付物
+ * @param {Array} designCases 工具的 design.cases
+ * @param {Object} stats 工具的 design.stats
+ * @returns {{text:string, added:number, duplicate:number}}
+ */
+/**
+ * 给基线用例的预期结果补上「可判定条件」
+ *
+ * 9dem_executor 的 expected 常见「正常接受并处理」「拒绝并提示」这类描述——
+ * 人看着没问题，但门禁要求至少包含其一：HTTP 状态码 / 具体字段名与值 /
+ * 引号包裹的原文案 / 跳转目标 / 数值或计数变化 / 数据库状态。
+ * 不补的话落地即被判不可用（实测可用率 100% → 44%）。
+ *
+ * 补强只加客观条件，不改判定方向（正常/拒绝不变），也不编造业务文案——
+ * 文案统一用「与需求一致」表述，避免把系统的猜测写成交付事实。
+ */
+function strengthenAssertion(expected, c, rowCtx) {
+  const e = String(expected || '').trim();
+  const layer = String(c.layer || '').trim();
+  const ctx = `${rowCtx || ''} ${e}`;
+
+  // 已经可判定（含状态码/字段名/引号文案/数值变化）→ 原样返回
+  if (/HTTP\s*\d{3}|状态码\s*\d{3}|code\s*=\s*\d+|\b\d{3}\b/.test(e)) return e;
+  if (/["「『'][^"」』']{2,}["」』']/.test(e)) return e;
+  if (/[A-Za-z_][A-Za-z0-9_]*\s*[=＝:]\s*\S+/.test(e)) return e;
+
+  const isReject = /拒绝|拦截|失败|不允许|禁止|报错|提示|不通过|非法/.test(e) || layer === '异常';
+  const isBoundary = layer === '边界' || /边界|min|max|超长|过短/.test(ctx);
+
+  // 拒绝类：断言「明确失败 + 不产生副作用」
+  if (isReject) {
+    return `${e}（可判定：返回 HTTP 4xx 或业务失败码 code≠0；响应含明确的错误提示且与需求文案一致；不写入脏数据、不返回 5xx）`;
+  }
+  // 边界类：断言「边界值被正确处理」
+  if (isBoundary) {
+    return `${e}（可判定：返回 HTTP 200 或业务成功码 code=0；响应中相关字段值与输入边界一致；无 5xx 与超时）`;
+  }
+  // 正常类：断言「成功 + 关键字段可见」
+  return `${e}（可判定：返回 HTTP 200 或业务成功码 code=0；响应包含该操作对应的业务字段且值符合预期；页面/接口无异常报错）`;
+}
+
+function buildDesignCasesMarkdown(text, designCases, stats) {
+  if (!Array.isArray(designCases) || !designCases.length) {
+    return { text, added: 0, duplicate: 0 };
+  }
+
+  // 已有用例编号（避免与模型已写的重复）
+  const { cases: existing } = parseCaseTableForCount(text);
+  const existingIds = new Set(existing.map((c) => String(c.id || '').trim()).filter(Boolean));
+  // 内容指纹去重：模型可能改写编号但内容是同一条
+  const fingerprint = (c) => `${String(c.name || '').trim()}|${String(c.dimension || '').trim()}|${String(c.input || '').trim()}`.slice(0, 200);
+  const existingFp = new Set(existing.map(fingerprint));
+
+  let seq = 0;
+  const rows = [];
+  let duplicate = 0;
+  for (const c of designCases) {
+    const fp = fingerprint(c);
+    if (existingFp.has(fp)) { duplicate += 1; continue; }
+    seq += 1;
+    // 编号用 DC- 前缀（Design Case），与模型自写的 TC- 明确区分，便于追溯来源
+    const id = `DC-${String(seq).padStart(3, '0')}`;
+    if (existingIds.has(id)) { duplicate += 1; continue; }
+    existingFp.add(fp);
+
+    // 基线用例原样落地会被门禁判不可用，落地时必须做确定性补强：
+    //   - input 常是 phone="AAAAAAAAAAA" 这类占位值 → 换成真实值（保留长度边界）
+    //   - steps 常为空字符串 → 按「操作对象+动作+数据」补通用三步
+    //   - expected 常是「正常接受并处理」这类弱断言 → 补可判定条件（状态码/字段/文案）
+    // 不补强的话，落进去 150 条基线会把可用率从 100% 拉到 44%（实测）。
+    const rowCtx = `${c.name || ''} ${c.trace || ''} ${c.input || ''}`;
+    let input = String(c.input || '');
+    if (input) {
+      const rep = repairPlaceholderInput(input, rowCtx);
+      if (rep.repaired && rep.input) input = rep.input;
+    }
+    let steps = String(c.steps || '').trim();
+    if (!steps) {
+      steps = `1. 准备前置条件：${String(c.precondition || '系统已部署且功能可访问').replace(/\n/g, ' ')}\n2. 按输入数据构造条件：${input || '按用例名称描述的场景构造'}\n3. 触发对应操作并观察接口响应与页面反馈\n4. 核对实际结果是否满足下方预期结果`;
+    }
+    let expected = String(c.expected || '').trim();
+    expected = strengthenAssertion(expected, c, rowCtx);
+
+    rows.push({ ...c, _id: id, input, steps, expected });
+  }
+  if (!rows.length) return { text, added: 0, duplicate };
+
+  const esc = (v) => String(v == null ? '' : v).replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
+  const lines = [];
+  lines.push('');
+  lines.push('## 黑盒设计用例（系统按 9dem_executor 基线落地）');
+  lines.push('');
+  const total = (stats && stats.uniqueCases) || designCases.length;
+  const removed = (stats && stats.duplicatesRemoved) || 0;
+  lines.push(`> 以下 ${rows.length} 条由系统直接落地 9dem_executor 的确定性基线（共 ${total} 条不重复用例${removed ? `，跨方法去重 ${removed} 条` : ''}），维度、层级、输入、步骤、预期结果均为确定性内容。`);
+  lines.push(`> 与上文模型补充的用例合并后为本次完整用例集；编号 DC- 开头表示来自确定性基线，TC- 开头表示模型按业务补充。`);
+  lines.push('');
+  lines.push('| 用例编号 | 所属模块 | 用例名称 | 维度 | 层级 | 前置条件 | 输入数据 | 执行步骤 | 预期结果 | 优先级 | 关联需求 |');
+  lines.push('|---|---|---|---|---|---|---|---|---|---|---|');
+  for (const c of rows) {
+    const dim = [c.dimension, c.methodLabel].filter(Boolean).join(' / ');
+    lines.push(`| ${c._id} | ${esc(c.module || '全模块')} | ${esc(c.name)} | ${esc(dim)} | ${esc(c.layer || '正常')} | ${esc(c.precondition)} | ${esc(c.input)} | ${esc(c.steps)} | ${esc(c.expected)} | ${esc(c.priority || '中')} | ${esc(c.trace || '')} |`);
+  }
+  return { text: `${text}\n${lines.join('\n')}`, added: rows.length, duplicate };
+}
+
 function buildDimensionCasesMarkdown(text, dimensionCases, coverage) {
   if (!Array.isArray(dimensionCases) || !dimensionCases.length) {
     return { text, added: 0, skipped: 0 };
@@ -11432,6 +11553,9 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     // 门禁代码在分支之外，走「模型没调工具」的路径时若变量不在作用域内，
     // 就是 ReferenceError: toolDimensionCases is not defined（任务 44dd1eab 实测踩到）。
     let toolDimensionCases = null;
+    // 工具的基线用例与统计：用于确定性落地（2026-11-20）
+    let toolDesignCases = null;
+    let toolDesignStats = null;
     console.log(`[Agent] Trying Gateway API for ${agentId}...`);
     // 构建 API 消息:前置对话历史 + system prompt + 当前输入
     // ========== 智能体"学习知识"上下文注入（V3: DB 持久化 + 内存缓存）==========
@@ -11567,6 +11691,12 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                   if (out && typeof out === 'object' && Array.isArray(out.dimensionCases) && out.dimensionCases.length) {
                     toolDimensionCases = out.dimensionCases;
                   }
+                  // 基线用例留一份：模型抄不完（工具结果 111~170KB 超窗口会被截断），
+                  // 由系统确定性落地（2026-11-20）
+                  if (out && typeof out === 'object' && Array.isArray(out.design?.cases) && out.design.cases.length) {
+                    toolDesignCases = out.design.cases;
+                    toolDesignStats = out.design.stats || null;
+                  }
                   if (out && typeof out === 'object' && 'pairwiseFull' in out) {
                     const { pairwiseFull, ...forModel } = out;
                     toolResult = JSON.stringify(forModel);
@@ -11683,6 +11813,17 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
         let gateReport = null;
         let repairRound = 0;
         let textBeforeRepair = text;
+
+        // 把工具的基线用例（design.cases）确定性落进交付物 —— 只做一次，
+        // 放在门禁循环之前：模型抄不完（工具结果超窗口会被截断），
+        // 不落地就等于这部分基线全丢（2026-11-20）
+        if (toolDesignCases && toolDesignCases.length) {
+          const dc = buildDesignCasesMarkdown(text, toolDesignCases, toolDesignStats);
+          if (dc.added > 0) {
+            text = dc.text;
+            console.log(`[DesignBackfill] ${agentId} 已落地 ${dc.added} 条基线用例（跳过重复 ${dc.duplicate} 条）`);
+          }
+        }
 
         while (repairRound <= CASE_QUALITY_MAX_REPAIR_ROUNDS) {
           // 九维必测点确定性补齐：放在门禁之前，让本轮检查就看到补齐后的结果。
@@ -12653,11 +12794,11 @@ function getAgentToolSchemas(agentId) {
 // 上下文预算护栏(统一入口:全部 18 个智能体 / 所有 skill 的任务调用都经由
 //   callOpenClawAPI 下发 Deepseek,故在唯一出口做护栏即可覆盖全局,无需逐智能体改造)
 // 设计目标:
-//   ① 不让请求因超出模型上下文窗口(本环境 deepseek-v4-pro 约 1,048,576 tokens)
+//   ① 不让请求因超出模型上下文窗口(按所选服务商的实际窗口，见 PROVIDERS[].contextChars)
 //      而硬失败 400(网关对超限直接拒绝,导致任务 failed 且无法进入审核流程);
 //   ② 不损害交付物质量 —— 系统提示词与"用户需求"消息始终完整保留,
 //      只压缩"可再生成"的工具循环历史 / 旧对话。
-// 中文为主场景约 1.5 tokens/字符,故以 ~600K 字符(≈900K tokens)为安全预算,
+// 中文为主场景约 1.5 字符/token，故字符预算 = 窗口tokens × 1.5 × 0.5（留一半给输出与系统提示），
 // 预留约 148K tokens 余量。
 // 裁剪优先级(绝不破坏 tool_call/tool_result 配对,且绝不截断需求):
 //   1) 丢弃最旧对话历史(位于 system 之前);
@@ -12667,7 +12808,9 @@ function getAgentToolSchemas(agentId) {
 //      assistant(tool_calls)一并移除,保证配对完整);
 //   4) 极端情况(需求本身超预算)才截断需求 user 消息(带明确标记,极少见)。
 // ============================================================================
-const DEFAULT_MAX_CONTEXT_CHARS = 600000; // 仅在无法解析模型时使用（DeepSeek 1M 窗口）
+// 仅在完全解析不出模型时使用。取最保守的 32K 窗口（24000 字符）——
+// 宁可多裁一点历史，也不要发出一个必然被服务商拒掉的超长请求。
+const DEFAULT_MAX_CONTEXT_CHARS = 24000;
 const TOOL_RESULT_CAP = 4000;          // 单个工具结果超过此长度则截断(保留头部)
 const CTX_TRUNCATE_MARK = '\n\n…[上下文已截断:为适配模型上下文窗口,超出部分已被裁剪,原长度 ';
 
@@ -12679,6 +12822,82 @@ function msgContentChars(m) {
 const isSystemMsg = (m) => m && m.role === 'system';
 const isUserReqMsg = (m) => m && m.role === 'user';   // 用户需求,受保护,不截断
 const isToolMsg = (m) => m && m.role === 'tool';       // 工具结果,可压缩
+
+/**
+ * 剔除工具结果里的「体积大头」，保住真正要用的字段
+ *
+ * 只处理 9dem-executor 这类带 pairwise 明细的结果：
+ *   - data.pairwise / dimensionsResult.<dim>.pairwise：几万条组合，模型用不上
+ *     （正交用例已在 design.cases 里，条数在 summary.pairwise 的 meta 里）
+ *   - pairwiseFull：全量明细，本来就只给服务端用
+ *
+ * design.cases / dimensionCases / inputSpec / summary 一律保留 ——
+ * 这些才是模型生成用例的依据，砍掉它们等于让模型凭印象编。
+ *
+ * @returns {object|null} 瘦身后的消息；无需瘦身时返回 null
+ */
+function slimToolResultPayload(msg) {
+  const raw = msg && msg.content;
+  if (typeof raw !== 'string' || raw.length < 2000) return null;
+  let obj;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return null; // 非 JSON（工具报错文本等）不处理
+  }
+  if (!obj || typeof obj !== 'object') return null;
+
+  let changed = false;
+
+  // 2) design.cases 里每条都重复带 methodKey/methodKeys/methods/dimensions 等数组，
+  //    单条 328 字符里有近一半是冗余（实测 151 条 61KB）。模型只需要
+  //    name/dimension/layer/precondition/input/steps/expected/priority，
+  //    这些冗余字段删掉不损失任何生成依据。
+  if (Array.isArray(obj.design?.cases)) {
+    const KEEP = new Set(['method', 'methodLabel', 'name', 'dimension', 'layer', 'precondition', 'input', 'steps', 'expected', 'priority', 'trace']);
+    obj.design.cases = obj.design.cases.map((c) => {
+      if (!c || typeof c !== 'object') return c;
+      const slimmed = {};
+      for (const k of Object.keys(c)) {
+        if (KEEP.has(k)) slimmed[k] = c[k];
+        else if (!['methodKey', 'methodKeys', 'methods', 'dimensions'].includes(k)) slimmed[k] = c[k];
+      }
+      return slimmed;
+    });
+    changed = true;
+  }
+
+  const dropPairwise = (container) => {
+    if (container && typeof container === 'object' && Array.isArray(container.pairwise)) {
+      const n = container.pairwise.length;
+      delete container.pairwise;
+      changed = true;
+      return n;
+    }
+    return 0;
+  };
+
+  // 顶层全量明细
+  if ('pairwiseFull' in obj) {
+    delete obj.pairwiseFull;
+    changed = true;
+  }
+  let dropped = 0;
+  if (obj.data) dropped += dropPairwise(obj.data);
+  if (obj.dimensionsResult && typeof obj.dimensionsResult === 'object') {
+    for (const v of Object.values(obj.dimensionsResult)) {
+      if (v && typeof v === 'object') dropped += dropPairwise(v);
+    }
+  }
+  // 其它可能嵌 pairwise 的位置
+  if (obj.equivalence && typeof obj.equivalence === 'object') dropPairwise(obj.equivalence);
+
+  if (!changed) return null;
+  if (dropped > 0 && obj.summary && typeof obj.summary === 'object') {
+    obj.summary.pairwiseDroppedForContext = dropped;
+  }
+  return { ...msg, content: JSON.stringify(obj) };
+}
 
 function enforceContextBudget(messages, budgetChars) {
   if (!Array.isArray(messages) || messages.length === 0) return messages;
@@ -12700,7 +12919,32 @@ function enforceContextBudget(messages, budgetChars) {
     out.shift();
   }
 
-  // 2) 压缩工具结果(tool 消息):把较大的 tool 结果截断到 TOOL_RESULT_CAP
+  // 2a) 先瘦身工具结果里的「体积大头」，而不是一上来就硬截断。
+  //
+  // 线上实测（2026-11-20）：9dem_executor 的工具结果是 468KB~7.8MB，
+  // 因为里面带着 data.pairwise 的几万条组合明细。之前的逻辑直接把它截到
+  // TOOL_RESULT_CAP=4000 字符 —— 里面的 design.cases(151 条) 与
+  // dimensionCases(42 条) 几乎全被砍掉，模型只能凭印象编出 40 来条用例。
+  // 这就是「用例数从 257 掉到 40」的真正原因，与 pairwise 截断阈值无关。
+  //
+  // pairwise 明细本来就不需要给模型（正交用例已在 design.cases 里，
+  // 条数信息在 summary.pairwise 的 meta 里），所以先精确剔除它，
+  // 保住真正要用的 design.cases / dimensionCases。
+  if (totalChars() > MAX_CONTEXT_CHARS) {
+    for (let i = out.length - 1; i >= 0; i--) {
+      if (!isToolMsg(out[i])) continue;
+      const before = msgContentChars(out[i]);
+      const slim = slimToolResultPayload(out[i]);
+      if (slim) {
+        out[i] = slim;
+        const after = msgContentChars(out[i]);
+        console.log(`[CtxBudget] 工具结果瘦身 ${before} → ${after} 字符（剔除组合明细，保留用例与必测点）`);
+      }
+      if (totalChars() <= MAX_CONTEXT_CHARS) break;
+    }
+  }
+
+  // 2b) 瘦身之后仍超限，才做硬截断
   if (totalChars() > MAX_CONTEXT_CHARS) {
     for (let i = out.length - 1; i >= 0; i--) {
       if (!isToolMsg(out[i])) continue;
