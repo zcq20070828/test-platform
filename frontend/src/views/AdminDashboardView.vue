@@ -89,6 +89,51 @@ watch([isAdmin, activeTab], () => {
   padding: 0;
 }
 
+/*
+ * 6 个 tab 默认总宽 706px（每个 padding 0 20px 是大头）。
+ * 1024px 视口下容器只有 680px，「自我进化」被裁到容器外，用户根本看不到。
+ *
+ * 从宽到窄的取舍：
+ *   1) 只加 overflow-x:auto 没用 —— el-tabs 内部把 nav 设为可收缩 flex，
+ *      内容自己缩到容器宽，scrollWidth === clientWidth，永不出现滚动条；
+ *   2) 强行 min-width:max-content 会和 el-tabs 内部的 translateX 滚动逻辑打架；
+ *   3) 最终选择「把 padding 收窄」，总宽 706 → 634px，1024px 视口下
+ *      （容器 680px）就放得下了，不必依赖滚动，交互也更简单。
+ * 窄到 900px 以下再靠横向滚动兜底。
+ */
+.admin-tabs :deep(.el-tabs__item) {
+  padding: 0 14px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 窄屏（<1000px）后备：el-tabs 的 nav-wrap 里有个 .el-tabs__nav-scroll
+   会吃掉 overflow，必须在这一层也放开，否则滚动条永远不出现。 */
+.admin-tabs :deep(.el-tabs__nav-scroll) {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.admin-tabs :deep(.el-tabs__nav-wrap) {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.admin-tabs :deep(.el-tabs__nav-wrap::-webkit-scrollbar) {
+  height: 4px;
+}
+
+.admin-tabs :deep(.el-tabs__nav-wrap::-webkit-scrollbar-thumb) {
+  background: var(--el-border-color);
+  border-radius: 2px;
+}
+
+/* 图标与文字之间留白，收窄 padding 后依然清晰 */
+.admin-tabs :deep(.el-tabs__item .tab-label) {
+  gap: 6px;
+}
+
 /* 去掉内嵌视图的页头，避免双重标题 */
 :deep(.view-header),
 :deep(.page-header),

@@ -93,6 +93,32 @@ t('路由守卫会拦截并给出模块级提示', () => {
   assert.ok(/return \{ name: 'Dashboard' \}/.test(block), '拦截后没有回首页');
 });
 
+// ---------------- tab 不能因窄屏被裁（2026-11-20）----------------
+// 用户反馈「前端并没有看到自我进化功能」。实际是 tab 太多、容器变窄时
+// 最后一个被裁到容器外，且不出现滚动条 —— 看起来就像功能不存在。
+// 实测：6 个 tab 总宽 706px，1024px 视口下容器仅 680px，「自我进化」被裁。
+t('管理页 tab 收窄 padding，1024px 视口放得下', () => {
+  const ADMIN = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'views', 'AdminDashboardView.vue'), 'utf8');
+  // 必须收窄 padding（默认 0 20px 太宽）
+  // 选择器带 :deep() 前缀，正则要宽松匹配
+  assert.ok(/\.el-tabs__item\)\s*\{[^}]*padding:\s*0 14px/s.test(ADMIN),
+    'tab padding 未收窄到 0 14px，1024px 下会被裁');
+  // 子项不得被压缩
+  assert.ok(/\.el-tabs__item\)\s*\{[^}]*flex-shrink:\s*0/s.test(ADMIN), 'tab 项可被压缩，窄屏会缩没');
+  // 窄屏后备：nav-scroll 与 nav-wrap 都要放开 overflow
+  assert.ok(/\.el-tabs__nav-scroll\)\s*\{[^}]*overflow-x:\s*auto/s.test(ADMIN),
+    'nav-scroll 未放开 overflow（el-tabs 内部会吃掉滚动）');
+});
+
+t('自我进化 tab 在管理员权限区内（与非管理员隔离）', () => {
+  const ADMIN = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'views', 'AdminDashboardView.vue'), 'utf8');
+  const adminStart = ADMIN.indexOf('<template v-if="isAdmin">');
+  const expIdx = ADMIN.indexOf('name="experience"');
+  assert.ok(adminStart > 0, '找不到管理员权限区');
+  assert.ok(expIdx > adminStart, '自我进化 tab 不在管理员权限区内');
+  assert.ok(/<ExperienceView/.test(ADMIN), '未挂载 ExperienceView');
+});
+
 t('屏蔽只在前端，页面文件与后端接口都保留（可随时恢复）', () => {
   const views = {
     '/knowledge': 'KnowledgeView.vue',
