@@ -30,6 +30,11 @@ interface QualityInfo {
   skippedRows?: number
   /** 单条可用率是否达标（与九维覆盖分开判定） */
   usabilityPass?: boolean | null
+  /**
+   * 被测对象类型。ai-app 时维度是七个 AI 风险维度（事实性/指令安全/…），
+   * 不是九维；文案与标签必须跟着切换，否则用户会看到「缺 ① 用户」这种对 AI 无意义的提示。
+   */
+  targetKind?: 'software' | 'ai-app' | null
 }
 
 interface FeedbackItem {
@@ -113,22 +118,24 @@ const dimensionRate = computed(() => {
 const missingDimensionsText = computed(() => {
   const list = quality.value?.dimensionMissing || []
   if (!list.length) return ''
-  return list.map((k) => DIMENSION_LABELS[k] || k).join('、')
+  return list.map((k) => dimensionLabel(k)).join('、')
 })
 
 const waivedDimensionsText = computed(() => {
   const list = quality.value?.dimensionWaived || []
   if (!list.length) return ''
-  return list.map((k) => DIMENSION_LABELS[k] || k).join('、')
+  return list.map((k) => dimensionLabel(k)).join('、')
 })
 
-/** 未达标原因：可用率 / 九维覆盖分别说清楚，避免用户不知道去补什么 */
+/** 未达标原因：可用率 / 维度覆盖分别说清楚，避免用户不知道去补什么 */
 const failReasons = computed(() => {
   const q = quality.value
   if (!q || q.gatePassed) return []
   const out: string[] = []
   if (q.usabilityPass === false) out.push('单条可用率不达标')
-  if (q.dimensionCoverage != null && q.dimensionCoverage < 0.75) out.push('九维必测点覆盖不足')
+  if (q.dimensionCoverage != null && q.dimensionCoverage < 0.75) {
+    out.push(isAiApp.value ? 'AI 风险维度必测点覆盖不足' : '九维必测点覆盖不足')
+  }
   if (missingDimensionsText.value) out.push(`缺维度：${missingDimensionsText.value}`)
   if (q.skippedRows) out.push(`${q.skippedRows} 行编号非法未纳入检查`)
   return out
@@ -154,6 +161,29 @@ const DIMENSION_LABELS: Record<string, string> = {
   network: '⑦ 网络环境',
   terminal: '⑧ 终端环境',
   compatibility: '⑨ 兼容性',
+}
+
+/**
+ * AI 应用风险维度（与 backend/lib/ai-risk-matrix.js 的 key 对齐）
+ *
+ * AI 应用的「维度」不是九维而是七个风险维度，两套键名不重叠，
+ * 合并成一张表查不到就回退显示原键，不会错标。
+ */
+const AI_RISK_LABELS: Record<string, string> = {
+  factuality: '① 事实性（幻觉）',
+  instructionSafety: '② 指令安全',
+  consistency: '③ 一致性',
+  rag: '④ 检索增强（RAG）',
+  toolUse: '⑤ 工具调用',
+  contentSafety: '⑥ 内容安全',
+  costLatency: '⑦ 成本与延迟',
+}
+
+/** 是否为 AI 应用任务：决定维度标签与文案用九维还是七个风险维度 */
+const isAiApp = computed(() => quality.value?.targetKind === 'ai-app')
+
+function dimensionLabel(key: string): string {
+  return (isAiApp.value ? AI_RISK_LABELS[key] : DIMENSION_LABELS[key]) || key
 }
 
 /** 从 Markdown 用例表里抽出编号 */
@@ -278,7 +308,7 @@ async function submit() {
         <div class="qc-sub">已标记 {{ markedCount }} 条</div>
       </div>
       <div class="qc-metric">
-        <div class="qc-label">九维必测点覆盖</div>
+        <div class="qc-label">{{ isAiApp ? 'AI风险维度覆盖' : '九维必测点覆盖' }}</div>
         <div class="qc-value">{{ dimensionRate }}</div>
         <div class="qc-sub">
           {{ waivedDimensionsText ? `已豁免 ${waivedDimensionsText}` : '下限 75%' }}

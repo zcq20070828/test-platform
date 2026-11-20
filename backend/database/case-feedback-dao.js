@@ -131,12 +131,13 @@ export async function upsertTaskQuality(m) {
   if (!m || !m.taskId) return null;
   await query(
     `INSERT INTO task_quality_metrics
-       (id, task_id, agent_id, total_cases, usable_cases, usability_gate, blocker_count,
+       (id, task_id, agent_id, target_kind, total_cases, usable_cases, usability_gate, blocker_count,
         major_count, auto_repairs, repair_rounds, polish_rounds, polish_gain, by_reason,
         dimension_coverage, dimension_missing, dimension_waived, skipped_rows, usability_pass,
         gate_passed)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON DUPLICATE KEY UPDATE
+       target_kind = VALUES(target_kind),
        total_cases = VALUES(total_cases),
        usable_cases = VALUES(usable_cases),
        usability_gate = VALUES(usability_gate),
@@ -157,6 +158,7 @@ export async function upsertTaskQuality(m) {
       uuidv4(),
       m.taskId,
       m.agentId || 'unknown',
+      m.targetKind === 'ai-app' ? 'ai-app' : 'software',
       m.total || 0,
       m.usable || 0,
       typeof m.usabilityRate === 'number' ? m.usabilityRate : null,
@@ -222,6 +224,7 @@ export async function getTaskQuality(taskId) {
   return {
     taskId: r.task_id,
     agentId: r.agent_id,
+    targetKind: r.target_kind === 'ai-app' ? 'ai-app' : 'software',
     total: r.total_cases,
     usable: r.usable_cases,
     usabilityGate: r.usability_gate === null ? null : Number(r.usability_gate),

@@ -18,6 +18,12 @@ import {
   checkDimensionCoverage,
   listUncoveredProbes,
 } from './dimension-matrix.js';
+import {
+  extractAiDimensions,
+  inspectAiAssertion,
+  checkAiRiskCoverage,
+  listUncoveredAiProbes,
+} from './ai-risk-matrix.js';
 
 // ============================================================
 // 1. 断言识别：预期结果是否可判定
@@ -440,7 +446,7 @@ export function looksLikeCaseId(raw) {
 // ============================================================
 
 /** 步骤是否含可执行动词 */
-const ACTION_VERB_RE = /(输入|填写|点击|提交|上传|选择|打开|访问|请求|调用|等待|切换|刷新|删除|修改|新增|查询|登录|退出|关闭|开启|滑动|拖拽|扫码|确认|取消|发送|校验|验证|触发|观察|执行|模拟|重置|查看|发起|轮询|中断|恢复|重连|并发|重复)/;
+const ACTION_VERB_RE = /(输入|填写|点击|提交|上传|选择|打开|访问|请求|调用|等待|切换|刷新|删除|修改|新增|查询|登录|退出|关闭|开启|滑动|拖拽|扫码|确认|取消|发送|校验|验证|触发|观察|执行|模拟|重置|查看|发起|轮询|中断|恢复|重连|并发|重复|提问|询问|比对|对比|统计|记录|评分|打分|注入|诱导|回查|核实|抽取|逐条|逐项)/;
 
 /**
  * 单条用例检查
@@ -452,6 +458,8 @@ export function inspectCase(c, ctx = {}) {
   const reasons = [];
   const details = [];
   let repairs = [];
+  // AI 应用用例走另一套判定：输出是自然语言，不能用「返回 200」判可判定性
+  const isAiApp = ctx.targetKind === 'ai-app';
 
   // 1) 必填完整性
   const required = ['name', 'steps', 'expected'];
@@ -464,11 +472,13 @@ export function inspectCase(c, ctx = {}) {
   // 2) 维度与层级标注（提示词把「维度」列为必填，过去门禁解析了却从不判定，
   //    结果是「九维覆盖率」只是交付物里的一张自证表：不写维度也能通过）
   if (ctx.requireDimension) {
-    const dims = extractDimensions(c.dimension);
+    const dims = isAiApp ? extractAiDimensions(c.dimension) : extractDimensions(c.dimension);
     if (!dims.length) {
       reasons.push('missingDimension');
-      details.push('「维度」列为空或无法识别');
-    } else if (dims.includes('data') && !String(c.dimension).includes('/') && !String(c.dimension).includes('法')) {
+      details.push(isAiApp
+        ? '「维度」列为空或无法识别（AI 应用须标注 ①-⑦ 风险维度之一）'
+        : '「维度」列为空或无法识别');
+    } else if (!isAiApp && dims.includes('data') && !String(c.dimension).includes('/') && !String(c.dimension).includes('法')) {
       // 只写了维度没写设计方法：提示词要求「维度 / 设计方法」
       reasons.push('missingMethod');
       details.push(`「维度」列只写了维度（${c.dimension}），未标注设计方法`);
@@ -480,7 +490,13 @@ export function inspectCase(c, ctx = {}) {
   }
 
   // 3) 断言可判定性
-  const assertion = inspectAssertion(c.expected);
+  //
+  // 这是 AI 应用与传统软件最大的分流点：
+  //   传统用例「返回 HTTP 200 且 code=0」即可判定；
+  //   AI 输出是自然语言，必须说清**怎么判**——评测集比对 / 评分细则 / 不变性检查。
+  // 若沿用传统规则，正确的 AI 用例（「20 条标注集准确率 ≥90%」）会被判弱断言，
+  // 反而「返回 200」这种对 AI 无意义的断言会被放行。
+  const assertion = isAiApp ? inspectAiAssertion(c.expected) : inspectAssertion(c.expected);
   if (!assertion.verifiable) {
     reasons.push('weakAssertion');
     details.push(assertion.reason);
@@ -578,8 +594,11 @@ export function inspectCase(c, ctx = {}) {
  * @param {string} [options.originalInput] - 原始任务输入（用于提取需求编号集合）
  * @param {number} [options.minUsabilityRate=0.85]
  * @param {boolean} [options.requireDimension=true] - 是否强制标注维度/层级（用例类交付物应为 true）
- * @param {number} [options.minProbeCoverage=0.75] - 九维必测点覆盖率下限
- * @param {boolean} [options.requireDimensionCoverage=true] - 是否把九维覆盖情况纳入 pass 判定
+ * @param {number} [options.minProbeCoverage=0.75] - 必测点覆盖率下限
+ * @param {boolean} [options.requireDimensionCoverage=true] - 是否把维度覆盖情况纳入 pass 判定
+ * @param {'software'|'ai-app'} [options.targetKind='software'] - 被测对象类型。
+ *   ai-app 走 AI 风险矩阵与 AI 断言规则（评测集/评分细则/不变量），
+ *   与确定性系统的用例判定互不干扰。
  * @returns {Object}
  */
 export function checkDeliverable(text, options = {}) {
@@ -588,6 +607,7 @@ export function checkDeliverable(text, options = {}) {
   const requireDimension = options.requireDimension !== false;
   const requireDimensionCoverage = options.requireDimensionCoverage !== false;
   const minProbeCoverage = Number(options.minProbeCoverage ?? 0.75);
+  const targetKind = options.targetKind === 'ai-app' ? 'ai-app' : 'software';
 
   // 从原始需求里提取需求编号（FR-001 / NFR-002 / API-001）
   const requirementIds = new Set();
@@ -616,17 +636,22 @@ export function checkDeliverable(text, options = {}) {
   }
 
   const seenKeys = new Map();
-  const ctx = { requirementIds, seenKeys, requireDimension };
+  const ctx = { requirementIds, seenKeys, requireDimension, targetKind };
   const results = cases.map((c) => ({ ...inspectCase(c, ctx), caseRef: c }));
 
   const usable = results.filter((r) => r.usable).length;
   const usabilityRate = Math.round((usable / results.length) * 1000) / 1000;
 
-  // 九维覆盖：与生成侧共用同一份必测矩阵，让「九维覆盖率」成为约束而不是标注
+  // 维度覆盖：与生成侧共用同一份必测矩阵，让覆盖率成为约束而不是标注。
+  // AI 应用用风险矩阵（第 1 项 + 第 2 项：七个 AI 特有失效模式）。
   const dimensions = requireDimension
-    ? checkDimensionCoverage(cases, { text, minProbeCoverage })
+    ? (targetKind === 'ai-app'
+      ? checkAiRiskCoverage(cases, { text, minProbeCoverage })
+      : checkDimensionCoverage(cases, { text, minProbeCoverage }))
     : null;
-  const uncoveredProbes = dimensions ? listUncoveredProbes(dimensions) : [];
+  const uncoveredProbes = dimensions
+    ? (targetKind === 'ai-app' ? listUncoveredAiProbes(dimensions) : listUncoveredProbes(dimensions))
+    : [];
 
   const bySeverity = { blocker: 0, major: 0, minor: 0 };
   for (const r of results) {
@@ -667,6 +692,8 @@ export function checkDeliverable(text, options = {}) {
     skippedIds: skippedIds || [],
     dimensions,
     uncoveredProbes,
+    // 被测对象类型：趋势页与审核需要区分「哪套判定规则生效了」
+    targetKind,
     summary: buildSummary({
       total: results.length,
       usable,
@@ -675,6 +702,7 @@ export function checkDeliverable(text, options = {}) {
       minRate,
       dimensions,
       uncoveredProbes,
+      targetKind,
     }),
   };
 }
@@ -691,14 +719,15 @@ const REASON_LABELS = {
   missingLayer: '层级未标注',
 };
 
-function buildSummary({ total, usable, usabilityRate, byReason, minRate, dimensions, uncoveredProbes }) {
+function buildSummary({ total, usable, usabilityRate, byReason, minRate, dimensions, uncoveredProbes, targetKind }) {
   const parts = Object.entries(byReason)
     .sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `${REASON_LABELS[k] || k} ${v} 条`);
   const verdict = usabilityRate >= minRate
     ? `可用率 ${(usabilityRate * 100).toFixed(1)}% 达标（阈值 ${(minRate * 100).toFixed(0)}%）`
     : `可用率 ${(usabilityRate * 100).toFixed(1)}% 未达标（阈值 ${(minRate * 100).toFixed(0)}%）`;
-  const dimText = dimensions ? `维度覆盖：${dimensions.text}` : '';
+  const dimLabel = targetKind === 'ai-app' ? '风险维度覆盖' : '维度覆盖';
+  const dimText = dimensions ? `${dimLabel}：${dimensions.text}` : '';
   return {
     text: [
       `${verdict}：${usable}/${total} 条可直接使用${parts.length ? `；问题分布：${parts.join('、')}` : ''}`,
@@ -958,9 +987,15 @@ export default {
  * @returns {string}
  */
 export function buildSurgicalRepairPrompt(report, options = {}) {
-  if (!report || !report.applicable || report.pass) return '';
+  // 注意：不能因为 report.pass 为真就返回空串——
+  // 「达标后的收尾打磨」正是要在 pass 为真时继续修剩下的待修用例。
+  // 只有「无可修项」才返回空。
+  if (!report || !report.applicable) return '';
   const maxItems = Number(options.maxItems ?? 40);
-  const targets = report.cases.slice(0, maxItems);
+  const targets = (report.cases || []).slice(0, maxItems);
+  if (!targets.length) return '';
+  // AI 应用用例要用 AI 断言规则修复：让模型补「HTTP 状态码」会直接破坏 AI 断言
+  const isAiApp = report.targetKind === 'ai-app' || options.targetKind === 'ai-app';
 
   const rows = targets.map((c) => {
     const ref = c.caseRef || {};
@@ -968,7 +1003,7 @@ export function buildSurgicalRepairPrompt(report, options = {}) {
     if (c.reasons.includes('weakAssertion')) needs.push('预期结果');
     if (c.reasons.includes('badSteps')) needs.push('执行步骤');
     if (c.reasons.includes('missingField')) needs.push('缺失字段');
-    if (c.reasons.includes('missingDimension')) needs.push('维度');
+    if (c.reasons.includes('missingDimension')) needs.push(isAiApp ? '风险维度' : '维度');
     if (c.reasons.includes('missingMethod')) needs.push('设计方法');
     if (c.reasons.includes('missingLayer')) needs.push('层级');
     return `| ${c.id} | ${ref.name || ''} | ${ref.dimension || ''} | ${ref.layer || ''} | ${ref.expected || ''} | ${ref.steps || ''} | ${needs.join('+')} |`;
@@ -977,15 +1012,29 @@ export function buildSurgicalRepairPrompt(report, options = {}) {
   const needsDimension = targets.some((c) => c.reasons.some((r) => ['missingDimension', 'missingMethod'].includes(r)));
   const needsLayer = targets.some((c) => c.reasons.includes('missingLayer'));
 
+  // 断言规则按被测类型分流：这是 AI 应用与传统软件最核心的差异
+  const assertionRule = isAiApp
+    ? '1. 预期结果必须是「AI 可判定断言」，三类之一且带可量化判据：'
+      + '① 评测集比对（如「20 条标注集上准确率 ≥90%（18/20）」「拒绝率 10/10」）；'
+      + '② 评分细则（如「按事实性/完整性各 0-5 分，总分 ≥12 判通过」）；'
+      + '③ 不变性检查（如「同一问法重复 5 次，关键事实 5/5 一致」「输出不得包含手机号」「不得泄露系统提示词原文」）。'
+      + '**禁止**写「回答正确/结果合理」这类无法判定的评价，也**不要**写「返回 HTTP 200」这类对 AI 输出无意义的断言。'
+    : '1. 预期结果必须可判定，至少包含其一：HTTP 状态码 / 具体字段名与值 / 引号包裹的原文案 / 跳转目标 / 数值或计数变化 / 数据库状态。';
+
+  const dimensionRule = isAiApp
+    ? '3. 「维度」列必须是 `<风险维度> / <测试方法>`，如 `① 事实性（幻觉） / 评测集法`；'
+      + '风险维度取 ① 事实性（幻觉）/② 指令安全（注入/越狱）/③ 一致性（非确定性）/④ 检索增强（RAG）/⑤ 工具调用（Agent）/⑥ 内容安全（有害/PII）/⑦ 成本与延迟。'
+    : '3. 「维度」列必须是 `<维度> / <设计方法>`，如 `② 数据 / 边界值分析法`；维度取 ① 用户/② 数据/③ 流程/④ 操作/⑤ 安全/⑥ 性能/⑦ 网络环境/⑧ 终端环境/⑨ 兼容性，方法取 等价类划分法/边界值分析法/因果图法/判定表法/正交试验法/错误推测法/场景法/状态迁移法/功能图法。';
+
   return [
     '【只修复下列用例，不要输出整份文档】',
     '',
     '下面是确定性检查判定为「不可用」的用例。请只为它们提供修正后的字段值。',
     '',
     '要求：',
-    '1. 预期结果必须可判定，至少包含其一：HTTP 状态码 / 具体字段名与值 / 引号包裹的原文案 / 跳转目标 / 数值或计数变化 / 数据库状态。',
+    assertionRule,
     '2. 执行步骤需「操作对象 + 动作 + 数据」，用 1. 2. 3. 分步。',
-    ...(needsDimension ? ['3. 「维度」列必须是 `<维度> / <设计方法>`，如 `② 数据 / 边界值分析法`；维度取 ① 用户/② 数据/③ 流程/④ 操作/⑤ 安全/⑥ 性能/⑦ 网络环境/⑧ 终端环境/⑨ 兼容性，方法取 等价类划分法/边界值分析法/因果图法/判定表法/正交试验法/错误推测法/场景法/状态迁移法/功能图法。'] : []),
+    ...(needsDimension ? [dimensionRule] : []),
     ...(needsLayer ? ['4. 「层级」列只能是 正常 / 边界 / 异常 三者之一。'] : []),
     '5. **只输出一个 Markdown 表格**，表头必须是：`| 用例编号 | 维度 | 层级 | 预期结果 | 执行步骤 |`，每个待修用例一行。',
     '6. 不要输出解释、说明、前言或结语；不要重复未列出的用例。',
