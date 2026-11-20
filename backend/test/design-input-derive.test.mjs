@@ -138,5 +138,51 @@ t('invoker 已接入推导，并在 summary 里暴露推导项', () => {
     'derivedInfo 必须声明在 if(includeDesignCases) 之前（否则 return 时 ReferenceError）');
 });
 
+// ---------------- 特殊字符输入不能破坏 Markdown 表格 ----------------
+t('错误推测法的特殊字符输入不含 |（会切断表格单元格）', () => {
+  const dm = require(path.join(ROOT, 'qclaw-skills', '9dem-executor', 'backend', 'design-methods.js'));
+  const r = dm.executeDesignMethods({ input: { inputSpec: { phone: { type: 'string' } } }, methods: ['errorGuessing'] });
+  const special = (r.cases || []).filter((c) => /特殊字符/.test(c.name));
+  assert.ok(special.length > 0, '没有生成特殊字符用例');
+  for (const c of special) {
+    assert.ok(!/\|/.test(String(c.input || '')), `输入含竖线会切断表格：${c.input}`);
+    assert.ok(!/[\r\n]/.test(String(c.input || '')), '输入含换行会切断表格行');
+  }
+});
+
+// ---------------- 空输入数据按用例名补全 ----------------
+t('输入列为空时按用例名里的长度补出输入（且长度精确）', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'backend', 'server.js'), 'utf8');
+  assert.ok(/function fillEmptyInputFromName/.test(src), '缺少 fillEmptyInputFromName');
+  assert.ok(/InputFill/.test(src), '没有接入门禁循环');
+
+  function extractFn(name) {
+    const start = src.indexOf(`function ${name}(`);
+    let depth = 0, i = src.indexOf('{', start), end = -1;
+    for (; i < src.length; i += 1) {
+      if (src[i] === '{') depth += 1;
+      else if (src[i] === '}') { depth -= 1; if (depth === 0) { end = i; break; } }
+    }
+    return src.slice(start, end + 1);
+  }
+  const gate = require(path.join(ROOT, 'backend', 'lib', 'case-quality-gate.js'));
+  const fill = new Function('repairPlaceholderInput',
+    `${extractFn('fillEmptyInputFromName')}; return fillEmptyInputFromName;`)(gate.repairPlaceholderInput);
+
+  const md = [
+    '| 用例编号 | 所属模块 | 用例名称 | 维度 | 层级 | 前置条件 | 输入数据 | 执行步骤 | 预期结果 |',
+    '|---|---|---|---|---|---|---|---|---|',
+    '| TC-050 | 登录 | 边界值-loginType-maxLength+1(256字符) | ② 数据 | 异常 | x |  | 1. 输入 2. 提交 | 返回400 |',
+    '| TC-051 | 登录 | 边界值-phone-minLength(11字符) | ② 数据 | 边界 | x |  | 1. 输入 2. 提交 | 返回200 |',
+  ].join('\n');
+  const out = fill(md);
+  assert.strictEqual(out.rowsFilled, 2, `只补了 ${out.rowsFilled} 行`);
+  // 长度必须精确（断言「256 字符会怎样」，值短了等于没测到边界）
+  const m256 = out.text.match(/loginType="([^"]*)"/);
+  assert.ok(m256 && m256[1].length === 256, `loginType 长度 ${m256 ? m256[1].length : 'n/a'}，应为 256`);
+  // 已知语义字段用真实值
+  assert.ok(/phone="13800138000"/.test(out.text), '手机号未用真实值');
+});
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
