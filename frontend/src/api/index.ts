@@ -791,7 +791,14 @@ export interface ApiKeyListResult {
   platformKeyAvailable: boolean
   platformKeyHint: string
   // 后端下发的服务商清单：前端不硬编码，避免两边不一致导致发错地址
-  providers: Array<{ value: string; label: string; model: string }>
+  providers: Array<{
+    value: string
+    group: string
+    label: string
+    model: string
+    modelHint: string
+    requiresModel: boolean
+  }>
 }
 
 // request() 返回 { success, data }，其中 data 是后端原始响应体
@@ -822,6 +829,7 @@ export const userApiKeyApi = {
     name: string
     apiKey: string
     provider?: string
+    model?: string
   }): Promise<{ ok: boolean; message: string; id?: string; isDefault?: boolean }> {
     const res = await request<any>('/api/user/api-keys', {
       method: 'POST',
@@ -838,6 +846,7 @@ export const userApiKeyApi = {
     name: string
     apiKey?: string
     provider?: string
+    model?: string
   }): Promise<{ ok: boolean; message: string }> {
     const res = await request<any>(`/api/user/api-keys/${id}`, {
       method: 'PUT',
