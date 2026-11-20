@@ -31,6 +31,30 @@ function t(name, fn) {
 console.log('=== case-quality-gate 单元测试 ===');
 
 // ---------------- 断言识别 ----------------
+// 弱断言判定不能吃掉客观判据（2026-11-20）
+// 实测误判：「返回HTTP状态码200，手机号字段正常处理」被判弱断言——
+// 它明确给了 HTTP 200，只是句尾带了「正常处理」这个评价词。
+// 三个真实任务的不可用例里，11/18 是这一类。
+t('句中有状态码时，句尾的「正常处理」不算弱断言', () => {
+  assert.strictEqual(inspectAssertion('返回HTTP状态码200，手机号字段正常处理').verifiable, true);
+  assert.strictEqual(inspectAssertion('返回HTTP状态码200，tokenAmount字段正常处理').verifiable, true);
+  assert.strictEqual(inspectAssertion('返回 HTTP 200；手机号正常处理').verifiable, true);
+});
+
+t('无数值/状态码判据时，「展示正确」「正常处理」仍是弱断言', () => {
+  // 反过来必须守住：这条是门禁的核心价值，不能被上面那条改坏
+  assert.strictEqual(inspectAssertion('未登录态展示正确').verifiable, false);
+  assert.strictEqual(inspectAssertion('页面展示正常').verifiable, false);
+  assert.strictEqual(inspectAssertion('功能正常处理').verifiable, false);
+  assert.strictEqual(inspectAssertion('符合预期').verifiable, false);
+  assert.strictEqual(inspectAssertion('无异常').verifiable, false);
+});
+
+t('数值型判据（进度/余额/次数）也算可判定', () => {
+  assert.strictEqual(inspectAssertion('进度显示为 2%').verifiable, true);
+  assert.strictEqual(inspectAssertion('余额为 0 元').verifiable, true);
+});
+
 t('HTTP 状态码算可判定', () => {
   assert.strictEqual(inspectAssertion('返回 401，响应体 {"error":"未认证"}').verifiable, true);
 });

@@ -643,7 +643,10 @@ const HEURISTIC_PAYLOADS = [
   { tag: '空值', build: (f, info) => `${f}=${info.type === 'string' ? '""' : 'null'}`, expected: '按必填规则拒绝或走默认值，不崩溃' },
   { tag: 'null 字面量', build: (f) => `${f}=null`, expected: '拒绝 null 并返回参数错误' },
   { tag: '超长输入', build: (f, info) => `${f}="${'A'.repeat(info.type === 'string' ? Math.min(info.maxLength + 50, 600) : 24)}"`, expected: '拒绝超长输入，不截断入库、不返回 5xx' },
-  { tag: '特殊字符', build: (f) => `${f}="!@#$%^&*()_+<>?/\\|~\`"`, expected: '按字符白名单/转义处理，不报错' },
+  // 注意：这里刻意不含 | 和换行。这些字符在 Markdown 表格里是结构字符，
+  // 会直接把单元格切断，导致整行用例错位（实测 DC-081 的步骤被切断成 `~\``）。
+  // 特殊字符覆盖的目的（触发转义/白名单缺陷）用 !@#$%^&*()_+<>?/\ 已足够。
+  { tag: '特殊字符', build: (f) => `${f}="!@#$%^&*()_+<>?/\\~\`"`, expected: '按字符白名单/转义处理，不报错且不产生 5xx' },
   { tag: 'SQL 注入', build: (f) => `${f}="' OR '1'='1"`, expected: '参数化查询生效，不执行注入语句、不泄露数据库错误' },
   { tag: 'XSS 载荷', build: (f) => `${f}="<script>alert(1)</script>"`, expected: '输出转义，脚本不执行' },
   { tag: '全角/emoji', build: (f) => `${f}="测试😀ＡＢＣ"`, expected: '按字符集规则处理，不出现乱码或截断异常' },

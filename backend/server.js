@@ -11221,6 +11221,85 @@ function strengthenAssertion(expected, c, rowCtx) {
   return `${e}（可判定：返回 HTTP 200 或业务成功码 code=0；响应包含该操作对应的业务字段且值符合预期；页面/接口无异常报错）`;
 }
 
+/**
+ * 输入数据列为空时，按用例名里的长度/边界信息确定性补出输入值
+ *
+ * 典型：用例名「边界值-loginType-maxLength+1(256字符)」、输入列为空。
+ * 门禁把「输入为空」判为 missingField（因为没法照着执行），
+ * 但用例名已经把条件说清楚了，可以机械地补出来。
+ *
+ * 只处理能从名字里读出「字段 + 长度」的情形；读不出就不动，避免编造。
+ *
+ * @returns {{text:string, rowsFilled:number}}
+ */
+function fillEmptyInputFromName(text) {
+  const lines = String(text || '').split('\n');
+  const headerIdx = lines.findIndex((l) => /^\s*\|/.test(l) && /用例编号/.test(l) && /输入数据/.test(l));
+  if (headerIdx < 0) return { text, rowsFilled: 0 };
+
+  const headerCells = lines[headerIdx].trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+  const inputCol = headerCells.indexOf('输入数据');
+  const nameCol = headerCells.indexOf('用例名称');
+  const idCol = headerCells.indexOf('用例编号');
+  if (inputCol < 0 || nameCol < 0) return { text, rowsFilled: 0 };
+
+  let rowsFilled = 0;
+  for (let i = headerIdx + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!/^\s*\|/.test(line)) {
+      // 表格结束（遇到非表格行）。连续两次空行就停，避免扫到别的表。
+      if (/^\s*$/.test(line)) continue;
+      break;
+    }
+    if (/^\s*\|[\s:\-]+\|/.test(line)) continue; // 分隔行
+    const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|');
+    if (cells.length <= Math.max(inputCol, nameCol)) continue;
+    if (String(cells[inputCol] || '').trim()) continue; // 已有输入，不动
+
+    const name = String(cells[nameCol] || '').trim();
+    const id = idCol >= 0 ? String(cells[idCol] || '').trim() : '';
+
+    // 从用例名/编号里读「字段名」与「长度」
+    // 形如：边界值-loginType-maxLength+1(256字符) / 边界值-phone-minLength(11字符)
+    const lenMatch = name.match(/(\d+)\s*(?:字符|位)/);
+    if (!lenMatch) continue;
+    const len = Number(lenMatch[1]);
+    if (!Number.isFinite(len) || len <= 0 || len > 5000) continue;
+
+    // 字段名：名字里形如 -字段名- 或 字段名(
+    const fieldMatch = name.match(/[-－]([A-Za-z_][A-Za-z0-9_]*)[-(（]/) || name.match(/([A-Za-z_][A-Za-z0-9_]{2,})\s*[-(（]/);
+    if (!fieldMatch) continue;
+    const field = fieldMatch[1];
+
+    // 优先用字段语义对应的真实值（手机号 → 13800138000 这类），
+    // 只有该字段没有已知语义时才按长度生成占位串。
+    // 直接生成 aaaa… 会被判为占位值（PLACEHOLDER_PATTERNS 的 repeatedA）。
+    let value;
+    const semantic = repairPlaceholderInput(`${field}="${'A'.repeat(Math.max(len, 4))}"`, name);
+    if (semantic.repaired) {
+      value = semantic.input.replace(/^[^=]*=\s*/, '').replace(/^"|"$/g, '');
+    }
+    if (!value) {
+      const isNumericField = /amount|count|qty|num|age|price|len|size|level/i.test(field);
+      value = isNumericField ? '9'.repeat(len) : 'a'.repeat(len);
+    } else if (value.length < len) {
+      // 语义值比目标长度短时，用可读字符补齐到精确长度——
+      // 这条用例断言的就是「256 字符会怎样」，长度不对等于没测到边界。
+      const filler = /^\d+$/.test(value) ? '9' : 'x';
+      value = value + filler.repeat(len - value.length);
+    }
+    cells[inputCol] = ` ${field}="${value}" `;
+    rowsFilled += 1;
+
+    // 按原格式重建：保留缩进、首尾竖线、单元格数量不变
+    const leading = line.match(/^\s*/)[0];
+    lines[i] = `${leading}|${cells.join('|')}|`;
+    void id;
+  }
+
+  return { text: lines.join('\n'), rowsFilled };
+}
+
 function buildDesignCasesMarkdown(text, designCases, stats) {
   if (!Array.isArray(designCases) || !designCases.length) {
     return { text, added: 0, duplicate: 0 };
@@ -11855,6 +11934,17 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
           // 实测任务 590f：整张接口用例表缺层级列，39 条用例（含系统自己补的 39 条）
           // 全部被判不可用，直接拉低 16 个百分点——而这一列完全可以从行文字确定性推断。
           const layerFixed = applyCaseLayerRepair(text);
+          // 输入数据列为空、但用例名/步骤里写着具体长度或边界值的，
+          // 从用例名确定性补出输入值（2026-11-20）。
+          // 实测 TC-050「边界值-loginType-maxLength+1(256字符)」输入列为空，
+          // 被门禁判 missingField —— 这条用例本身是有内容的，只是模型漏填输入。
+          const emptyInput = fillEmptyInputFromName(text);
+          if (emptyInput.rowsFilled > 0) {
+            text = emptyInput.text;
+            console.log(`[InputFill] 已按用例名补齐 ${emptyInput.rowsFilled} 条空输入数据`);
+          }
+
+
           if (layerFixed.rowsRepaired > 0) {
             text = layerFixed.text;
             console.log(`[CaseGate] ${agentId} 自动补层级列 ${layerFixed.rowsRepaired} 行（${layerFixed.tablesRepaired} 张表）`);

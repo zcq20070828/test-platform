@@ -90,11 +90,25 @@ export function inspectAssertion(expected) {
   const text = String(expected || '').trim();
   if (!text) return { verifiable: false, assertionType: null, reason: '预期结果为空' };
 
+  // 命中弱模式时，只有当句中有「强证据」才豁免。
+  //
+  // 强证据 = 状态码 / 引号原文 / 数值判据。
+  // **UI 名词（手机号/按钮/弹窗）不算强证据**：「手机号被接受，进入密码校验」
+  // 既有 UI 名词又只有「被接受」这种评价，仍然是弱断言。
+  // 这条边界很容易搞错 —— 我第一版把 UI_OBJECT 也算进去，直接弄坏了
+  // 已有的「被接受，进入校验」用例（门禁最早就是为这类句子写的）。
+  const hasStrongEvidence = QUOTED_TEXT.test(text)
+    || /\b(?:HTTP\s*)?[1-5]\d{2}\b/.test(text)
+    || /状态码|返回码|错误码|业务码|响应码/.test(text)
+    || /(?:=|＝|为|达到)\s*[\d.]+\s*(?:%|元|次|条|个|秒|ms)?/.test(text);
+
   for (const w of WEAK_PATTERNS) {
-    if (w.test(text)) return { verifiable: false, assertionType: null, reason: '仅描述「正常/通过」，无可观测证据' };
+    if (!w.test(text)) continue;
+    if (hasStrongEvidence) break; // 句中有客观判据 → 不是弱断言
+    return { verifiable: false, assertionType: null, reason: '仅描述「正常/通过」，无可观测证据' };
   }
-  // 弱模式只覆盖整句；句中叠了具体判据（引号原文/状态码/UI 元素）说明是可判定的
-  const hasConcrete = QUOTED_TEXT.test(text) || /\b(?:HTTP\s*)?[1-5]\d{2}\b/.test(text) || UI_OBJECT.test(text);
+
+  const hasConcrete = hasStrongEvidence || UI_OBJECT.test(text);
 
   for (const p of ASSERTION_PATTERNS) {
     if (p.re.test(text)) return { verifiable: true, assertionType: p.type, reason: '' };
