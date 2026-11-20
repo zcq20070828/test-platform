@@ -29,6 +29,11 @@
           <template #label><span class="tab-label"><MsIcon name="handyman" :size="18" /> 工具管理</span></template>
           <AdminToolsView :embedded="true" />
         </el-tab-pane>
+        <!-- 自我进化（2026-11-20）：能看到平台从历史任务里学到了什么、效果如何，可废除错误经验 -->
+        <el-tab-pane name="experience">
+          <template #label><span class="tab-label"><MsIcon name="neurology" :size="18" /> 自我进化</span></template>
+          <ExperienceView :embedded="true" />
+        </el-tab-pane>
       </template>
       <!-- [已下线-性能监控] 2026-10-19 用户拍板：性能监控暂无业务价值，先屏蔽。
            恢复方式：取消本段注释，并取消下方 import PerformanceView 的注释；
@@ -50,6 +55,7 @@ import StatsView from './StatsView.vue'
 import UserManagementView from './UserManagementView.vue'
 import SettingsView from './SettingsView.vue'
 import AdminToolsView from './AdminToolsView.vue'
+import ExperienceView from './ExperienceView.vue'
 import ApiKeySettingsView from './ApiKeySettingsView.vue'
 import MsIcon from '@/components/MsIcon.vue'
 // [已下线-性能监控] 配套上方 tab-pane 注释一并停用，恢复时取消注释

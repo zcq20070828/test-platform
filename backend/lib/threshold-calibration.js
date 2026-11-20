@@ -189,3 +189,151 @@ export default {
   calibrateThreshold,
   listDisagreements,
 };
+
+// ============================================================
+// 审核弱标签自动校准（2026-11-20）
+// ------------------------------------------------------------
+// 上面的人工校准需要「逐条标记用例可用性」，实测几乎无人使用
+// （case_feedback 全库只有 3 条），阈值因此永远停在默认 0.85。
+//
+// 但审核员每轮都在给评分——这是天然的弱标签，虽然不如人工精确，
+// 但样本量足够，能形成闭环。本函数用「审核结论」反推阈值：
+//
+//   对每个候选阈值 t：把样本分成两组
+//     t 以上（门禁认为合格）→ 期望审核也认为合格
+//     t 以下（门禁认为不合格）→ 期望审核也不合格
+//   一致率 = 两组各自与审核结论吻合的比例
+//   选一致率最高、且「放行了审核认为不合格的」比例不超过容忍线的 t
+//
+// 生动地说：调阈值不是为了多放行，而是让「门禁的判断」和「审核的判断」尽量一致。
+// ============================================================
+
+/** 审核结论 → 是否「审核认为可用」 */
+export function reviewUsable(verdict) {
+  const v = String(verdict || '').toLowerCase();
+  if (v === 'passed' || v === 'passed_with_notes') return true;
+  if (v === 'failed' || v === 'veto') return false;
+  return null; // inconclusive / null：不参与判定
+}
+
+/**
+ * 用审核结论自动校准门禁阈值
+ *
+ * @param {Array<{usability:number, reviewVerdict:string}>} samples
+ * @param {Object} [options]
+ * @param {number} [options.currentThreshold=0.85]
+ * @param {number} [options.minSamples=8] 少于此数不给结论（避免拿 3 个样本就改阈值）
+ * @param {number} [options.maxFalsePassRate=0.25] 容忍「门禁放行但审核判不合格」的比例
+ * @param {number} [options.minDelta=0.02] 与当前阈值差小于此值就不建议改（避免抖动）
+ * @returns {Object}
+ */
+export function calibrateByReviewVerdict(samples, options = {}) {
+  const list = (Array.isArray(samples) ? samples : [])
+    .map((s) => ({
+      usability: Number(s.usability),
+      usable: reviewUsable(s.reviewVerdict),
+    }))
+    .filter((s) => Number.isFinite(s.usability) && s.usable !== null);
+
+  const minSamples = Number(options.minSamples) || 8;
+  const maxFalsePass = Number(options.maxFalsePassRate) || 0.25;
+  const minDelta = Number(options.minDelta ?? 0.02);
+  const current = options.currentThreshold != null ? Number(options.currentThreshold) : null;
+
+  const base = {
+    sampleCount: list.length,
+    currentThreshold: current,
+    labelSource: 'review_median',
+    target: 'maximize agreement with review verdict',
+  };
+
+  if (list.length < minSamples) {
+    return {
+      ...base,
+      status: 'insufficient',
+      recommended: null,
+      message: `样本不足：当前 ${list.length} 个同时具备门禁可用率与审核结论的任务，至少需要 ${minSamples} 个。继续跑任务即可自动积累。`,
+      curve: [],
+    };
+  }
+
+  // 候选阈值：0.60 ~ 0.95，步长 0.01
+  const curve = [];
+  for (let i = 60; i <= 95; i += 1) {
+    const t = i / 100;
+    let passTotal = 0;
+    let passJudgedUsable = 0;
+    let failTotal = 0;
+    let failJudgedUnusable = 0;
+    for (const s of list) {
+      const gatePass = s.usability >= t;
+      if (gatePass) {
+        passTotal += 1;
+        if (s.usable) passJudgedUsable += 1;
+      } else {
+        failTotal += 1;
+        if (!s.usable) failJudgedUnusable += 1;
+      }
+    }
+    const falsePass = passTotal ? 1 - passJudgedUsable / passTotal : 0;
+    const recall = failTotal ? failJudgedUnusable / failTotal : 1;
+    // 一致率 = 两组各自吻合的加权比例
+    const agreement = list.length ? (passJudgedUsable + failJudgedUnusable) / list.length : 0;
+    curve.push({
+      threshold: Number(t.toFixed(2)),
+      passCount: passTotal,
+      falsePassRate: Number(falsePass.toFixed(4)),
+      rejectRecall: Number(recall.toFixed(4)),
+      agreement: Number(agreement.toFixed(4)),
+    });
+  }
+
+  // 选阈值：先剔除「误放行超容忍线」的，再按一致率排序，一致率相同取更高的阈值。
+  //
+  // ⚠ 必须加「不得低于当前阈值」的硬约束。
+  // 否则算法会为了拉高「一致率」而放松门禁：实测样本里审核判失败的任务门禁分都很高
+  // （因为门禁只看可用率，看不出逻辑错误），于是一致率在低阈值处反而更高，
+  // 算出「建议把 0.85 降到 0.67」——这是把质量门禁往松里调，方向完全错。
+  //
+  // 校准的语义是「让门禁更准」，不是「让通过率更好看」。所以只允许上调或不动。
+  const currentPoint = current != null
+    ? curve.find((c) => Math.abs(c.threshold - current) < 0.005) || null
+    : null;
+
+  const notLowerThanCurrent = (c) => current == null || c.threshold >= current - 0.0001;
+  const viable = curve.filter((c) => c.falsePassRate <= maxFalsePass && notLowerThanCurrent(c));
+  // 连「不低于当前」的候选都没有（说明当前阈值已是最严）→ 保持当前，不乱动
+  const pool2 = viable.length ? viable : [];
+  if (!pool2.length) {
+    return {
+      ...base,
+      status: 'ok',
+      recommended: current,
+      best: null,
+      currentPoint,
+      delta: 0,
+      applied: false,
+      message: `当前阈值 ${current} 已处于合理区间（再调高会误杀合格交付物，调低会放松质量门禁），保持不动。`,
+      curve,
+    };
+  }
+  const best = [...pool2].sort((a, b) => (b.agreement - a.agreement) || (b.threshold - a.threshold))[0];
+
+  // 差异太小就不改（避免每次跑完都微调，阈值来回抖）
+  const delta = current != null && best ? Math.abs(best.threshold - current) : null;
+  const shouldApply = best && (current == null || (delta !== null && delta >= minDelta));
+
+  return {
+    ...base,
+    status: 'ok',
+    recommended: shouldApply ? best.threshold : current,
+    best,
+    currentPoint,
+    delta,
+    applied: shouldApply,
+    message: shouldApply
+      ? `建议把阈值从 ${current ?? '(未设置)'} 调整为 ${best.threshold}：该阈值下门禁与审核的一致率 ${(best.agreement * 100).toFixed(1)}%，误放行率 ${(best.falsePassRate * 100).toFixed(1)}%。`
+      : `当前阈值 ${current} 已接近最优（最佳 ${best?.threshold}，差异 ${delta === null ? '—' : (delta * 100).toFixed(1) + 'pp'} 小于 ${(minDelta * 100).toFixed(0)}pp），不建议调整。`,
+    curve,
+  };
+}
