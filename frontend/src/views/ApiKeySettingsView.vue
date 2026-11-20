@@ -4,8 +4,8 @@
       <div>
         <h2 class="apikey-title"><MsIcon name="key" :size="22" /> API KEY 配置</h2>
         <p class="apikey-subtitle">
-          在这里管理你自己的 API Key。平台调用大模型时优先使用你标记为「默认」的那一个；
-          没有配置时才会使用平台统一提供的 Key。
+          在这里管理你自己的大模型 API Key。平台调用大模型时优先使用你标记为「默认」的那一个；
+          没有配置时才会使用平台统一提供的 Key。只需填名称和 Key，其它都不用管。
         </p>
       </div>
       <div class="header-actions">
@@ -65,20 +65,9 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="provider" label="服务商" width="110" />
-
         <el-table-column label="Key" width="170">
           <template #default="{ row }">
             <code class="key-hint">{{ row.keyHint || '****' }}</code>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="接口地址 / 模型" min-width="220">
-          <template #default="{ row }">
-            <div class="endpoint-cell">
-              <span class="endpoint">{{ row.baseUrl || '（服务商默认）' }}</span>
-              <span class="model">{{ row.model || '（平台默认模型）' }}</span>
-            </div>
           </template>
         </el-table-column>
 
@@ -122,20 +111,12 @@
     <el-dialog
       v-model="dialogVisible"
       :title="editingId ? '编辑 API Key' : '新增 API Key'"
-      width="560px"
+      width="520px"
       @closed="resetForm"
     >
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="88px">
         <el-form-item label="名称" prop="name">
-          <el-input v-model="form.name" placeholder="例如：我的 DeepSeek" maxlength="100" show-word-limit />
-        </el-form-item>
-
-        <el-form-item label="服务商" prop="provider">
-          <el-select v-model="form.provider" style="width: 100%">
-            <el-option label="DeepSeek" value="deepseek" />
-            <el-option label="OpenAI" value="openai" />
-            <el-option label="其他（兼容 OpenAI 协议）" value="other" />
-          </el-select>
+          <el-input v-model="form.name" placeholder="自定义名称，例如：我的主力 Key / 测试专用 / 团队共享" maxlength="100" show-word-limit />
         </el-form-item>
 
         <el-form-item label="API Key" prop="apiKey">
@@ -143,7 +124,7 @@
             v-model="form.apiKey"
             type="password"
             show-password
-            :placeholder="editingId ? '留空表示不修改（只改名称/地址/模型）' : '粘贴你的 API Key'"
+            :placeholder="editingId ? '留空表示不修改这把 Key（只改名称）' : '粘贴你的 API Key'"
             autocomplete="new-password"
           />
           <div class="field-hint">
@@ -151,19 +132,11 @@
               出于安全考虑不回显已保存的 Key。留空则保持原 Key 不变。
             </template>
             <template v-else>
-              保存后只能看到末 4 位，无法再次查看明文。
+              只需填 Key 本身，接口地址与模型由平台统一配置；保存后只能看到末 4 位，无法再次查看明文。
             </template>
           </div>
         </el-form-item>
 
-        <el-form-item label="接口地址">
-          <el-input v-model="form.baseUrl" placeholder="留空使用服务商默认，例如 https://api.deepseek.com" />
-          <div class="field-hint">只填到域名或版本前缀，不要带 /chat/completions。</div>
-        </el-form-item>
-
-        <el-form-item label="默认模型">
-          <el-input v-model="form.model" placeholder="留空使用平台默认模型（deepseek-v4-pro）" />
-        </el-form-item>
       </el-form>
 
       <template #footer>
@@ -199,15 +172,11 @@ const formRef = ref<FormInstance>()
 
 const form = reactive({
   name: '',
-  provider: 'deepseek',
   apiKey: '',
-  baseUrl: '',
-  model: '',
 })
 
 const rules = computed<FormRules>(() => ({
   name: [{ required: true, message: '请填写名称', trigger: 'blur' }],
-  provider: [{ required: true, message: '请选择服务商', trigger: 'change' }],
   apiKey: editingId.value
     // 编辑时允许留空（表示不换 Key）
     ? []
@@ -237,10 +206,7 @@ async function load() {
 function resetForm() {
   editingId.value = ''
   form.name = ''
-  form.provider = 'deepseek'
   form.apiKey = ''
-  form.baseUrl = ''
-  form.model = ''
   formRef.value?.clearValidate()
 }
 
@@ -253,9 +219,6 @@ function openEdit(row: UserApiKey) {
   resetForm()
   editingId.value = row.id
   form.name = row.name
-  form.provider = row.provider || 'deepseek'
-  form.baseUrl = row.baseUrl || ''
-  form.model = row.model || ''
   dialogVisible.value = true
 }
 
@@ -264,11 +227,9 @@ async function handleSave() {
   if (!valid) return
   saving.value = true
   try {
+    // 只提交名称与 Key：接口地址、模型均由平台统一决定
     const payload = {
       name: form.name.trim(),
-      provider: form.provider,
-      baseUrl: form.baseUrl.trim(),
-      model: form.model.trim(),
     }
     const res = editingId.value
       ? await userApiKeyApi.update(editingId.value, {
@@ -406,23 +367,6 @@ onMounted(load)
   padding: 2px 6px;
   border-radius: 4px;
   background: var(--el-fill-color-light);
-}
-
-.endpoint-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.endpoint {
-  font-size: 12px;
-  color: var(--el-text-color-regular);
-  word-break: break-all;
-}
-
-.model {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
 }
 
 .verified-at {

@@ -6993,7 +6993,7 @@ async function executeInteractiveWorkflow(workflowId, taskInput, retryCount = 0,
     }
 
     try {
-      const result = await spawnAgentSession(selectedAgentId, taskInput, workflowId, null, true);
+      const result = await spawnAgentSession(selectedAgentId, taskInput, workflowId, null, true, [], workflowUserId);
 
       // 修复:检查Agent是否执行成功
       if (!result.success) {
@@ -7218,6 +7218,8 @@ async function executeInteractiveNativeWorkflow(workflowId, taskInput) {
   console.log('[InteractiveNative] Starting workflow ' + workflowId);
   const workflowResults = { id: workflowId, status: 'running', mode: 'interactive-native', scenario: 'QClaw原生方式人机交互', executorResults: [], startedAt: new Date().toISOString() };
   const stored = workflows.get(workflowId) || {}; syncWorkflow(workflowId, { workflowResults });
+  // 工作流里的 AI 调用也要用发起人的默认 Key（2026-11-20）
+  const nativeWorkflowUserId = stored.userId || stored.user_id || null;
   const keywords = {
     'test-requirement-analyzer': ['需求分析', 'EPIC', '用户故事', '验收标准', '拆解', '需求'],
     'test-case-generator': ['测试用例', '用例设计', '测试方案', '测试点'],
@@ -7241,7 +7243,7 @@ async function executeInteractiveNativeWorkflow(workflowId, taskInput) {
   broadcast({ type: 'agent_started', workflowId, agentId: matchedAgent, message: 'Dispatching to ' + matchedAgent + '...' });
   const streamCallback = (event) => { sseBroadcast({ type: 'agent_stream_event', ...event, workflowId }); };
   try {
-    const result = await spawnAgentSession(matchedAgent, taskInput, workflowId + '-interactive', streamCallback, false);
+    const result = await spawnAgentSession(matchedAgent, taskInput, workflowId + '-interactive', streamCallback, false, [], nativeWorkflowUserId);
 
     // 提取交付件并保存到文件
     const { deliverables, hasMultiple } = extractDeliverables(result.text || '');
@@ -7391,7 +7393,7 @@ async function executeAutoNativeWorkflow(workflowId, taskInput) {
       const hbStage = startNativeHeartbeat(`阶段${i + 1}:${stage.stage}`);
       let result;
       try {
-        result = await spawnAgentSession(stage.agentId, currentInput, workflowId + '-' + stage.stage, streamCallback, false);
+        result = await spawnAgentSession(stage.agentId, currentInput, workflowId + '-' + stage.stage, streamCallback, false, [], nativeWorkflowUserId);
       } finally {
         stopNativeHeartbeat(hbStage);
       }
@@ -7846,7 +7848,7 @@ app.post('/api/workflow/auto-with-review', authenticate, async (req, res) => {
 3. 你的 analysis 部分请分析任务类型,判断是否涉及 API/接口测试(关键词:api, rest, http, 接口等)
 4. 你是规划中枢,不直接执行任务,只输出调度计划`;
 
-  const planResult = await spawnAgentSession('test-master', testMasterPrompt, `${workflowId}-planning`, null);
+  const planResult = await spawnAgentSession('test-master', testMasterPrompt, `${workflowId}-planning`, null, false, [], req.user?.id || req.user?.sub || null);
 
   if (!planResult.success) {
     broadcast({
@@ -8127,7 +8129,8 @@ ${previousStepOutput || '(无)'}
             `${workflowId}-step-${step.step}`,
             null,
             true, // skipReview=true,审核在工作流主循环中统一处理
-            historyArtifacts
+            historyArtifacts,
+            req.user?.id || req.user?.sub || null
           );
           return result;
         } finally {
@@ -9363,8 +9366,10 @@ async function resolveApiKey(userId) {
       if (plain) {
         resolved = {
           apiKey: plain,
-          baseUrl: rec.base_url || platform.baseUrl,
-          model: rec.model || platform.model,
+          // 用户只提供 Key：接口地址与模型一律用平台配置，
+          // 避免「用户填错地址/模型名」被记成平台故障（2026-11-20）
+          baseUrl: platform.baseUrl,
+          model: platform.model,
           source: 'user',
           keyId: rec.id,
         };
@@ -9406,16 +9411,14 @@ function validateApiKeyInput(body, { requireKey }) {
   const name = String(body?.name || '').trim();
   if (!name) return '请填写名称';
   if (name.length > 100) return '名称不能超过 100 个字符';
-  const provider = String(body?.provider || 'deepseek').trim();
-  if (!['deepseek', 'openai', 'other'].includes(provider)) return '不支持的服务商类型';
   if (requireKey) {
     const apiKey = String(body?.apiKey || '').trim();
     if (!apiKey) return '请填写 API Key';
     if (apiKey.length < API_KEY_MIN_LEN) return `API Key 长度不足（至少 ${API_KEY_MIN_LEN} 位）`;
     if (!/^[\x21-\x7e]+$/.test(apiKey)) return 'API Key 含非法字符（只允许可见 ASCII）';
   }
-  const baseUrl = String(body?.baseUrl || '').trim();
-  if (baseUrl && !/^https?:\/\//i.test(baseUrl)) return '接口地址必须以 http:// 或 https:// 开头';
+  // 接口地址与模型由平台统一决定，不接受用户配置（2026-11-20）：
+  // 用户只需要一把 Key，填地址/模型只会带来「地址写错、模型名不存在」这类无关故障。
   return null;
 }
 
@@ -9454,9 +9457,10 @@ app.post('/api/user/api-keys', authenticate, async (req, res) => {
     const created = await userApiKeyDAO.createApiKey(userId, {
       id,
       name: String(b.name).trim(),
-      provider: String(b.provider || 'deepseek').trim(),
-      baseUrl: String(b.baseUrl || '').trim() || null,
-      model: String(b.model || '').trim() || null,
+      // 服务商/接口地址/模型统一走平台配置：用户只提供一把 Key
+      provider: 'deepseek',
+      baseUrl: null,
+      model: null,
       apiKeyEnc: await encryptSecret(plain),
       keyHint: keyHintOf(plain),
     });
@@ -9485,11 +9489,9 @@ app.put('/api/user/api-keys/:id', authenticate, async (req, res) => {
 
     const b = req.body || {};
     const plain = String(b.apiKey || '').trim();
+    // 只改名称/Key；服务商、地址与模型由平台统一决定，不接受用户覆盖
     const fields = {
       name: String(b.name).trim(),
-      provider: String(b.provider || rec.provider).trim(),
-      baseUrl: String(b.baseUrl ?? rec.base_url ?? '').trim() || null,
-      model: String(b.model ?? rec.model ?? '').trim() || null,
     };
     if (plain) {
       if (plain.length < API_KEY_MIN_LEN) return res.status(400).json({ success: false, error: 'API Key 长度不足' });
@@ -9549,8 +9551,9 @@ app.post('/api/user/api-keys/:id/verify', authenticate, async (req, res) => {
     const plain = await decryptSecret(rec.api_key_enc);
     if (!plain) return res.json({ success: false, error: 'Key 解密失败，请重新录入' });
 
-    const base = String(rec.base_url || 'https://api.deepseek.com').replace(/\/+$/, '');
-    const model = rec.model || 'deepseek-v4-pro';
+    // 用平台配置的地址与模型验证：与真实调用完全一致
+    const base = 'https://api.deepseek.com';
+    const model = 'deepseek-v4-pro';
     const r = await fetch(`${base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${plain}` },
@@ -11092,7 +11095,10 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     const initialMessages = conversationMessages
       ? [...conversationMessages, { role: 'system', content: systemPrompt }, { role: 'user', content: taskInput }]
       : null;
-    const resultFromAPI = await callOpenClawAPI(agentId, taskInput, unifiedStreamCallback, initialMessages);
+    // 首次调用必须带 userId：这是每个任务的第一发请求，
+    // 漏传会让 resolveApiKey(null) 直接返回平台 Key，外层再补 userId 也绕不过这一行。
+    // （它同时决定 callOpenClawAPI 用的 baseUrl / model 与记录归属，2026-11-20）
+    const resultFromAPI = await callOpenClawAPI(agentId, taskInput, unifiedStreamCallback, initialMessages, userId);
     if (resultFromAPI) {
       let text = typeof resultFromAPI === 'string' ? resultFromAPI : resultFromAPI.content;
       let toolCalls = typeof resultFromAPI === 'string' ? [] : (resultFromAPI.toolCalls || []);
@@ -11153,7 +11159,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                 const targetTask = args.task || args.message || args['task-message'];
                 if (targetAgentId && targetTask) {
                   const childTaskId = `${taskId}-spawn-${iter}`;
-                  const r = await spawnAgentSession(targetAgentId, targetTask, childTaskId, streamCallback, false);
+                  const r = await spawnAgentSession(targetAgentId, targetTask, childTaskId, streamCallback, false, [], userId);
                   // 3a:子任务完成后,将其交付物中的脚本规范化落盘并把路径清单回传给父执行器(用例模式链路)
                   toolResult = JSON.stringify(await buildSpawnResult(r, childTaskId));
                 } else {
@@ -12736,7 +12742,7 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
 
                 if (targetAgentId && targetTask) {
                   console.log(`[Agent] === ACTUALLY SPAWNING: ${targetAgentId} ===`);
-                  const spawnedResult = await spawnAgentSession(targetAgentId, targetTask, taskName, streamCallback, false);
+                  const spawnedResult = await spawnAgentSession(targetAgentId, targetTask, taskName, streamCallback, false, [], userId);
                   console.log(`[Agent] Spawn result:`, spawnedResult.success ? 'SUCCESS' : 'FAILED');
 
                   if (spawnedResult.success) {
@@ -14473,7 +14479,18 @@ ${focusText}
 6. 当前环节是否新增了上一环节未提及、也不在原始需求中的内容（凭空扩展范围）
 7. 若问题源自上一环节本身的遗漏（上游没写清楚），必须写明「上游缺失」，不要把责任归到当前环节的编造上`;
 
-    const result = await spawnAgentSession(reviewerId, reviewInput, `${taskId}-review-${reviewerId}`);
+    // 审核员的模型调用同样走被审核任务发起人的默认 Key（2026-11-20）。
+    // 过去这里只传 3 个参数，userId 落在默认值 null 上 → 审核全程用平台 Key，
+    // 而审核是每轮任务都要跑的（三个审核员 + 最多 3 轮重试），消耗比生成还大。
+    const result = await spawnAgentSession(
+      reviewerId,
+      reviewInput,
+      `${taskId}-review-${reviewerId}`,
+      null,
+      false,
+      [],
+      userId
+    );
     const reviewOutput = result.text || result.data || '';
 
     // 添加调试日志
@@ -14889,7 +14906,10 @@ async function executeWorkflowAsync(workflow) {
       let result;
       if (agentId && AGENT_SKILL_MAP[agentId]) {
         // 真实Agent调用
-        const agentResult = await spawnAgentSession(agentId, lastOutput, workflow.id);
+        // 旧工作流链路的 AI 调用同样用发起人的默认 Key（2026-11-20）
+        const agentResult = await spawnAgentSession(
+          agentId, lastOutput, workflow.id, null, false, [], workflow.userId || workflow.user_id || null
+        );
         result = agentResult.text || null;
       }
 
@@ -18921,7 +18941,11 @@ app.post('/api/performance-test/scan', authenticate, async (req, res) => {
     // 异步执行
     spawnAgentSession('performance-tester',
       JSON.stringify({ target, testType, tool, description, testId, mode: 'single' }),
-      `perf-scan-${testId}`
+      `perf-scan-${testId}`,
+      null,
+      false,
+      [],
+      userId
     ).then(async (result) => {
       const text = result?.text || '';
       const data = result?.data || {};
