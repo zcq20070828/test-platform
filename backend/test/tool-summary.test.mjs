@@ -233,6 +233,41 @@ console.log(M.summarizeToolResult('9dem_executor', JSON.stringify({ methods: [{ 
   assert.strictEqual(lbl, '九维穷举 + 黑盒9法')
 })
 
+t('被截断的审核 JSON 走尽力提取，不原样贴 JSON', () => {
+  // 实测 2026-11-20：模型列出 45 条 issues 撞上 max_tokens，JSON 在数组中途断掉，
+  // JSON.parse 失败 → 旧代码把整段 ```json 原样返回，用户看到的就是「又输出 JSON 了」
+  const truncated = [
+    '```json',
+    '{',
+    '  "score": 65,',
+    '  "veto": false,',
+    '  "reason": "预期结果不可判定2条，必测点覆盖83%未达标",',
+    '  "dimensions": { "requirement": 70, "factLogic": 75, "security": 80, "format": 65, "traceability": 60 },',
+    '  "issues": [',
+    '    { "severity": "major", "description": "预期结果不可判定，只写返回200" },',
+    '    { "severity": "major", "description": "缺少手机号掩码显示测试用例" },',
+    '    { "severity": "minor", "description": "输入数据为占位符，不符合业务规则" },',
+    '    { "severity": "minor", "description": "L4: 缺',
+  ].join('\n')
+  const out = runProbe(`
+console.log(M.summarizeReviewOutput(${JSON.stringify(truncated)}, { maxIssues: 3 }))`)
+  assert.ok(/综合评分 65 分/.test(out), '没救出综合评分: ' + out)
+  assert.ok(/五维评分：需求一致性 70/.test(out), '没救出五维: ' + out)
+  assert.ok(/审核结论：预期结果不可判定/.test(out), '没救出 reason: ' + out)
+  assert.ok(/已列出问题 3 条/.test(out), '没列出已解析的问题条数: ' + out)
+  assert.ok(/被模型截断/.test(out), '没提示输出被截断')
+  // 关键：绝不能把原始 JSON 贴出来
+  assert.ok(!out.includes('```'), '仍输出了代码围栏')
+  assert.ok(!/"score"\s*:/.test(out), '仍输出了 JSON 字段名')
+  assert.ok(!out.trim().startsWith('{'), '仍以花括号开头')
+})
+
+t('审核提示要求 issues 不超过 15 条（避免撞 token 上限被截断）', () => {
+  const prompt = fs.readFileSync(path.join(ROOT, 'backend', 'lib', 'reviewer-prompt.js'), 'utf8')
+  assert.ok(/issues 上限 15 条/.test(prompt), '缺少 issues 条数上限要求')
+  assert.ok(/截断/.test(prompt), '未说明为什么要限制条数')
+})
+
 // ---------------- 任务结果：JSON → 自然语言 ----------------
 const SECURITY_JSON = JSON.stringify({
   securityScore: 35,
