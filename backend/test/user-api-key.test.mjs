@@ -224,6 +224,8 @@ t('调用链路里不再把 deepseek-v4-pro 当兜底模型名', () => {
     if (trimmed.startsWith('//') || trimmed.startsWith('*')) return;
     // PROVIDERS 里 deepseek 自己的 model 定义放行
     if (/model: 'deepseek-v4-pro',/.test(ln)) return;
+    // 模型候选清单里的模型名放行（那是合法的模型标识，不是兜底值）
+    if (/^\s*deepseek: \[/.test(ln)) return;
     offenders.push(`line ${i + 1}: ${trimmed.slice(0, 90)}`);
   });
   assert.strictEqual(offenders.length, 0,
@@ -495,6 +497,72 @@ t('页头类名避开外层 :deep(.page-header){display:none}', () => {
   assert.ok(/class="apikey-header"/.test(header), '页头未使用独立类名');
   assert.ok(!/class="page-header"/.test(header), '与隐藏规则撞名');
   assert.ok(!/class="view-header"/.test(header), '与隐藏规则撞名');
+});
+
+// ---------------- 模型改为下拉选择（2026-11-20）----------------
+t('模型候选随服务商联动，且不写死在某一家', () => {
+  // 需求：「先选服务商，模型下拉列表只加载该服务商提供的模型」
+  assert.ok(/const PROVIDER_MODELS = \{/.test(SERVER), '缺少服务商→模型映射');
+  const block = SERVER.slice(SERVER.indexOf('const PROVIDER_MODELS'), SERVER.indexOf('/** 用一把 Key 向服务商查真实模型清单'));
+  for (const p of ['deepseek', 'zhipu', 'moonshot', 'openai']) {
+    assert.ok(new RegExp(`^  ${p}: \\[`, 'm').test(block), `${p} 没有模型清单`);
+  }
+  // DeepSeek 只能有它真实支持的模型（实测 /models 只返回这两个）
+  const ds = block.match(/deepseek: \[([^\]]+)\]/);
+  assert.ok(ds && /deepseek-v4-pro/.test(ds[1]) && !/deepseek-v4\.1-flash/.test(ds[1]),
+    `DeepSeek 清单含不支持的模型名：${ds && ds[1]}`);
+});
+
+t('模型清单接口优先用账号真实清单，拉不到才回退内置', () => {
+  assert.ok(/app\.get\('\/api\/user\/api-keys\/models'/.test(SERVER), '缺少模型清单接口');
+  const idx = SERVER.indexOf("app.get('/api/user/api-keys/models'");
+  const block = SERVER.slice(idx, idx + 2600);
+  assert.ok(/fetchProviderModels/.test(block), '没有尝试用 Key 拉真实清单');
+  assert.ok(/source: 'account'/.test(block), '未标明来源=账号');
+  assert.ok(/source: 'builtin'/.test(block), '未标明来源=内置');
+  assert.ok(/keyId/.test(block) && /apiKey/.test(block), '未支持按 keyId / 内联 Key 拉取');
+});
+
+t('前端模型字段是下拉（不是输入框），且候选随服务商变', () => {
+  const view = APIKEY_VIEW;
+  // 模型表单项里必须是 el-select
+  const modelItem = view.slice(view.indexOf('label="模型"'), view.indexOf('label="API Key"'));
+  assert.ok(/<el-select/.test(modelItem), '模型字段不是下拉');
+  assert.ok(!/<el-input[^>]*v-model="form\.model"/.test(modelItem), '模型字段仍是输入框');
+  // 候选来自 modelOptions（随服务商联动）
+  assert.ok(/v-for="m in modelOptions"/.test(modelItem), '候选未绑定 modelOptions');
+  // 服务商变更要重建候选
+  assert.ok(/watch\(\(\) => form\.provider/.test(view), '没有监听服务商变化');
+});
+
+t('手动切服务商才清空模型（watch 里不清，否则编辑回填被抹）', () => {
+  const view = APIKEY_VIEW;
+  // 这条是踩了很久的坑：watch 是异步 flush，openEdit 里 formInitializing
+  // 同步设 true/false 无效，watch 回调执行时已经 false，于是把回填的 model 清掉
+  const watchStart = view.indexOf('watch(() => form.provider')
+  const watchBlock = view.slice(watchStart, view.indexOf('function onProviderChange'));
+  assert.ok(!/form\.model = ''/.test(watchBlock), 'watch 里仍在清空 model（会抹掉编辑回填值）');
+  // 清空改到用户操作
+  assert.ok(/function onProviderChange/.test(view), '缺少 onProviderChange');
+  assert.ok(/@change="onProviderChange"/.test(view), '服务商下拉未绑定 onProviderChange');
+  const fn = view.slice(view.indexOf('function onProviderChange'), view.indexOf('function onProviderChange') + 200);
+  assert.ok(/form\.model = ''/.test(fn), 'onProviderChange 未清空模型');
+});
+
+t('弹窗关闭不清空表单（@closed 延迟触发会抹掉下次打开的回填）', () => {
+  const view = APIKEY_VIEW;
+  assert.ok(/@closed="onDialogClosed"/.test(view), '未改用 onDialogClosed');
+  const start = view.indexOf('function onDialogClosed')
+  const fn = view.slice(start, view.indexOf('function ', start + 10));
+  assert.ok(!/form\.model = ''/.test(fn), 'onDialogClosed 仍在清空 model');
+  assert.ok(!/form\.name = ''/.test(fn), 'onDialogClosed 仍在清空 name');
+});
+
+t('候选里保留当前已选模型（清单没有它时也能正确回显）', () => {
+  const view = APIKEY_VIEW;
+  const fn = view.slice(view.indexOf('async function loadProviderModels'), view.indexOf('async function loadProviderModels') + 2000);
+  assert.ok(/current/.test(fn), '未取当前已选值');
+  assert.ok(/merged/.test(fn), '未把当前值合并进候选');
 });
 
 // ---------------- 全链路：每个 spawn 都必须传 userId ----------------
