@@ -134,10 +134,13 @@ const routes = [
     meta: { requiresAuth: true, requiresAdmin: true }
   },
   {
+    // 「系统设置与管理」（原「管理员功能」，2026-11-20 改名）
+    // 不再要求 requiresAdmin：里面的「API KEY配置」是所有用户都要用的，
+    // 其余 tab 由 AdminDashboardView 按 isAdmin 决定显示内容还是「无权访问」。
     path: '/admin',
     name: 'AdminDashboard',
     component: () => import('@/views/AdminDashboardView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true }
+    meta: { requiresAuth: true, title: '系统设置与管理' }
   },
   {
     path: '/profile',
