@@ -10030,6 +10030,7 @@ async function checkDeepSeekBalance(userId) {
       Object.assign(entry, {
         at: Date.now(), available, balance: total,
         currency: (infos[0] && infos[0].currency) || '',
+        provider: resolved.provider || (resolved.source === 'platform' ? 'deepseek' : ''),
       });
       DEEPSEEK_BALANCE.set(cacheKey, entry);
       return entry;
@@ -13129,10 +13130,13 @@ async function callDeepSeekRewrite(messages, options = {}) {
     });
     if (!res.ok) {
       const errText = await res.text();
-      const isBalance = res.status === 402 || /Insufficient Balance|余额不足/i.test(errText);
+      // 同样以状态码为准；响应体里的「余额不足」字样可能是别的意思（见 callOpenClawAPI 注释）
+      const isBalance = res.status === 402
+        || (res.status === 403 && /Insufficient Balance|余额不足|insufficient_quota/i.test(errText));
+      const providerLabel = resolved.provider || (resolved.source === 'platform' ? 'deepseek' : '服务商');
       throw new Error(isBalance
-        ? 'DeepSeek 账户余额不足（402）'
-        : `Rewrite API ${res.status}: ${errText.substring(0, 200)}`);
+        ? `${providerLabel} 账户余额不足（${res.status}）`
+        : `${providerLabel} 返回 ${res.status}：${errText.substring(0, 200)}`);
     }
     const data = await res.json();
     const msg = data?.choices?.[0]?.message || {};
@@ -13398,10 +13402,20 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
       if (!response.ok) {
         const errorText = await response.text();
         const status = response.status;
-        const isBalance = status === 402 || /Insufficient Balance|余额不足/i.test(errorText);
+        // 余额不足只认 402（或 403 且响应体明确说余额）。
+        //
+        // 早先是 `status === 402 || /余额不足/i.test(errorText)`：
+        // 只要响应体里出现「余额不足」就判成余额不足，**不管状态码**。
+        // 实测任务 9184ca57 智谱返回 429（限流），响应体带了类似文案，
+        // 结果报成「DeepSeek 账户余额不足（402）」——文案和真实原因都不对，
+        // 用户按提示去充值也没用。
+        const isBalance = status === 402 || (status === 403 && /Insufficient Balance|余额不足|insufficient_quota/i.test(errorText));
+        const providerLabel = resolvedKey.provider || (resolvedKey.source === 'platform' ? 'deepseek' : '服务商');
         const errMsg = isBalance
-          ? 'DeepSeek 账户余额不足（402），请充值后再试'
-          : `Gateway ${status}: ${errorText.substring(0, 200)}`;
+          ? `${providerLabel} 账户余额不足（${status}），请充值后再试`
+          : status === 429
+            ? `${providerLabel} 返回 429（请求过于频繁/并发超限，或额度已用尽）：${errorText.substring(0, 160)}`
+            : `${providerLabel} 返回 ${status}：${errorText.substring(0, 200)}`;
 
         // 区分可重试 / 不可重试错误；余额不足重试也没有意义
         const isRetriable = !isBalance && (retryOn.includes(status) || status === 429);
@@ -15457,7 +15471,10 @@ async function executeTaskAsync(task) {
     // 余额不足时提前失败，避免 402 被审核/重试流程放大成“任务完成”
     const balance = await checkDeepSeekBalance(task.userId);
     if (balance && balance.available === false) {
-      const msg = `DeepSeek 账户余额不足（当前 ${balance.balance} ${balance.currency || ''}），请充值后重试`;
+      // 文案带上真实服务商：用户可能配的是智谱/Kimi 的 Key，
+      // 一律写「DeepSeek 余额不足」会让人去充错账户（2026-11-20）
+      const balProvider = balance.provider || '当前服务商';
+      const msg = `${balProvider} 账户余额不足（当前 ${balance.balance} ${balance.currency || ''}），请充值后重试`;
       console.error(`[Task] ${task.id} blocked: ${msg}`);
       task.status = 'failed';
       task.error = msg;
