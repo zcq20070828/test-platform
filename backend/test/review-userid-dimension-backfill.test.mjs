@@ -104,10 +104,45 @@ t('只补「完全缺失」的维度，不重复堆用例', () => {
 t('工具返回的 dimensionCases 被收集（否则无从补齐）', () => {
   assert.ok(/toolDimensionCases = out\.dimensionCases/.test(SERVER), '没有收集工具的 dimensionCases');
   assert.ok(/let toolDimensionCases = null/.test(SERVER), '缺少收集变量');
-  // 必须在工具循环之外声明，否则门禁块取不到
-  const decl = SERVER.indexOf('let toolDimensionCases = null');
-  const loop = SERVER.indexOf('while (toolCalls.length > 0 && iter < MAX_TOOL_ITERS)');
-  assert.ok(decl > 0 && loop > 0 && decl < loop, '收集变量必须在工具循环之前声明');
+});
+
+// 这条是任务 44dd1eab 的教训：变量原本声明在 `if (tools.length>0)` 分支里，
+// 而门禁代码在分支之外 —— 走「模型没调工具」的路径就 ReferenceError。
+// 光看「声明在循环之前」不够，必须验证它不在任何 if 分支内。
+t('toolDimensionCases 声明在 try 顶层，不在任何 if 分支内（跨路径可见）', () => {
+  const fnStart = SERVER.indexOf('async function spawnAgentSession(');
+  assert.ok(fnStart > 0, '找不到 spawnAgentSession');
+  // 截取函数体（大括号配对）
+  let depth = 0;
+  let i = SERVER.indexOf('{', fnStart);
+  let end = -1;
+  for (; i < SERVER.length; i += 1) {
+    if (SERVER[i] === '{') depth += 1;
+    else if (SERVER[i] === '}') { depth -= 1; if (depth === 0) { end = i; break; } }
+  }
+  assert.ok(end > 0, '解析函数体失败');
+  const body = SERVER.slice(fnStart, end + 1);
+
+  const declIdx = body.indexOf('let toolDimensionCases = null;');
+  assert.ok(declIdx > 0, '函数体内找不到声明');
+
+  // 声明处嵌套深度：函数体 1 + try 块 2。>2 说明还在 if 里
+  let d = 0;
+  for (let k = 0; k < declIdx; k += 1) {
+    if (body[k] === '{') d += 1;
+    else if (body[k] === '}') d -= 1;
+  }
+  assert.strictEqual(d, 2, `声明处嵌套深度 ${d}（应为 2 = 函数体+try）；不在 try 顶层就会在别的分支里`);
+
+  // 使用处必须在更深的层级（说明能访问到）
+  const useIdx = body.indexOf('if (toolDimensionCases && toolDimensionCases.length) {');
+  assert.ok(useIdx > 0, '找不到门禁里的使用');
+  let du = 0;
+  for (let k = 0; k < useIdx; k += 1) {
+    if (body[k] === '{') du += 1;
+    else if (body[k] === '}') du -= 1;
+  }
+  assert.ok(du > d, `使用处深度 ${du} 不大于声明处 ${d}，说明两者不在同一作用域链上`);
 });
 
 t('补齐后的表头与主用例表一致（否则门禁解析不到新用例）', () => {

@@ -11383,6 +11383,13 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
 
   // === 策略1: Gateway HTTP API(推荐,支持流式) ===
   try {
+
+    // 工具返回的九维必测用例：门禁判覆盖不足时用它确定性补齐
+    // （不指望模型「记得」把 dimensionCases 落进交付物，2026-11-20）。
+    // ⚠ 必须声明在 try 顶层，不能放进 `if (tools.length>0)` 分支：
+    // 门禁代码在分支之外，走「模型没调工具」的路径时若变量不在作用域内，
+    // 就是 ReferenceError: toolDimensionCases is not defined（任务 44dd1eab 实测踩到）。
+    let toolDimensionCases = null;
     console.log(`[Agent] Trying Gateway API for ${agentId}...`);
     // 构建 API 消息:前置对话历史 + system prompt + 当前输入
     // ========== 智能体"学习知识"上下文注入（V3: DB 持久化 + 内存缓存）==========
@@ -11455,9 +11462,6 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
               { role: 'system', content: systemPrompt },
               { role: 'user', content: taskInput },
             ];
-        // 收集工具返回的九维必测用例：门禁判覆盖不足时用它确定性补齐
-        // （不指望模型「记得」把 dimensionCases 落进交付物，2026-11-20）
-        let toolDimensionCases = null;
         let iter = 0;
         while (toolCalls.length > 0 && iter < MAX_TOOL_ITERS) {
           iter++;
