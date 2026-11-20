@@ -5163,6 +5163,226 @@ async function executeChatRound(task, message, userFiles) {
   }
 }
 
+// ========== 轻量问答 API（提交框直接问问题，2026-11-20）==========
+//
+// 用户要求：「提交框里也能直接问问题」。
+//
+// 为什么不能复用任务提交：任务提交会创建任务记录、跑三审、落交付物版本、占用
+// 用户串行锁。用户问一句「这个需求该怎么测」就产出一个任务和一份交付物，
+// 既污染任务列表，又要等十几分钟。
+//
+// 这里是一条独立轻量通道：
+//   - 不创建 tasks 记录、不落交付物、不跑三审；
+//   - 不进用户串行锁（问问题不该被「有任务在执行」挡住）；
+//   - 但仍复用流式协议（agent_stream_start/chunk/end），前端消息面板零改动；
+//   - 用 askId（UUID）当 taskId 传进 broadcast，满足 SSE 用户隔离要求
+//     （sseBroadcast 对带 taskId 的事件强制要求能反查到 userId；这里显式传
+//     顶层 userId，所以不需要 tasks 表里有这条记录）。
+const ASK_HISTORY_LIMIT = 6;   // 带上最近 3 轮，够追问上下文
+// askId -> { userId, agentId, history:[{role,content}], startedAt }
+// 用于「同一个问题接着追问」：用户连问两句时，第二句必须能带上第一句的上下文，
+// 否则「那这个呢」这种追问必然答非所问。
+const askSessions = new Map();
+const ASK_SESSION_TTL_MS = 30 * 60 * 1000;   // 30 分钟未使用即回收，避免内存常驻
+
+/** 定期清理过期问答会话（不依赖请求触发，避免长期无人访问时堆积） */
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, s] of askSessions) {
+    if (now - (s.lastActive || s.startedAt) > ASK_SESSION_TTL_MS) askSessions.delete(id);
+  }
+}, 5 * 60 * 1000).unref?.();
+
+/**
+ * 问答的对话历史片段
+ *
+ * 只拼历史，「只回答不产出交付物」的指令由 spawnAgentSession 在问答模式下
+ * 追加到 system prompt（那里才拿得到真正的智能体提示词，避免两处维护同一段规则）。
+ */
+function buildAskHistoryBlock(history) {
+  if (!history || !history.length) return '';
+  const lines = ['【此前对话】'];
+  for (const h of history.slice(-ASK_HISTORY_LIMIT)) {
+    lines.push(`${h.role === 'user' ? '用户' : '你'}：${String(h.content || '').slice(0, 1500)}`);
+  }
+  return lines.join('\n');
+}
+
+app.post('/api/ask', authenticate, async (req, res) => {
+  // continueAskId：用户在同一串问答里追问时带上上一次的 askId，
+  // 这样第二句「那这个呢」能接上上文，而不是从零开始。
+  const { question, agent, attachments, continueAskId } = req.body || {};
+  const text = String(question || '').trim();
+  if (!text && (!attachments || !attachments.length)) {
+    return res.status(400).json({ error: '问题内容不能为空' });
+  }
+
+  const userId = req.user.id;
+
+  // 续问：沿用上一轮的会话（含历史），并校验归属，不能拿到别人的 askId 读上下文
+  const prev = continueAskId ? askSessions.get(String(continueAskId)) : null;
+  const history = prev && prev.userId === userId ? [...(prev.history || [])] : [];
+
+  // 选哪个智能体回答：用户指定优先，续问沿用上一轮，否则用意图识别
+  let agentId = agent ? resolveAgentId(agent) : null;
+  if (!agentId && prev && prev.userId === userId) agentId = prev.agentId;
+  if (!agentId) {
+    const intent = analyzeTaskIntent(text, {});
+    agentId = intent.agentId || 'test-master';
+  }
+  if (!AGENTS[agentId]) {
+    return res.status(400).json({ error: `未知智能体: ${agentId}` });
+  }
+
+  // 附件解析（与任务提交同一套，Word/Excel 保留表格）
+  let filesText = '';
+  if (Array.isArray(attachments) && attachments.length) {
+    const parts = [];
+    for (const uf of attachments) {
+      let markdown = uf.content || '';
+      if (uf.base64 || uf.dataUrl) {
+        try {
+          const buffer = Buffer.from(uf.base64 || String(uf.dataUrl).split(',').pop() || '', 'base64');
+          const parsed = await parseDocumentBuffer({
+            buffer,
+            filename: uf.name || 'attachment',
+            parseOffice: async (buf, ext) => {
+              const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'askparse-'));
+              const tmpPath = path.join(tmpDir, `input${ext}`);
+              try {
+                await fs.writeFile(tmpPath, buf);
+                return await parseDocumentContent(tmpPath, 30000);
+              } finally {
+                fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+              }
+            },
+          });
+          markdown = parsed.markdown;
+        } catch (e) {
+          markdown = `[附件解析失败: ${e.message}]`;
+        }
+      }
+      const fitted = fitToBudget(markdown, { maxTokens: INPUT_DOC_MAX_TOKENS_PER_FILE });
+      parts.push(`### 附件: ${uf.name || '附件'}\n${fitted.text}${fitted.omittedNote ? `\n[解析说明] ${fitted.omittedNote}` : ''}`);
+    }
+    filesText = parts.join('\n\n---\n\n');
+  }
+
+  const askId = uuidv4();
+  const agentName = (AGENTS[agentId] || {}).name || agentId;
+  const askInput = [
+    buildAskHistoryBlock(history),
+    filesText ? `【用户提供的材料】\n${filesText}` : '',
+    `【问题】\n${text}`,
+  ].filter(Boolean).join('\n\n');
+
+  // 记住这轮会话，供后续追问接上下文
+  askSessions.set(askId, {
+    userId,
+    agentId,
+    startedAt: askSessions.get(String(continueAskId || ''))?.startedAt || Date.now(),
+    lastActive: Date.now(),
+    history: [...history, { role: 'user', content: text }],
+  });
+
+  // 先把用户消息与「开始回答」推给前端，避免用户以为没反应
+  await sseBroadcast({
+    type: 'chat_message',
+    userId,               // 顶层 userId：sseBroadcast 靠它做隔离
+    taskId: askId,        // 用 askId 冒充 taskId，满足「任务类事件必须有归属」的要求
+    data: {
+      role: 'user',
+      content: text,
+      attachments: (attachments || []).map((a) => ({ name: a.name })),
+      askId,
+      agentId,
+      timestamp: new Date().toISOString(),
+    },
+  });
+  await sseBroadcast({
+    type: 'chat_message',
+    userId,
+    taskId: askId,
+    data: {
+      role: 'system',
+      type: 'system',
+      content: `💬 ${agentName} 正在回答…（问答模式，不产出交付物）`,
+      askId,
+      agentId,
+      timestamp: new Date().toISOString(),
+    },
+  });
+
+  // 异步回答，立即返回 askId（前端已通过 SSE 收到消息）
+  (async () => {
+    try {
+      // 流式回调：复用 agent_stream_* 协议，前端消息面板无需改动
+      const streamCb = (event) => {
+        sseBroadcast({ ...event, userId, taskId: askId, askId }).catch(() => {});
+      };
+      const result = await spawnAgentSession(
+        agentId,
+        askInput,
+        askId,
+        streamCb,
+        true,       // skipReview：问答不跑三审
+        [],
+        userId,
+        false,
+        { mode: 'ask' },   // 跳过输入物校验：问答不要求前置交付物
+      );
+      const answer = result && result.success !== false
+        ? (result.text || '')
+        : `回答失败：${result?.error || '未知原因'}`;
+      if (result && result.success === false) {
+        console.warn(`[Ask] ${askId} 失败: ${result.error}`);
+      }
+      // 把回答写进会话历史，下一轮追问才能看到「我问过什么、你答过什么」
+      const sess = askSessions.get(askId);
+      if (sess && answer && result && result.success !== false) {
+        sess.history.push({ role: 'assistant', content: answer });
+        sess.lastActive = Date.now();
+        // 历史只保留最近 N 条，避免长对话把上下文撑爆
+        if (sess.history.length > ASK_HISTORY_LIMIT * 2) {
+          sess.history = sess.history.slice(-ASK_HISTORY_LIMIT * 2);
+        }
+      }
+      await sseBroadcast({
+        type: 'chat_message',
+        userId,
+        taskId: askId,
+        data: {
+          role: 'assistant',
+          type: 'agent',
+          content: answer,
+          agentId,
+          agentName,
+          askId,
+          intentMode: 'question',   // 前端据此显示「问答」徽标
+          intentLabel: '问答',
+          timestamp: new Date().toISOString(),
+        },
+      });
+    } catch (e) {
+      console.error(`[Ask] ${askId} 异常: ${e.message}`);
+      await sseBroadcast({
+        type: 'chat_message',
+        userId,
+        taskId: askId,
+        data: {
+          role: 'system',
+          type: 'system',
+          content: `回答失败：${e.message}`,
+          askId,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    }
+  })();
+
+  res.json({ success: true, askId, agentId, agentName });
+});
+
 // 多轮对话续写 API
 app.post('/api/tasks/:id/chat', authenticate, async (req, res) => {
   const taskId = req.params.id;
@@ -12000,7 +12220,7 @@ function appendToPrimaryDeliverable(text, extra) {
   return `${text || ''}\n${extra}`;
 }
 
-async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, skipReview = false, previousArtifacts = [], userId = null, forceToolCall = false) {
+async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, skipReview = false, previousArtifacts = [], userId = null, forceToolCall = false, options = {}) {
   // 全局暴露，供 owasp-knowledge-generator.js 通过 globalThis.spawnAgentSession 调用
   globalThis.spawnAgentSession = spawnAgentSession;
   // 提取工作流ID用于会话跟踪(taskId格式: workflowId[-stage[-suffix]])
@@ -12017,7 +12237,14 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
   }
 
   // ========== 输入物校验 ==========
-  const validation = validateAgentInput(agentId, taskInput, previousArtifacts);
+  //
+  // 问答模式跳过：校验规则是为「生成交付物」设计的——要求最小输入长度、
+  // 要求带前置产出物（报告/缺陷/用例）。用户问「这个需求该怎么测」
+  // 本身就不该带交付物，若走校验会被直接拒绝。
+  // 该跳过只对 /api/ask 生效（options.mode === 'ask'），生成任务不受影响。
+  const validation = options.mode === 'ask'
+    ? { valid: true, reason: '问答模式跳过输入物校验' }
+    : validateAgentInput(agentId, taskInput, previousArtifacts);
   if (!validation.valid) {
     console.error(`[InputValidation] REJECTED: Agent "${agentId}" 缺少必要输入物`);
     console.error(`[InputValidation] Reason: ${validation.reason}`);
@@ -12052,8 +12279,12 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
   }
 
   // ========== 报告/缺陷：必须绑定真实执行数据 ==========
+  // 问答模式跳过：用户问「报告该怎么写」「这个缺陷怎么定位」并不需要
+  // 真实执行数据在场；这条校验是为了防止生成交付物时编造数据。
   const evidenceUserId = userId || (taskId && tasks.get(taskId)?.userId) || null;
-  const evidenceBinding = await validateEvidenceBinding(agentId, taskInput, evidenceUserId);
+  const evidenceBinding = options.mode === 'ask'
+    ? { valid: true, reason: '问答模式跳过证据绑定' }
+    : await validateEvidenceBinding(agentId, taskInput, evidenceUserId);
   if (!evidenceBinding.valid) {
     console.error(`[EvidenceBinding] REJECTED: ${agentId} - ${evidenceBinding.reason}`);
     broadcast({
@@ -12283,9 +12514,19 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
       }
     }
     let baseSystem = AGENT_SYSTEM_PROMPTS[agentId] || '';
+    // 问答模式：生成型智能体的系统提示词里满是「按以下格式输出交付物」的要求，
+    // 直接复用会让模型把回答写成一份完整文档（实测就是这个症状）。
+    // 这里追加一段压制说明，明确「只回答问题」。
+    if (options.mode === 'ask') {
+      baseSystem += '\n\n【当前是问答模式，与生成交付物不同】\n'
+        + '- 用户在向你提问，请**直接回答问题**，不要输出完整交付物、不要套用上面的交付物模板。\n'
+        + '- 回答要具体、可执行；涉及判断时说明依据。\n'
+        + '- 需要看具体文档/交付物才能回答时，明确说明需要什么材料，不要臆测。\n'
+        + '- 可以用列表、小标题、表格组织答案，但不要输出被代码块包裹的「整份文档」。';
+    }
     // 全量放开:除审核员(其输出为程序化解析的 JSON 评分,不应被表格提示干扰)外,所有智能体都追加"用表格表达结构化数据"提示,以保证 Excel 交付物生成
     const _agentType = (AGENTS[agentId] && AGENTS[agentId].type) || '';
-    if (_agentType !== 'reviewer') {
+    if (_agentType !== 'reviewer' && options.mode !== 'ask') {
       baseSystem += '\n\n【交付件格式说明】你只需输出 Markdown 格式主文档(纯文本或 ```md 代码块)。系统会自动将你的输出额外转换为 Word(.docx)和 Excel(.xlsx)格式副本,无需你手动输出 docx/xlsx 代码块。请在文档中用表格表达结构化数据,以便正确生成 Excel 工作表。';
     }
     const systemPrompt = kbCtx ? `${baseSystem}\n\n# 知识库学习内容\n${kbCtx}` : baseSystem;

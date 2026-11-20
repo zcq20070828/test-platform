@@ -327,6 +327,34 @@ export const taskApi = {
     })
     return res
   },
+
+  /**
+   * 轻量问答（提交框直接问问题，2026-11-20）
+   *
+   * 与 create 的区别：不创建任务、不落交付物、不跑三审、不占用串行锁。
+   * 回答通过 SSE 的 chat_message / agent_stream_* 推回来，前端消息面板照常渲染。
+   */
+  async ask(
+    question: string,
+    options?: {
+      agent?: string
+      attachments?: { name: string; content?: string; base64?: string }[]
+      /** 追加提问时带上上一轮的 askId，让模型接上上下文 */
+      continueAskId?: string
+    }
+  ): Promise<{ success: boolean; askId?: string; agentId?: string; agentName?: string; error?: string }> {
+    const res = await request<{ askId: string; agentId: string; agentName: string }>('/api/ask', {
+      method: 'POST',
+      body: JSON.stringify({
+        question,
+        agent: options?.agent,
+        attachments: options?.attachments || [],
+        continueAskId: options?.continueAskId,
+      }),
+    })
+    if (res.success && res.data) return { success: true, ...res.data }
+    return { success: false, error: res.error || '提问失败' }
+  },
 }
 
 // 测试框架 API
