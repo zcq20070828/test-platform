@@ -267,6 +267,17 @@ t('每个服务商都有 contextChars', () => {
   }
 });
 
+t('模型输入框的 placeholder 不写模型名（会看着像已有内容、且与上方重复）', () => {
+  // 用户 2026-11-20 反馈：placeholder 显示「留空使用：deepseek-v4-pro」不合适
+  const block = APIKEY_VIEW.slice(APIKEY_VIEW.indexOf('label="模型"'), APIKEY_VIEW.indexOf('label="模型"') + 1200);
+  const ph = block.match(/:placeholder="([^"]+)"/);
+  assert.ok(ph, '找不到模型输入框 placeholder');
+  assert.ok(!/providerModel\(/.test(ph[1]), `placeholder 里仍插了模型名：${ph[1]}`);
+  assert.ok(!/留空使用：/.test(ph[1]), `placeholder 仍是「留空使用：xxx」：${ph[1]}`);
+  // 模型名应出现在下方说明里
+  assert.ok(/留空则使用 \{\{ providerModel\(form\.provider\) \}\}/.test(block), '说明文字里没有「留空则使用 xxx」');
+});
+
 t('模型必填校验用 validator 而非动态删规则（否则切换服务商后失效）', () => {
   // 实测踩过：:prop="... ? 'model' : undefined" + 动态置空 rules，
   // 选了火山方舟（requiresModel）留空模型仍能保存成功。
