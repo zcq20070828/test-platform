@@ -49,6 +49,7 @@ import {
   parseCaseTable as parseCaseTableForCount,
   repairPlaceholderInput,
 } from './lib/case-quality-gate.js';
+import { diagnoseFailure } from './lib/failure-diagnosis.js';
 import {
   calibrateThreshold as calibrateGateThreshold,
   listDisagreements as listThresholdDisagreements,
@@ -15475,10 +15476,12 @@ async function executeTaskAsync(task) {
       // 一律写「DeepSeek 余额不足」会让人去充错账户（2026-11-20）
       const balProvider = balance.provider || '当前服务商';
       const msg = `${balProvider} 账户余额不足（当前 ${balance.balance} ${balance.currency || ''}），请充值后重试`;
+      const balFailure = diagnoseFailure(new Error(msg), { provider: balance.provider });
       console.error(`[Task] ${task.id} blocked: ${msg}`);
       task.status = 'failed';
       task.error = msg;
-      task.result = `❌ 任务执行失败：${msg}`;
+      task.failure = balFailure;
+      task.result = `❌ ${balFailure.title}：${balFailure.detail}\n\n**可以这样做：**\n${balFailure.actions.map((a, i) => `${i + 1}. ${a}`).join('\n')}`;
       task.updatedAt = new Date().toISOString();
       agentStatus.set(task.agent, 'idle');
       await persistTask(task.id);
@@ -15654,18 +15657,35 @@ async function executeTaskAsync(task) {
   } catch (error) {
     console.error(`[Task] Execution error: ${error.message}`);
 
+    // 把技术错误翻译成「用户能据此行动」的说明（2026-11-20）
+    // 前端只显示一句「任务执行失败：<技术错误>」时，用户不知道该改 Key、
+    // 换模型还是等一会儿，体验很差。
+    let failure = null;
+    try {
+      const rk = await resolveApiKey(task.userId);
+      failure = diagnoseFailure(error, { provider: rk.provider, model: rk.model });
+    } catch (_) {
+      failure = diagnoseFailure(error, {});
+    }
+    console.log(`[Task] ${task.id} 失败诊断: ${failure.category} / ${failure.title}`);
+
     broadcast({
       type: 'task_error',
       taskId: task.id,
       agentId: task.agent,
-      message: error.message
+      userId: task.userId || null,
+      message: error.message,
+      failure,
     });
 
     // Bug修复:出错不应标记 completed,应为 failed + 持久化
     // 安全整改:不再生成 mock 测试数据
     task.status = 'failed';
-    task.result = `❌ 任务执行失败：${error.message}\n\n未生成任何测试结果或报告。请检查输入、工具可用性与智能体配置后重试。`;
+    task.result = `❌ ${failure.title}：${failure.detail}\n\n${
+      failure.actions.length ? `**可以这样做：**\n${failure.actions.map((a, i) => `${i + 1}. ${a}`).join('\n')}\n\n` : ''
+    }---\n原始错误（排查用）：${error.message}`;
     task.error = error.message;
+    task.failure = failure;
     task.fallback = false;
     task.updatedAt = new Date().toISOString();
     agentStatus.set(task.agent, 'idle');

@@ -83,6 +83,8 @@ export interface Task {
   // 后端返回的原始字段（任务列表/详情直接透传，组件已在读取）
   result?: string | null
   error?: string | null
+  /** 失败诊断（后端在任务失败时下发，前端据此渲染可操作提示） */
+  failure?: TaskFailure | null
   userId?: string
   agentId?: string
   createdAt?: string
@@ -176,6 +178,19 @@ export interface MessageMetadata {
   maxRetries?: number
   isWorkflowFailed?: boolean
   reason?: string
+  /** 失败诊断（后端 lib/failure-diagnosis.js 产出，前端据此渲染可操作提示） */
+  failure?: TaskFailure
+}
+
+/** 任务失败诊断：把技术错误翻译成用户能行动的信息 */
+export interface TaskFailure {
+  category: 'balance' | 'rate_limit' | 'auth' | 'model_not_found' | 'context_overflow'
+    | 'network' | 'busy' | 'tool_not_called' | 'quality_gate' | 'unknown'
+  title: string
+  detail: string
+  actions: string[]
+  retryable: boolean
+  raw: string
 }
 
 // 审核状态

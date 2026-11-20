@@ -120,6 +120,7 @@ function getExtension(lang: string): string {
 
 import { defineStore } from 'pinia'
 import { summarizeReviewOutput, describeToolCall, summarizeToolResult, skillLabel, summarizeTaskOutput } from '@/utils/tool-summary'
+import { formatFailure } from '@/utils/failure-message'
 import { ref, computed, nextTick, watch } from 'vue'
 import type { Agent, Task, ChatMessage, KnowledgeDoc } from '@/types'
 import { agentApi, taskApi, knowledgeApi, getAuthHeaders } from '@/api'
@@ -819,7 +820,8 @@ export const useMainStore = defineStore('main', () => {
           role: 'system',
           type: 'system',
           id: `tl-task-error-${evt.seq}`,
-          content: `任务错误：${p.error || '未知错误'}`,
+          // 有诊断就用「人话 + 可操作建议」，没有才退回原始错误
+          content: formatFailure(p.failure, p.error || p.message),
         }
 
       default:
@@ -1870,14 +1872,16 @@ export const useMainStore = defineStore('main', () => {
         break
 
       case 'task_error':
-        // 同源问题：以前只赋值给局部变量，任务失败原因在界面上完全看不到
-        message = `任务错误: ${data.taskId} - ${data.error}`
+        // 同源问题：以前只赋值给局部变量，任务失败原因在界面上完全看不到。
+        // 现在后端会把技术错误诊断成「类别 + 原因 + 可操作建议」（data.failure），
+        // 前端直接渲染，用户能立刻知道该改 Key、换模型还是等一会儿。
+        message = `任务失败: ${data.failure?.title || data.message || data.error || '未知原因'}`
         status = 'error'
         writeMsg({
           id: `task-error-${data.taskId || Date.now()}`,
           role: 'system',
           type: 'system',
-          content: `任务 ${data.taskId || ''} 执行出错：${data.error || '未知错误'}`,
+          content: formatFailure(data.failure, data.error || data.message),
           timestamp: new Date().toISOString(),
         })
         if (data.task) {
