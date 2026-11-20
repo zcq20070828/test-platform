@@ -226,10 +226,11 @@ t('design.cases 由系统确定性落地（模型抄不完）', () => {
   assert.ok(/function buildDesignCasesMarkdown/.test(SERVER), '缺少基线用例落地函数');
   assert.ok(/toolDesignCases = out\.design\.cases/.test(SERVER), '没有收集工具的 design.cases');
   assert.ok(/DesignBackfill/.test(SERVER), '没有落地日志');
-  // 落地必须在门禁循环之前
+  // 落地必须在门禁循环之前。门禁循环已改为 while (true)（达标后还要跑打磨轮），
+  // 这里用「casQuality 门禁分支」的起点定位，不绑死具体循环写法。
   const dcIdx = SERVER.indexOf('buildDesignCasesMarkdown(text, toolDesignCases');
-  const gateIdx = SERVER.indexOf('while (repairRound <= CASE_QUALITY_MAX_REPAIR_ROUNDS)');
-  assert.ok(dcIdx > 0 && gateIdx > 0 && dcIdx < gateIdx, '基线落地必须在门禁之前');
+  const gateIdx = SERVER.indexOf('if (CASE_QUALITY_GATE_AGENTS.has(agentId))');
+  assert.ok(dcIdx > 0 && gateIdx > 0 && dcIdx > gateIdx, '基线落地必须在门禁循环内、门禁检查之前');
 });
 
 t('基线用例落地时做确定性补强（否则可用率暴跌）', () => {

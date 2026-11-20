@@ -20,6 +20,10 @@ export function publicExperienceView(row) {
     id: row.id,
     agentId: row.agent_id,
     category: row.category,
+    // 问题签名：同期对照靠它判断「本任务是否出现了这条经验对应的问题」。
+    // 一定要带出去——recordTrialAssignments 拿它落库，缺了就写成空串，
+    // 之后 markTrialOutcomes 永远匹配不上，效果统计静默失效。
+    patternKey: row.pattern_key,
     title: row.title,
     guidance: row.guidance,
     source: row.source,

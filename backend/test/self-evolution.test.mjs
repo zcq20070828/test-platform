@@ -293,6 +293,20 @@ t('服务端在任务内真的做了分流与结果回填', () => {
   assert.ok(/treatment: split\.treatment/.test(block), '注入组没有传给记录');
 });
 
+t('★ 经验对象必须带 patternKey（否则同期对照静默失效）', () => {
+  // 实测事故：publicExperienceView 漏了 patternKey，
+  // recordTrialAssignments 落库时写成空串，markTrialOutcomes 永远匹配不上，
+  // trials 表全是 pattern_key='' —— 统计看起来在跑，其实一条也没对上。
+  const view = DAO_SRC.slice(
+    DAO_SRC.indexOf('export function publicExperienceView'),
+    DAO_SRC.indexOf('function safeParseSamples'),
+  );
+  assert.ok(/patternKey:\s*row\.pattern_key/.test(view), 'publicExperienceView 没带出 pattern_key');
+
+  const assign = DAO_SRC.slice(DAO_SRC.indexOf('export async function recordTrialAssignments'));
+  assert.ok(/e\.patternKey/.test(assign.slice(0, 900)), '记录分组时没写 patternKey');
+});
+
 t('休眠的经验被重新命中会自动复活（不是永久丢弃）', () => {
   const fn = DAO_SRC.slice(DAO_SRC.indexOf('export async function recordOccurrence'));
   const body = fn.slice(0, 2600);

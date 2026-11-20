@@ -132,9 +132,10 @@ export async function upsertTaskQuality(m) {
   await query(
     `INSERT INTO task_quality_metrics
        (id, task_id, agent_id, total_cases, usable_cases, usability_gate, blocker_count,
-        major_count, auto_repairs, repair_rounds, by_reason, dimension_coverage,
-        dimension_missing, dimension_waived, skipped_rows, usability_pass, gate_passed)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        major_count, auto_repairs, repair_rounds, polish_rounds, polish_gain, by_reason,
+        dimension_coverage, dimension_missing, dimension_waived, skipped_rows, usability_pass,
+        gate_passed)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON DUPLICATE KEY UPDATE
        total_cases = VALUES(total_cases),
        usable_cases = VALUES(usable_cases),
@@ -143,6 +144,8 @@ export async function upsertTaskQuality(m) {
        major_count = VALUES(major_count),
        auto_repairs = VALUES(auto_repairs),
        repair_rounds = VALUES(repair_rounds),
+       polish_rounds = VALUES(polish_rounds),
+       polish_gain = VALUES(polish_gain),
        by_reason = VALUES(by_reason),
        dimension_coverage = VALUES(dimension_coverage),
        dimension_missing = VALUES(dimension_missing),
@@ -161,6 +164,8 @@ export async function upsertTaskQuality(m) {
       m.majorCount || 0,
       m.autoRepairs || 0,
       m.repairRounds || 0,
+      m.polishRounds || 0,
+      typeof m.polishGain === 'number' ? m.polishGain : null,
       JSON.stringify(m.byReason || {}),
       typeof m.dimensionCoverage === 'number' ? m.dimensionCoverage : null,
       Array.isArray(m.dimensionMissing) && m.dimensionMissing.length ? m.dimensionMissing.join(',').slice(0, 255) : null,
@@ -225,6 +230,8 @@ export async function getTaskQuality(taskId) {
     majorCount: r.major_count,
     autoRepairs: r.auto_repairs,
     repairRounds: r.repair_rounds,
+    polishRounds: Number(r.polish_rounds) || 0,
+    polishGain: r.polish_gain === null || r.polish_gain === undefined ? null : Number(r.polish_gain),
     byReason,
     dimensionCoverage: r.dimension_coverage === null || r.dimension_coverage === undefined ? null : Number(r.dimension_coverage),
     dimensionMissing: r.dimension_missing ? String(r.dimension_missing).split(',').filter(Boolean) : [],

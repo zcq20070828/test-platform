@@ -733,7 +733,11 @@ export const useMainStore = defineStore('main', () => {
           ...base,
           id: `tl-repair-${evt.seq}`,
           agentName: '用例质量门禁',
-          content: `正在定向修复 ${p.issues || 0} 条问题用例（第 ${p.round || 1} 轮）`,
+          // 达标后的「收尾打磨」与「不达标定向修复」是两件事，用不同说法，
+          // 否则用户看到第 3 轮修复会以为一直没修好。
+          content: p.polish
+            ? `已达标，收尾打磨剩余 ${p.issues || 0} 条用例`
+            : `正在定向修复 ${p.issues || 0} 条问题用例（第 ${p.round || 1} 轮）`,
         }
 
       case 'case_quality_repair_progress':
@@ -1390,7 +1394,10 @@ export const useMainStore = defineStore('main', () => {
         break
 
       case 'case_quality_repair':
-        message = `正在定向修复 ${data.issues || 0} 条问题用例（第 ${data.round || 1} 轮）`
+        // polish=true 表示已达标后的收尾打磨，与「不达标修复」区分开
+        message = data.polish
+          ? `已达标，收尾打磨剩余 ${data.issues || 0} 条用例`
+          : `正在定向修复 ${data.issues || 0} 条问题用例（第 ${data.round || 1} 轮）`
         status = 'info'
         writeMsg({
           id: eventMsgId('case-repair', data.round || 1),
