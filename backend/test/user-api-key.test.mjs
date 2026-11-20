@@ -126,6 +126,52 @@ t('验证接口真实发请求（不是只校验格式）', () => {
   assert.ok(/401/.test(fn) && /402/.test(fn), '未针对 401/402 给出可读原因');
 });
 
+// ---------------- 「只需 Key」：不要接口地址与模型 ----------------
+// 用户明确要求：用 Key 调大模型不需要配置接口地址。
+// 若还让用户填地址/模型/服务商，就等于把「地址写错、模型名不存在」这类
+// 与 Key 无关的故障甩给用户，而且平台也无法保证一致性。
+t('UI 不再要求填写接口地址 / 模型 / 服务商', () => {
+  for (const banned of ['接口地址', '默认模型', '服务商']) {
+    assert.ok(!new RegExp(`label="${banned}"`).test(APIKEY_VIEW), `UI 仍有「${banned}」输入项`);
+  }
+  // 但页面要说明「只需 Key」，避免用户找不到
+  assert.ok(/只需填名称和 Key/.test(APIKEY_VIEW), '缺少「只需填 Key」的说明');
+});
+
+t('名称由用户自定义，UI 不暗示特定服务商', () => {
+  // 用户原话：「名称不一定，用户根据自己的实际情况选择，不一定都是 deepseek」
+  const nameInput = APIKEY_VIEW.slice(APIKEY_VIEW.indexOf('v-model="form.name"') - 120, APIKEY_VIEW.indexOf('v-model="form.name"') + 220);
+  assert.ok(!/DeepSeek|deepseek|OpenAI|openai/.test(nameInput), `名称输入框仍在暗示服务商：${nameInput.slice(0, 120)}`);
+  assert.ok(/自定义名称/.test(nameInput), '缺少「自定义名称」提示');
+});
+
+t('前端提交体只带 name / apiKey（不传 baseUrl / model / provider）', () => {
+  const fn = APIKEY_VIEW.slice(APIKEY_VIEW.indexOf('async function handleSave'));
+  const body = fn.slice(0, fn.indexOf('const res ='));
+  assert.ok(!/baseUrl/.test(body), '仍在提交 baseUrl');
+  assert.ok(!/model\s*:/.test(body), '仍在提交 model');
+  assert.ok(!/provider/.test(body), '仍在提交 provider');
+});
+
+t('后端忽略用户提交的 baseUrl / model / provider', () => {
+  const fn = SERVER.slice(SERVER.indexOf('function validateApiKeyInput'), SERVER.indexOf('function validateApiKeyInput') + 800);
+  assert.ok(!/body\?\.baseUrl/.test(fn), '仍在校验用户传入的 baseUrl');
+  assert.ok(!/body\?\.provider/.test(fn), '仍在校验用户传入的 provider');
+  // 新增时恒为 null / 'deepseek'
+  const create = SERVER.slice(SERVER.indexOf("app.post('/api/user/api-keys',"), SERVER.indexOf("app.put('/api/user/api-keys/:id',"));
+  assert.ok(/baseUrl: null/.test(create), '新增未强制 baseUrl=null');
+  assert.ok(/model: null/.test(create), '新增未强制 model=null');
+  assert.ok(/provider: 'deepseek'/.test(create), '新增未强制 provider');
+});
+
+t('解析 Key 时地址与模型恒取平台配置（用户旧数据也不生效）', () => {
+  const fn = SERVER.slice(SERVER.indexOf('async function resolveApiKey'), SERVER.indexOf('/** 只要 Key 字符串时用这个'));
+  assert.ok(/baseUrl: platform\.baseUrl/.test(fn), '未强制平台 baseUrl');
+  assert.ok(/model: platform\.model/.test(fn), '未强制平台 model');
+  assert.ok(!/rec\.base_url/.test(fn), '仍在使用用户配置的地址');
+  assert.ok(!/rec\.model/.test(fn), '仍在使用用户配置的模型');
+});
+
 t('接口不回传明文 Key', () => {
   const block = SERVER.slice(SERVER.indexOf("app.get('/api/user/api-keys'"), SERVER.indexOf("app.post('/api/user/api-keys/:id/verify'") + 3000);
   assert.ok(!/res\.json\([^)]*apiKey(?!Enc|_)/.test(block.replace(/apiKey: plain/g, '')), '接口可能回传明文');
@@ -269,6 +315,87 @@ t('页头类名避开外层 :deep(.page-header){display:none}', () => {
   assert.ok(/class="apikey-header"/.test(header), '页头未使用独立类名');
   assert.ok(!/class="page-header"/.test(header), '与隐藏规则撞名');
   assert.ok(!/class="view-header"/.test(header), '与隐藏规则撞名');
+});
+
+// ---------------- 全链路：每个 spawn 都必须传 userId ----------------
+// 这一组是「用户默认 Key 真的被用上」的核心保证。
+// 第一次实现时只接了 callOpenClawAPI 内部的 resolveApiKey，
+// 但 17 处 spawnAgentSession 里有 9 处没传 userId，其中审核员那条每轮任务都跑，
+// 加上 spawnAgentSession 内部首次调用 callOpenClawAPI 也漏传 —— 等于大部分消耗仍在用平台 Key。
+function stripLineComments(text) {
+  return text.split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+}
+
+/** 解析某个函数的所有调用点实参（跳过行注释，按第一层逗号切分） */
+function parseCalls(text, fnName) {
+  const clean = stripLineComments(text);
+  const out = [];
+  let idx = 0;
+  while ((idx = clean.indexOf(fnName + '(', idx)) !== -1) {
+    if (clean.slice(Math.max(0, idx - 20), idx).includes('function ')) { idx += fnName.length; continue; }
+    const start = idx + fnName.length + 1;
+    let depth = 0;
+    let cur = '';
+    const args = [];
+    let i = start;
+    for (; i < clean.length; i++) {
+      const ch = clean[i];
+      if ('([{'.includes(ch)) { depth += 1; cur += ch; continue; }
+      if (')]}'.includes(ch)) { if (depth === 0) break; depth -= 1; cur += ch; continue; }
+      if (ch === ',' && depth === 0) { args.push(cur.trim()); cur = ''; continue; }
+      cur += ch;
+    }
+    if (cur.trim()) args.push(cur.trim());
+    out.push({ line: clean.slice(0, start).split('\n').length, args, raw: clean.slice(idx, i) });
+    idx = i;
+  }
+  return out;
+}
+
+t('17 处 spawnAgentSession 调用全部传了 userId', () => {
+  // 函数定义本身也被 indexOf 命中了，按「实参 >= 3」过滤掉定义行
+  const calls = parseCalls(SERVER, 'spawnAgentSession').filter((c) => c.args.length >= 3);
+  assert.ok(calls.length >= 15, `只找到 ${calls.length} 处调用，可能解析失败`);
+  const bad = calls.filter((c) => !/userId|user_id|req\.user|\.sub/i.test(c.args[6] || ''));
+  assert.strictEqual(bad.length, 0,
+    `未传 userId 的调用：${bad.map((b) => 'line ' + b.line).join(', ')}`);
+});
+
+t('审核员调用带 userId（每轮任务都要跑，消耗最大）', () => {
+  const i = SERVER.indexOf('const result = await spawnAgentSession(\n      reviewerId,');
+  assert.ok(i > 0, '找不到审核员 spawn 调用');
+  const block = SERVER.slice(i, i + 400);
+  assert.ok(/userId\s*$/.test(block.trim().split(')')[0].trim()) || /\n\s*userId\s*\n/.test(block),
+    `审核员 spawn 未传 userId：${block.slice(0, 200)}`);
+});
+
+t('spawnAgentSession 内部首次 callOpenClawAPI 带 userId（否则一切外层传参白费）', () => {
+  const calls = parseCalls(SERVER, 'callOpenClawAPI');
+  // 5 参且第 5 个是 userId 的那次就是首次调用
+  const first = calls.find((c) => c.args.length === 5);
+  assert.ok(first, '找不到 5 参的首次调用');
+  assert.ok(/userId/.test(first.args[4] || ''), `首次调用未传 userId：${first.args[4]}`);
+});
+
+t('所有 callOpenClawAPI 调用都带 userId（启动预热除外）', () => {
+  const calls = parseCalls(SERVER, 'callOpenClawAPI');
+  const offenders = calls.filter((c) => {
+    // 启动预热 ping 没有用户上下文，用平台 Key 是正确的
+    if (c.args[1] === "'ping'") return false;
+    const uid = c.args[4] || '';
+    return !/userId|user_id|req\.user|\.sub/i.test(uid);
+  });
+  assert.strictEqual(offenders.length, 0,
+    `未传 userId：${offenders.map((o) => 'line ' + o.line).join(', ')}`);
+});
+
+t('工具内嵌套 spawn 也传 uid（避免子智能体回落平台 Key）', () => {
+  const calls = parseCalls(SERVER, 'spawnAgentSession');
+  const nested = calls.filter((c) => c.args[2] && /childTaskId|taskName/.test(c.args[2]));
+  assert.ok(nested.length >= 2, `嵌套 spawn 只找到 ${nested.length} 处`);
+  for (const c of nested) {
+    assert.ok(/userId/.test(c.args[6] || ''), `line ${c.line} 嵌套 spawn 未传 userId`);
+  }
 });
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

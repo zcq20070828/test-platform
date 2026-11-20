@@ -814,12 +814,10 @@ export const userApiKeyApi = {
   },
 
   // 新增；第一条会自动设为默认（后端行为）
+  // 只传名称与 Key：接口地址与模型由平台统一配置（2026-11-20）
   async create(payload: {
     name: string
     apiKey: string
-    provider?: string
-    baseUrl?: string
-    model?: string
   }): Promise<{ ok: boolean; message: string; id?: string; isDefault?: boolean }> {
     const res = await request<any>('/api/user/api-keys', {
       method: 'POST',
@@ -831,13 +829,10 @@ export const userApiKeyApi = {
       : { ok: false, message: res.error || '保存失败' }
   },
 
-  // 修改；apiKey 留空表示「不换 Key，只改名称/地址/模型」
+  // 修改；apiKey 留空表示「不换 Key，只改名称」
   async update(id: string, payload: {
     name: string
     apiKey?: string
-    provider?: string
-    baseUrl?: string
-    model?: string
   }): Promise<{ ok: boolean; message: string }> {
     const res = await request<any>(`/api/user/api-keys/${id}`, {
       method: 'PUT',
