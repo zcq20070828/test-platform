@@ -70,8 +70,17 @@ const GROUP_LABELS = ['基础维度（用户×数据）', '流程与安全并行
  * @returns {Object}
  */
 export function estimateTotalDuration(dimensions, caseCounts = null) {
-  if (!Array.isArray(dimensions) || dimensions.length === 0) {
-    throw new TypeError('[execution-scheduler] dimensions 必须是非空数组');
+  if (!Array.isArray(dimensions)) {
+    throw new TypeError('[execution-scheduler] dimensions 必须是数组');
+  }
+  // 空数组是合法输入（没有任何待测维度）：返回零工时。
+  // 早先这里抛 TypeError，导致「全部维度已覆盖」时整个 planner 失败（任务 21bf3dc9）。
+  if (dimensions.length === 0) {
+    return {
+      sequentialDays: 0, parallelDays: 0, recommendedDays: 0,
+      dimDurations: {}, groupDurations: [], unit: 'person-day',
+      note: '无待测维度',
+    };
   }
 
   const counts = caseCounts ?? Object.fromEntries(dimensions.map((dim) => [dim, 1]));
@@ -165,10 +174,25 @@ export function scheduleExecution(plan = {}, resourceLimit = {}) {
   });
 
   const caseCounts = Object.fromEntries(dimensions.map((d) => [d.name, d.estimatedCases]));
-  const duration = estimateTotalDuration(
-    executionOrder.filter((d) => !(dimensions.find((dim) => dim.name === d)?.alreadyCovered)),
-    caseCounts,
-  );
+  // 待测维度 = 执行顺序里还没被覆盖的那些。
+  //
+  // 必须处理「全部已覆盖」的情况：线上实测（任务 21bf3dc9）模型传了
+  // coveredDimensions 后所有维度都标记为已覆盖，这里的 filter 结果为空，
+  // estimateTotalDuration 直接抛 `dimensions 必须是非空数组`，
+  // 整个 planner 调用变成 success:false —— 用户看到「调用 planner 工具失败」。
+  // 全部覆盖是**合法状态**（说明规划已完成），此时工时估算就是 0，不该报错。
+  const pendingDims = executionOrder.filter((d) => !(dimensions.find((dim) => dim.name === d)?.alreadyCovered));
+  const duration = pendingDims.length
+    ? estimateTotalDuration(pendingDims, caseCounts)
+    : {
+        sequentialDays: 0,
+        parallelDays: 0,
+        recommendedDays: 0,
+        dimDurations: {},
+        groupDurations: [],
+        unit: 'person-day',
+        note: '全部维度已覆盖，无需排期',
+      };
 
   const resourceAssignment = Object.fromEntries(dimensions.map((dim) => [dim.name, peoplePerDim]));
 

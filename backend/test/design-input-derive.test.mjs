@@ -184,5 +184,37 @@ t('输入列为空时按用例名里的长度补出输入（且长度精确）',
   assert.ok(/phone="13800138000"/.test(out.text), '手机号未用真实值');
 });
 
+// ---------------- planner 不能因「全部维度已覆盖」而崩 ----------------
+// 线上实测任务 21bf3dc9：模型调用 9dem_planner 返回
+// 「[execution-scheduler] dimensions 必须是非空数组」，界面上就是
+// 「调用 planner 工具失败」。根因是 scheduleExecution 里
+//   estimateTotalDuration(executionOrder.filter(未被覆盖))
+// 当所有维度都已覆盖时 filter 结果为空 → 抛 TypeError。
+// 全部覆盖是合法状态（说明规划已完成），工时就是 0，不该报错。
+t('planner：空维度工时估算返回 0 而不是抛错', async () => {
+  const sched = await import(path.join(ROOT, 'qclaw-skills', '9dem-planner', 'backend', 'execution-scheduler.js'));
+  const r = sched.estimateTotalDuration([]);
+  assert.strictEqual(r.recommendedDays, 0, `空维度应返回 0 天，实际 ${r.recommendedDays}`);
+  assert.ok(r.note, '缺少说明');
+  // 非数组仍然要报错（这是真的参数错误）
+  assert.throws(() => sched.estimateTotalDuration('user'), /必须是数组/);
+});
+
+t('planner：pendingDims 为空时不调用 estimateTotalDuration 的抛错路径', () => {
+  const sched = fs.readFileSync(path.join(ROOT, 'qclaw-skills', '9dem-planner', 'backend', 'execution-scheduler.js'), 'utf8');
+  assert.ok(/const pendingDims = executionOrder\.filter/.test(sched), '缺少 pendingDims 计算');
+  assert.ok(/pendingDims\.length\s*\n?\s*\?\s*estimateTotalDuration/.test(sched),
+    '未按 pendingDims 长度分支');
+});
+
+t('server.js：planner 补算要求「调用成功」而不是「调用过」', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'backend', 'server.js'), 'utf8');
+  const idx = src.indexOf("const planned = skillExecutions.some(");
+  assert.ok(idx > 0, '找不到 planned 判定');
+  const block = src.slice(idx, idx + 300);
+  assert.ok(/e\.result\.success !== false/.test(block), '未检查调用是否成功（失败也会被当成已规划）');
+  assert.ok(/!e\.result\.error/.test(block), '未检查 error 字段');
+});
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

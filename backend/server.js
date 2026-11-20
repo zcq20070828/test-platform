@@ -11811,7 +11811,11 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
       // 规划是确定性计算、成本极低，与其反复调提示词，不如系统自己补一次：
       // 没调过就给模型补一条规划上下文，并把结果记进 skillExecutions 供审计。
       if (agentId === 'test-case-generator') {
-        const planned = skillExecutions.some((e) => e.skillId === '9dem-planner');
+        // 「调过」必须要求**成功**：模型调用了但报错（实测任务 21bf3dc9 的
+        // 「dimensions 必须是非空数组」）也算没规划成，仍要补算。
+        const planned = skillExecutions.some(
+          (e) => e.skillId === '9dem-planner' && e.result && e.result.success !== false && !e.result.error
+        );
         if (!planned) {
           try {
             const plannerExec = SKILL_EXECUTORS['9dem-planner'];

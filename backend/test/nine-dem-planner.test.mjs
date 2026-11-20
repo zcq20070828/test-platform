@@ -118,7 +118,14 @@ t('调度序列标出阻塞依赖与可并行同组维度', () => {
 });
 
 t('estimateTotalDuration 参数校验', () => {
-  assert.throws(() => scheduler.estimateTotalDuration([]), TypeError);
+  // 空数组是**合法**输入（所有维度已覆盖，没有待测项）→ 返回 0 工时。
+  // 早先这里抛 TypeError，导致「全部维度已覆盖」时整个 planner 调用失败
+  // （线上任务 21bf3dc9：「调用 planner 工具失败」）。见 design-input-derive.test。
+  const empty = scheduler.estimateTotalDuration([]);
+  assert.strictEqual(empty.recommendedDays, 0);
+  // 非数组才是真参数错误
+  assert.throws(() => scheduler.estimateTotalDuration('user'), TypeError);
+
   const d = scheduler.estimateTotalDuration(matrix.DIMENSION_KEYS);
   assert.ok(d.recommendedDays >= d.sequentialDays);
 });
