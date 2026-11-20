@@ -33,6 +33,8 @@ export function publicExperienceView(row) {
     effectiveness: row.effectiveness === null || row.effectiveness === undefined
       ? null
       : Number(row.effectiveness),
+    // 是否已有足够的同期对照样本（前端据此区分「没测」和「测了没效果」）
+    trialReady: row.effectiveness !== null && row.effectiveness !== undefined,
     suppressedReason: row.suppressed_reason || null,
     samples: safeParseSamples(row.samples),
     firstSeenAt: row.first_seen_at || null,
@@ -228,6 +230,207 @@ export async function getInjectableExperiences(agentId, opts = {}) {
   }
 }
 
+/**
+ * 取该智能体的「检索候选池」（供 BM25 检索用）
+ *
+ * 与 getInjectableExperiences 的区别：
+ *   - 后者按次数取前 N 条（旧做法，不可扩展：攒到上百条后长尾永远排不进）
+ *   - 本函数返回全部可用经验（active/watch），交给调用方按「当前任务内容」检索
+ *
+ * 做了上限保护（默认 500 条）：经验库异常膨胀时不会把内存打满。
+ *
+ * @param {string} agentId
+ * @param {Object} [opts]
+ * @param {number} [opts.limit=500]
+ */
+export async function getExperiencePool(agentId, opts = {}) {
+  const limit = Math.max(1, Math.min(500, Number(opts.limit) || 500));
+  try {
+    const rows = await query(
+      `SELECT id, agent_id, category, pattern_key, title, guidance, status, level,
+              occurrences_total, occurrences_before, occurrences_after,
+              tasks_before, tasks_after, effectiveness, injected_since, last_seen_at, samples
+         FROM agent_experiences
+        WHERE agent_id = ? AND status IN ('active','watch')
+        ORDER BY level DESC, occurrences_total DESC
+        LIMIT ?`,
+      [agentId, limit],
+    );
+    return rows.map((r) => ({
+      ...publicExperienceView(r),
+      // 检索文本：标题 + 改进要求（这两段最能代表「这是什么问题、该怎么改」）
+      searchText: `${r.title} ${r.guidance || ''}`,
+    }));
+  } catch (e) {
+    console.warn(`[Experience] 取候选池失败: ${e.message}`);
+    return [];
+  }
+}
+
+// ---------------- 同期对照实验（RCT）----------------
+//
+// 参见 database/13-experience-trials.sql 的说明。
+// 关键取舍：随机化只对「还没测准」的经验做，已证明有效的始终注入——
+// 否则为了统计严谨去牺牲用户拿到的交付质量，本末倒置。
+
+/** 该经验是否适合进入随机化（未测准 / 非高强度约束） */
+export function isTrialEligible(exp) {
+  if (!exp) return false;
+  if (exp.status === 'suppressed' || exp.status === 'dormant') return false;
+  // 已经升级到 L2/L3 说明效果已被证明，继续注入，不再拿它做实验
+  if ((Number(exp.level) || 1) >= 2) return false;
+  // 样本量已足够（治疗组/对照组各 >= 8）就不再随机化
+  return true;
+}
+
+/**
+ * 把召回到的经验分成「注入组」与「留出组」
+ *
+ * 留出策略（保守，优先保证交付质量）：
+ *   - 只对 eligible 的经验随机化
+ *   - 单任务最多留出 MAX_CONTROL 条（默认 2）
+ *   - 相关性最高的那条永不留出（它最可能对症）
+ *   - 经验总数 <= 3 时不留出（样本太少，实验价值低且影响大）
+ *
+ * @param {Array} ranked 按相关性排好序的经验（第一个最相关）
+ * @param {Object} [opts]
+ * @param {(id:string)=>number} [opts.random] 可注入的随机源（便于测试）
+ * @returns {{treatment:Array, control:Array}}
+ */
+export function splitForTrial(ranked, opts = {}) {
+  const list = Array.isArray(ranked) ? ranked : [];
+  const maxControl = Number(opts.maxControl) || 2;
+  const rand = typeof opts.random === 'function' ? opts.random : Math.random;
+
+  if (list.length <= 3) return { treatment: list, control: [] };
+
+  const treatment = [];
+  const control = [];
+  for (let i = 0; i < list.length; i += 1) {
+    const exp = list[i];
+    const isTop = i === 0;
+    if (isTop || !isTrialEligible(exp) || control.length >= maxControl) {
+      treatment.push(exp);
+      continue;
+    }
+    // 50% 概率留出（对照组）
+    if (rand() < 0.5) control.push(exp);
+    else treatment.push(exp);
+  }
+  return { treatment, control };
+}
+
+/** 记录本次任务的试验分组 */
+export async function recordTrialAssignments({ taskId, agentId, treatment = [], control = [] }) {
+  if (!taskId || !agentId) return 0;
+  const rows = [
+    ...treatment.map((e) => [taskId, agentId, e.id, e.patternKey || '', 'treatment']),
+    ...control.map((e) => [taskId, agentId, e.id, e.patternKey || '', 'control']),
+  ];
+  if (!rows.length) return 0;
+  let n = 0;
+  for (const r of rows) {
+    try {
+      await pool.execute(
+        `INSERT INTO experience_trials (task_id, agent_id, experience_id, pattern_key, arm)
+         VALUES (?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE arm = VALUES(arm)`,
+        r,
+      );
+      n += 1;
+    } catch (e) {
+      console.warn(`[Experience] 记录试验分组失败: ${e.message}`);
+    }
+  }
+  return n;
+}
+
+/**
+ * 回填「该经验对应的问题在本任务中是否出现」
+ *
+ * @param {string} taskId
+ * @param {Array<{patternKey:string}>} hitPatternKeys 本任务实际命中的问题签名
+ */
+export async function markTrialOutcomes(taskId, hitPatternKeys = []) {
+  if (!taskId) return 0;
+  try {
+    const rows = await query(
+      'SELECT id, pattern_key FROM experience_trials WHERE task_id = ?',
+      [taskId],
+    );
+    if (!rows.length) return 0;
+    const hit = new Set(
+      (Array.isArray(hitPatternKeys) ? hitPatternKeys : [])
+        .map((x) => (typeof x === 'string' ? x : x?.patternKey))
+        .filter(Boolean),
+    );
+    let n = 0;
+    for (const r of rows) {
+      const occurred = hit.has(r.pattern_key) ? 1 : 0;
+      await pool.execute('UPDATE experience_trials SET problem_occurred = ? WHERE id = ?', [occurred, r.id]);
+      n += 1;
+    }
+    return n;
+  } catch (e) {
+    console.warn(`[Experience] 回填试验结果失败: ${e.message}`);
+    return 0;
+  }
+}
+
+/**
+ * 计算某经验的同期对照效果
+ *
+ * 口径：
+ *   treatmentRate = 治疗组里问题出现的比例
+ *   controlRate   = 对照组里问题出现的比例
+ *   effect        = (controlRate - treatmentRate) / controlRate
+ *                 > 0 表示注入有效（治疗组问题更少）
+ *   样本不足（任一组 < MIN_TRIAL_SAMPLES）时返回 null，不硬下结论。
+ *
+ * @param {string} experienceId
+ * @param {Object} [opts]
+ * @param {number} [opts.minSamples=6]
+ */
+export async function computeTrialEffect(experienceId, opts = {}) {
+  const minSamples = Number(opts.minSamples) || 6;
+  try {
+    const rows = await query(
+      `SELECT arm, COUNT(*) AS n, SUM(problem_occurred) AS hit
+         FROM experience_trials
+        WHERE experience_id = ?
+        GROUP BY arm`,
+      [experienceId],
+    );
+    const by = {};
+    for (const r of rows) by[r.arm] = { n: Number(r.n) || 0, hit: Number(r.hit) || 0 };
+    const t = by.treatment || { n: 0, hit: 0 };
+    const c = by.control || { n: 0, hit: 0 };
+    if (t.n < minSamples || c.n < minSamples) {
+      return {
+        ready: false,
+        treatment: t, control: c, minSamples,
+        message: `同期对照样本不足：注入组 ${t.n} 条 / 留出组 ${c.n} 条，各需 ${minSamples} 条。`,
+      };
+    }
+    const tRate = t.hit / t.n;
+    const cRate = c.hit / c.n;
+    // 对照组问题率本身为 0 时无法算相对效应（说明这条经验对应的毛病已绝迹）
+    const effect = cRate > 0 ? (cRate - tRate) / cRate : (tRate === 0 ? 1 : 0);
+    return {
+      ready: true,
+      treatment: t, control: c,
+      treatmentRate: Number(tRate.toFixed(4)),
+      controlRate: Number(cRate.toFixed(4)),
+      effect: Number(effect.toFixed(4)),
+      message: `同期对照：注入组问题率 ${(tRate * 100).toFixed(1)}%（${t.hit}/${t.n}），` +
+        `留出组 ${(cRate * 100).toFixed(1)}%（${c.hit}/${c.n}），效应 ${(effect * 100).toFixed(0)}%。`,
+    };
+  } catch (e) {
+    console.warn(`[Experience] 计算同期对照失败: ${e.message}`);
+    return { ready: false, treatment: { n: 0, hit: 0 }, control: { n: 0, hit: 0 }, message: '计算失败' };
+  }
+}
+
 /** 列表（看板用，含所有状态） */
 export async function listExperiences({ agentId = null, status = null, limit = 100 } = {}) {
   const where = [];
@@ -305,54 +508,69 @@ export async function setExperienceStatus(id, status, { reason = '', by = null }
  * @returns {Promise<{promoted:number,dormant:number,demoted:number}>}
  */
 export async function evolveExperiences(agentId, opts = {}) {
-  const MIN_TASKS = Number(opts.minTasks) || 3;
   const PROMOTE_DROP = Number(opts.promoteDrop) || 0.3;
   const DORMANT_DROP = Number(opts.dormantDrop) || 0.7;
+  // 同期对照所需的最少样本（每组）。默认 6：低于此数结论不可靠，宁可等。
+  const MIN_TRIAL = Number(opts.minTrialSamples) || 6;
 
+  // 取该 agent 所有在用经验：不再预筛 tasks_after（同期对照的判据是试验表，
+  // 不是注入前后的任务数）
   const rows = await query(
     `SELECT * FROM agent_experiences
       WHERE agent_id = ? AND status IN ('active','watch')
-        AND injected_since IS NOT NULL
-        AND tasks_after >= ?
       LIMIT 100`,
-    [agentId, MIN_TASKS],
+    [agentId],
   );
 
   let promoted = 0;
   let dormant = 0;
   let demoted = 0;
+  let waiting = 0;
 
   for (const r of rows) {
-    const eff = computeEffectiveness(r);
-    if (eff === null) continue;
+    // ★ 以同期对照为准：任务难度漂移会污染「注入前后对比」
+    //   （用户今天提交的任务变简单 → 命中率自然下降 → 被误判成经验有效）。
+    //   同期对照把「注入」与「留出」放在同一个任务里随机分配，
+    //   两组任务/模型/难度完全相同，差异就是真实因果效应。
+    const trial = await computeTrialEffect(r.id, { minSamples: MIN_TRIAL });
+    let eff;
+    if (trial.ready) {
+      eff = trial.effect;
+    } else {
+      // 试验样本不足时不再退化成「前后对比」下结论 —— 那正是被污染的指标。
+      // 只把数据放着，等样本够了再判。
+      waiting += 1;
+      continue;
+    }
 
     let nextStatus = r.status;
     let nextLevel = Number(r.level) || 1;
     let action = null;
     let detail = '';
 
+    const trialNote = `（同期对照：注入组问题率 ${(trial.treatmentRate * 100).toFixed(1)}% vs 留出组 ${(trial.controlRate * 100).toFixed(1)}%）`;
     if (eff >= DORMANT_DROP) {
       nextStatus = 'dormant';
       action = 'dormant';
-      detail = `命中率下降 ${(eff * 100).toFixed(0)}%，基本不再犯，休眠省上下文`;
+      detail = `问题发生率下降 ${(eff * 100).toFixed(0)}%，基本不再犯，休眠省上下文${trialNote}`;
       dormant += 1;
     } else if (eff >= PROMOTE_DROP && nextLevel < 3) {
       nextLevel += 1;
       nextStatus = 'active';
       action = 'promoted';
-      detail = `命中率下降 ${(eff * 100).toFixed(0)}%，提示有效但未根除，加强约束到 L${nextLevel}`;
+      detail = `问题发生率下降 ${(eff * 100).toFixed(0)}%，提示有效但未根除，加强约束到 L${nextLevel}${trialNote}`;
       promoted += 1;
     } else if (eff < 0 && r.status === 'active') {
       nextLevel = Math.max(1, nextLevel - 1);
       nextStatus = 'watch';
       action = 'demoted';
-      detail = `命中率上升 ${(-eff * 100).toFixed(0)}%，这条提示可能没说到点上，降级待人工复核`;
+      detail = `问题发生率反而上升 ${(-eff * 100).toFixed(0)}%，这条提示可能没说到点上，降级待人工复核${trialNote}`;
       demoted += 1;
     } else if (r.status === 'watch' && nextLevel === 1 && eff >= PROMOTE_DROP / 2) {
       // 有一定改善但没到升级线 → 转为 active（进入正式注入队列）
       nextStatus = 'active';
       action = 'promoted';
-      detail = `命中率下降 ${(eff * 100).toFixed(0)}%，转为正式生效`;
+      detail = `问题发生率下降 ${(eff * 100).toFixed(0)}%，转为正式生效${trialNote}`;
       promoted += 1;
     }
 
@@ -363,7 +581,7 @@ export async function evolveExperiences(agentId, opts = {}) {
     if (action) await logEvolution(r.id, agentId, action, Number(r.level) || 1, nextLevel, detail);
   }
 
-  return { promoted, dormant, demoted };
+  return { promoted, dormant, demoted, waiting };
 }
 
 /**

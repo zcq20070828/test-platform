@@ -4,8 +4,9 @@
       <div>
         <h2 class="exp-title"><MsIcon name="neurology" :size="22" /> 自我进化 · 经验库</h2>
         <p class="exp-subtitle">
-          平台把每一次审核意见和门禁缺陷沉淀成「经验」，下次生成前自动注入提示词。
-          注入后同类问题减少 → 升级约束强度或休眠；不再减少 → 降级待你复核。
+          平台把每一次审核意见和门禁缺陷沉淀成「经验」，下次生成前按任务内容检索注入。
+          效果用「同期对照」衡量：同一任务内随机把经验分到注入组和留出组，
+          两组问题发生率的差异才是这条经验的真实作用（不受任务难度变化干扰）。
         </p>
       </div>
       <div class="header-actions">
@@ -70,6 +71,7 @@
           <strong>门禁阈值自动校准</strong>
           <span class="calib-hint">
             用审核结论当弱标签，不需要人工逐条标注。目标是让「门禁的判断」尽量与「审核的判断」一致。
+            只允许收紧，不会为了指标好看而放松质量门禁。
           </span>
         </div>
         <div class="calib-actions">
@@ -152,14 +154,18 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="效果" width="130" align="center">
+        <el-table-column label="同期对照效果" width="190" align="center">
           <template #default="{ row }">
-            <template v-if="row.effectiveness !== null">
-              <el-tag :type="row.effectiveness > 0 ? 'success' : 'danger'" size="small" effect="plain">
-                {{ row.effectiveness > 0 ? '下降' : '上升' }} {{ Math.abs(row.effectiveness * 100).toFixed(0) }}%
+            <el-tooltip
+              v-if="row.effectiveness !== null"
+              :content="`同期对照：注入组问题率 vs 留出组问题率。随机分流消除任务难度漂移，比「注入前后对比」更能反映真实因果效应。`"
+              placement="top"
+            >
+              <el-tag :type="row.effectiveness > 0.1 ? 'success' : row.effectiveness < 0 ? 'danger' : 'info'" size="small" effect="plain">
+                {{ row.effectiveness > 0 ? '问题减少' : '问题增加' }} {{ Math.abs(row.effectiveness * 100).toFixed(0) }}%
               </el-tag>
-            </template>
-            <span v-else class="muted">样本不足</span>
+            </el-tooltip>
+            <span v-else class="muted">对照样本不足</span>
           </template>
         </el-table-column>
 

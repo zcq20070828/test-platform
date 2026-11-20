@@ -54,6 +54,11 @@ import {
   experienceFromReviewIssue,
   experienceFromGateReason,
 } from './lib/experience-normalizer.js';
+import {
+  buildIndex as buildExperienceIndex,
+  search as searchExperiences,
+  buildQuery as buildExperienceQuery,
+} from './lib/experience-search.js';
 import * as experienceDAO from './database/experience-dao.js';
 import {
   calibrateThreshold as calibrateGateThreshold,
@@ -3859,6 +3864,23 @@ app.get('/api/quality/experiences/evolution-log', authenticate, async (req, res)
     res.json({ success: true, data: log });
   } catch (e) {
     res.status(500).json({ success: false, error: '读取进化日志失败' });
+  }
+});
+
+/**
+ * 某条经验的同期对照结果（RCT，2026-11-20）
+ *
+ * 与「注入前后对比」的区别：同期对照把「注入」与「留出」放在**同一个任务里**
+ * 随机分配，两组任务/模型/难度完全相同，差异才是这条经验的真实因果效应。
+ * 前后对比会被任务难度漂移污染（用户今天提交的任务简单了 → 命中率自然下降
+ * → 误判经验有效）。
+ */
+app.get('/api/quality/experiences/:id/trial', authenticate, async (req, res) => {
+  try {
+    const effect = await experienceDAO.computeTrialEffect(req.params.id);
+    res.json({ success: true, data: effect });
+  } catch (e) {
+    res.status(500).json({ success: false, error: '读取同期对照结果失败' });
   }
 });
 
@@ -11954,15 +11976,74 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
 
     // 经验注入（自我进化闭环）：整个任务取一批，所有 AI 调用共用，
     // 并记录「本任务是在注入后跑的」——这是效果统计的基准。
+    //
+    // 2026-11-20 升级为「检索召回」：不再按命中次数取前 8 条，而是用当前任务内容
+    // 对该智能体的全部经验做 BM25 检索。原因：攒到上百条后，长尾但真正相关的经验
+    // 永远排不进前 8，模型看到的都是高频噪声。
+    //
+    // 兼顾召回率与相关性：检索命中不足时，用高频经验兜底补齐
+    // （有些问题与任务内容无关、但普遍高发，如「输入是占位值」）。
     let injectedExperiences = [];
+    let trialControl = [];        // 同期对照的留出组（不注入，仅用于统计）
+    let experienceMatchInfo = null;
     try {
-      injectedExperiences = await experienceDAO.getInjectableExperiences(agentId, { limit: 8 });
-      if (injectedExperiences.length) {
-        await experienceDAO.markInjected(injectedExperiences.map((e) => e.id), agentId);
-        console.log(`[Experience] ${agentId} 注入 ${injectedExperiences.length} 条历史经验（L${injectedExperiences.map((e) => e.level).join('/L')}）`);
+      const pool = await experienceDAO.getExperiencePool(agentId, { limit: 500 });
+      if (pool.length) {
+        const index = buildExperienceIndex(pool.map((e) => ({ id: e.id, text: e.searchText, ref: e })));
+        const query = buildExperienceQuery(taskInput, { agentId });
+        const hits = searchExperiences(index, query, {
+          limit: 8,
+          // 先验加权：命中次数多的经验略占优（同样相关时更该优先注入）
+          prior: (d) => 1 + Math.min(0.5, Math.log10((d.ref.occurrencesTotal || 1) + 1) * 0.3),
+        });
+
+        const picked = hits.map((h) => h.doc.ref);
+        // 检索命中不足 4 条 → 用高频经验补齐（保证总有基本盘）
+        if (picked.length < 4) {
+          const pickedIds = new Set(picked.map((e) => e.id));
+          const fallback = pool
+            .filter((e) => !pickedIds.has(e.id))
+            .sort((a, b) => (b.level - a.level) || (b.occurrencesTotal - a.occurrencesTotal))
+            .slice(0, 4 - picked.length);
+          picked.push(...fallback);
+        }
+
+        // 同期对照（RCT）：把召回到的经验分成「注入组」与「留出组」。
+        // 留出组不注入，但仍记录该任务里它对应的问题是否出现——
+        // 两组的任务/模型/难度完全相同，差异就是这条经验的真实因果效应。
+        // 这取代了原先「注入前后对比」（会被任务难度漂移污染）。
+        const split = experienceDAO.splitForTrial(picked);
+        injectedExperiences = split.treatment;
+        trialControl = split.control;
+        if (trialControl.length || split.treatment.length) {
+          try {
+            await experienceDAO.recordTrialAssignments({
+              taskId,
+              agentId,
+              treatment: split.treatment,
+              control: trialControl,
+            });
+          } catch (_) { /* 试验记录失败不影响任务 */ }
+        }
+        experienceMatchInfo = {
+          poolSize: pool.length,
+          recalled: hits.length,
+          injected: injectedExperiences.length,
+          heldOut: trialControl.length,
+          topScore: hits[0] ? hits[0].score : 0,
+        };
+
+        if (injectedExperiences.length) {
+          await experienceDAO.markInjected(injectedExperiences.map((e) => e.id), agentId);
+          console.log(
+            `[Experience] ${agentId} 从 ${pool.length} 条经验中召回 ${hits.length} 条，注入 ${injectedExperiences.length} 条` +
+            `${trialControl.length ? `，同期留出 ${trialControl.length} 条` : ''}` +
+            `（最高分 ${experienceMatchInfo.topScore}，L${injectedExperiences.map((e) => e.level).join('/L')}）`,
+          );
+        }
       }
     } catch (e) {
-      console.warn(`[Experience] 取经验失败（不影响主流程）: ${e.message}`);
+      console.warn(`[Experience] 检索经验失败（不影响主流程）: ${e.message}`);
     }
     // 工具的基线用例与统计：用于确定性落地（2026-11-20）
     let toolDesignCases = null;
@@ -12619,6 +12700,15 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
         });
         if (rec.recorded) {
           console.log(`[Experience] ${agentId} 沉淀 ${rec.recorded} 条经验（新建 ${rec.created} 条）`);
+        }
+
+        // 同期对照结果回填：告诉试验表「本任务里这些经验对应的问题出现了没有」。
+        // 这是 RCT 的核心数据——注入组与留出组在同一次任务内对照。
+        if (trialControl.length || injectedExperiences.length) {
+          await experienceDAO.markTrialOutcomes(
+            taskId,
+            candidates.map((c) => c.patternKey),
+          );
         }
       } catch (expErr) {
         console.warn(`[Experience] 沉淀失败（不影响主流程）: ${expErr.message}`);

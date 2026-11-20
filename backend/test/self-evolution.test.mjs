@@ -226,12 +226,71 @@ t('审核完成后从 issues 沉淀（最丰富的学习来源）', () => {
 // ---------------- 5) 进化 ----------------
 t('进化有明确的升级/休眠/降级阈值，且样本不足不下结论', () => {
   const fn = DAO_SRC.slice(DAO_SRC.indexOf('export async function evolveExperiences'));
-  const body = fn.slice(0, 3000);
-  assert.ok(/MIN_TASKS|minTasks/.test(body), '没有最小样本数门槛');
+  const body = fn.slice(0, 3600);
+  assert.ok(/MIN_TRIAL|minTrialSamples/.test(body), '没有最小样本数门槛');
   assert.ok(/PROMOTE_DROP|promoteDrop/.test(body), '没有升级阈值');
   assert.ok(/DORMANT_DROP|dormantDrop/.test(body), '没有休眠阈值');
   assert.ok(/dormant/.test(body) && /promoted/.test(body) && /demoted/.test(body), '缺三种动作');
-  assert.ok(/命中率上升/.test(body), '没有处理「命中率反而上升」的情况');
+  assert.ok(/反而上升/.test(body), '没有处理「问题发生率反而上升」的情况');
+});
+
+// ---------------- 同期对照（RCT）----------------
+// 用户要求「将前后对照升级为同期对照」。原因：前后对比会被任务难度漂移污染——
+// 用户今天提交的任务变简单了，命中率自然下降，就被误判成「经验有效」。
+t('★ 进化改用同期对照，不再用注入前后对比下结论', () => {
+  const fn = DAO_SRC.slice(DAO_SRC.indexOf('export async function evolveExperiences'));
+  const body = fn.slice(0, 3600);
+  assert.ok(/computeTrialEffect/.test(body), '进化没有用同期对照');
+  assert.ok(/trial\.ready/.test(body), '没有判断对照样本是否充足');
+  // 样本不足时必须 continue（等待），不能退化成前后对比
+  const idx = body.indexOf('trial.ready');
+  const block = body.slice(idx, idx + 500);
+  assert.ok(/continue/.test(block), '对照样本不足时应等待而非下结论');
+  assert.ok(!/computeEffectiveness\(r\)/.test(body), '仍在用注入前后对比（会被任务难度漂移污染）');
+});
+
+t('同期对照用「同任务内随机分流」实现（消除难度漂移）', () => {
+  assert.ok(/export function splitForTrial/.test(DAO_SRC), '缺分流函数');
+  const fn = DAO_SRC.slice(DAO_SRC.indexOf('export function splitForTrial'));
+  const body = fn.slice(0, 1600);
+  assert.ok(/treatment/.test(body) && /control/.test(body), '缺注入组/留出组');
+  assert.ok(/i === 0/.test(body), '最相关的那条没有被保护（不应留出）');
+  assert.ok(/maxControl/.test(body), '留出条数没有上限');
+  // 建立试验表的迁移必须存在
+  const trials = fs.readFileSync(path.join(ROOT, 'database', '13-experience-trials.sql'), 'utf8');
+  assert.ok(/CREATE TABLE IF NOT EXISTS `experience_trials`/.test(trials), '缺试验表迁移');
+  assert.ok(/UNIQUE KEY `uk_task_experience`/.test(trials), '缺唯一键（同任务同经验只能一条）');
+  assert.ok(/arm/.test(trials) && /problem_occurred/.test(trials), '缺分组或结果字段');
+});
+
+t('留出只针对「还没测准」的经验（不牺牲交付质量）', () => {
+  const fn = DAO_SRC.slice(DAO_SRC.indexOf('export function isTrialEligible'));
+  const body = fn.slice(0, 700);
+  assert.ok(/level.*>= 2/.test(body), 'L2+ 已证明有效的经验没有被排除');
+  assert.ok(/suppressed|dormant/.test(body), '废除/休眠的经验没有被排除');
+  // 经验太少时不做实验
+  const split = DAO_SRC.slice(DAO_SRC.indexOf('export function splitForTrial'), DAO_SRC.indexOf('export function splitForTrial') + 1600);
+  assert.ok(/list\.length <= 3/.test(split), '经验过少时没有跳过实验');
+});
+
+t('同一任务内注入组与留出组的问题签名可对照', () => {
+  assert.ok(/export async function markTrialOutcomes/.test(DAO_SRC), '缺结果回填');
+  assert.ok(/export async function computeTrialEffect/.test(DAO_SRC), '缺效果计算');
+  const fn = DAO_SRC.slice(DAO_SRC.indexOf('export async function computeTrialEffect'));
+  const body = fn.slice(0, 1800);
+  assert.ok(/GROUP BY arm/.test(body), '没有按组聚合');
+  assert.ok(/treatmentRate/.test(body) && /controlRate/.test(body), '没有分别算两组问题率');
+  assert.ok(/minSamples/.test(body), '没有最小样本门槛');
+});
+
+t('服务端在任务内真的做了分流与结果回填', () => {
+  assert.ok(/experienceDAO\.splitForTrial/.test(SERVER), '注入时没有分流');
+  assert.ok(/recordTrialAssignments/.test(SERVER), '没有记录分组');
+  assert.ok(/markTrialOutcomes/.test(SERVER), '没有回填结果');
+  const idx = SERVER.indexOf('experienceDAO.splitForTrial');
+  const block = SERVER.slice(idx, idx + 900);
+  assert.ok(/trialControl/.test(block), '留出组没有单独保存');
+  assert.ok(/treatment: split\.treatment/.test(block), '注入组没有传给记录');
 });
 
 t('休眠的经验被重新命中会自动复活（不是永久丢弃）', () => {
@@ -296,6 +355,61 @@ t('阈值调整有历史记录（能回答「阈值为什么变了」）', () =>
   const idx = SERVER.indexOf("app.post('/api/quality/threshold-auto-calibration'");
   const block = SERVER.slice(idx, idx + 2000);
   assert.ok(/saveThresholdChange/.test(block), '采纳时没有写历史');
+});
+
+// ---------------- 经验检索（BM25）----------------
+// 用户要求「向量检索经验也做了」。项目现成的 vector_service 也是 BM25+TF-IDF，
+// 没有引入神经网络 embedding —— 经验是标准化缺陷描述，关键词匹配精度已足够。
+t('★ 检索按任务内容召回，不再「只取前 8 条」', async () => {
+  const SEARCH = await import(path.join(ROOT, 'backend', 'lib', 'experience-search.js'));
+  assert.ok(typeof SEARCH.search === 'function', '缺检索入口');
+  assert.ok(typeof SEARCH.buildIndex === 'function', '缺索引构建');
+
+  const docs = [
+    { id: 'e1', text: '预期结果不可判定：只写返回HTTP状态码200。预期结果必须写出可观测证据与字段值' },
+    { id: 'e2', text: '输入数据是占位值：用 AAAA 占位。输入数据必须是符合业务规则的真实值，手机号要真实' },
+    { id: 'e3', text: '覆盖不足：缺少维度 ③ 流程 的必测点覆盖。必须覆盖九维必测点与全部需求编号' },
+    { id: 'e4', text: '格式/结构不合规：缺少「层级」列。按输出模板填写维度列' },
+    { id: 'e5', text: '跨环节承接断裂：未承接上游需求编号。上游已明确的需求编号必须完整承接' },
+  ];
+  const idx = SEARCH.buildIndex(docs);
+
+  const hit = SEARCH.search(idx, '必须覆盖九维必测点，维度流程不能漏', { limit: 3 });
+  assert.ok(hit.length >= 1, '检索没有召回任何结果');
+  assert.strictEqual(hit[0].doc.id, 'e3', `最相关应是 e3，实际 ${hit[0].doc.id}`);
+
+  // 无关查询不该召回（中文单字噪声大，靠「强命中」门槛挡住）
+  const miss = SEARCH.search(idx, '今天天气不错，帮我写首诗', { limit: 3 });
+  assert.strictEqual(miss.length, 0, `无关查询召回了 ${miss.length} 条：${miss.map((m) => m.doc.id)}`);
+});
+
+t('检索门槛：只数有判别力的命中（双字及以上）', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'backend', 'lib', 'experience-search.js'), 'utf8');
+  assert.ok(/strong = matched\.filter/.test(src), '没有区分强命中/弱命中');
+  assert.ok(/t\.length >= 2/.test(src), '强命中没有按长度过滤');
+  // 相对阈值：挡住「沾一点边」
+  assert.ok(/relRatio/.test(src), '缺相对阈值');
+});
+
+t('检索查询包含任务结构与智能体信息', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'backend', 'lib', 'experience-search.js'), 'utf8');
+  const fn = src.slice(src.indexOf('export function buildQuery'));
+  const body = fn.slice(0, 1200);
+  assert.ok(/agentId/.test(body), '查询没有带 agentId');
+  assert.ok(/FR-\\d|NFR-\\d/.test(body) || /FR-/.test(body), '查询没有提取需求编号');
+  assert.ok(/①|维度/.test(body), '查询没有提取维度标记');
+});
+
+t('服务端按检索结果注入（不再直接取前 N 条）', () => {
+  assert.ok(/buildExperienceIndex/.test(SERVER), '没有构建检索索引');
+  assert.ok(/searchExperiences/.test(SERVER), '没有调用检索');
+  assert.ok(/buildExperienceQuery/.test(SERVER), '没有构造查询');
+  assert.ok(/getExperiencePool/.test(SERVER), '没有取候选池');
+  // 必须仍有「高频兜底」，避免检索不到时一条经验都不注入
+  const idx = SERVER.indexOf('const index = buildExperienceIndex');
+  assert.ok(idx > 0, '找不到索引构建处');
+  const block = SERVER.slice(idx, idx + 2600);
+  assert.ok(/picked\.length < 4/.test(block), '缺检索不足时的兜底补齐');
 });
 
 // ---------------- 7) 接口与前端 ----------------
