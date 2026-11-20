@@ -12809,8 +12809,10 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
       // 流式模式下,fetch 在获取响应头后就返回,后续数据传输不受 signal 控制
 
       // 构建调试日志(实际请求体由下方 Deepseek fetch 直接构造)
+      // 注意：这里不能引用 resolvedKey —— 它在本块里要到下面才声明，
+      // 提前引用会抛 Cannot access 'resolvedKey' before initialization（TDZ）。
+      // 实测任务 f10d5520 就是这样整条失败。模型名放到声明之后打印。
       console.log(`[GatewayAPI] Making direct Deepseek API call...`);
-      console.log(`[GatewayAPI]   Model: ${resolvedKey.model || '(未解析)'}, stream: true`);
       console.log(`[GatewayAPI]   System prompt length: ${systemPrompt.length} chars`);
       console.log(`[GatewayAPI]   User message length: ${taskInput?.length || 0} chars`);
       console.log(`[GatewayAPI]   Timeout: ${perAttemptTimeout / 1000}s`);
@@ -12834,6 +12836,7 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
         throw new Error(`服务商「${resolvedKey.provider || '未知'}」未解析出可用模型，请在 API KEY 配置里指定模型`);
       }
       const deepseekBase = String(resolvedKey.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
+      console.log(`[GatewayAPI]   Model: ${deepseekModel}, stream: true`);
       if (resolvedKey.source === 'user') {
         console.log(`[GatewayAPI]   使用用户默认 Key (${resolvedKey.keyId})`);
       }
