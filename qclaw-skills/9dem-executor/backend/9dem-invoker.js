@@ -13,6 +13,11 @@ const {
 } = require('../executor');
 
 const { executeDesignMethods, METHODS: DESIGN_METHODS, METHOD_KEYS: DESIGN_METHOD_KEYS } = require('./design-methods');
+// 从需求文本确定性推导设计输入（2026-11-20）：
+// 因果图/判定表/功能图/状态迁移长期 skipped，因为它们要求模型在调用时
+// 显式构造 rules/functions/states，而模型不会凭空编业务规则。
+// 但需求文档里本来就有「若…则…」「A→B→C」「变为」这些结构，可确定性解析。
+const { deriveDesignInput } = require('./design-input-derive.js');
 const { generateDimensionCases, renderChecklist } = require('./dimension-cases');
 
 /**
@@ -137,9 +142,24 @@ async function invoke(params) {
 
     // 黑盒 9 种设计方法：与九维维度正交，输出可直接落表的用例
     let design = null;
+    // 声明在 if 之外：下面的 return 要用它，放在 if 里会 ReferenceError（实测踩到）
+    let derivedInfo = [];
     if (includeDesignCases) {
       const merged = { ...designInput };
       if (!merged.inputSpec && !merged.spec && spec) merged.inputSpec = spec;
+
+      // 用需求文本补齐缺失的设计输入（已有的一律不覆盖，只补空）
+      try {
+        const d = deriveDesignInput(task || '', merged);
+        Object.assign(merged, d.input);
+        derivedInfo = d.derived;
+        if (derivedInfo.length) {
+          console.log(`[DesignDerive] 从需求文本推导出: ${derivedInfo.join('、')}`);
+        }
+      } catch (deriveErr) {
+        console.warn(`[DesignDerive] 推导失败(不影响主流程): ${deriveErr.message}`);
+      }
+
       design = executeDesignMethods({ input: merged, methods, dedupe });
     }
 
@@ -229,6 +249,7 @@ async function invoke(params) {
         dataPairwiseCount: pairwise?.length || 0,
         pairwise: pairwiseMeta,
         designMethodCoverage: designStats ? designStats.methodCoverage : 0,
+        derivedDesignInput: derivedInfo,
         designUniqueCases: designStats ? designStats.uniqueCases : 0,
         designDuplicatesRemoved: designStats ? designStats.duplicatesRemoved : 0,
         dimensionProbeCount: dimensionGen.stats.total,
