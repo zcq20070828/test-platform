@@ -345,6 +345,60 @@ const SEVERITY_LABELS: Record<string, string> = {
 }
 
 /**
+ * 从「被截断的 JSON」里尽力提取审核结论
+ *
+ * 模型输出撞上 max_tokens 上限时，JSON 会在 issues 数组中途断掉，
+ * JSON.parse 必然失败。但分数、五维、reason 这些关键字段往往在**断点之前**，
+ * 用正则就能救回来——总比把整段 ```json 贴在界面上强。
+ *
+ * @returns {string} 救回来的人话；完全救不出东西时返回 '' 让调用方走纯文本分支
+ */
+function salvageTruncatedReviewJson(text: string, maxIssues: number): string {
+  // 只有「看起来像审核 JSON」才尝试，避免把普通文本误判
+  if (!/"score"\s*:/.test(text) || !/[{}]/.test(text)) return ''
+
+  const lines: string[] = []
+  const numOf = (key: string): number | null => {
+    const m = text.match(new RegExp(`"${key}"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)`))
+    return m ? Number(m[1]) : null
+  }
+
+  const score = numOf('score')
+  const veto = /"veto"\s*:\s*true/.test(text)
+  if (score !== null) {
+    const level = score >= 90 ? '可直接投产' : score >= 80 ? '评分达标' : score >= 65 ? '存在明确缺陷但可用' : '需重做主体内容'
+    lines.push(`综合评分 ${score} 分（${level}）${veto ? '，且触发一票否决' : ''}。`)
+  }
+
+  const dims: string[] = []
+  for (const [key, label] of Object.entries(DIMENSION_LABELS)) {
+    const v = numOf(key)
+    if (v !== null) dims.push(`${label} ${v}`)
+  }
+  if (dims.length) lines.push(`五维评分：${dims.join('、')}。`)
+
+  const reasonMatch = text.match(/"reason"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+  const reasonText = reasonMatch?.[1]
+  if (reasonText && reasonText.trim()) {
+    lines.push(`审核结论：${reasonText.replace(/\\n/g, ' ').slice(0, 300)}`)
+  }
+
+  // 已写出的问题条目（用 caseId 或 description 判断，避免依赖数组闭合）
+  const descs = [...text.matchAll(/"description"\s*:\s*"((?:[^"\\]|\\.)*)"/g)]
+    .map((m) => (m[1] || '').replace(/\\n/g, ' ').trim())
+    .filter(Boolean)
+  if (descs.length) {
+    lines.push(`已列出问题 ${descs.length} 条（输出被截断，完整内容见审核结果.json）。`)
+    for (const d of descs.slice(0, maxIssues)) lines.push(`· ${d.slice(0, 120)}`)
+  }
+
+  // 一句都没救出来 → 交给纯文本分支
+  if (!lines.length) return ''
+  lines.push('（本次审核输出被模型截断，以上为可解析部分）')
+  return lines.join('\n')
+}
+
+/**
  * 审核员输出（JSON）→ 自然语言
  *
  * 审核员返回的是结构化 JSON（score/veto/reason/dimensions/issues），
@@ -377,10 +431,17 @@ export function summarizeReviewOutput(raw: any, options: any = {}): string {
     }
   }
 
-  // 解析不出来就原样返回（保留可读的纯文本审核意见）
+  // 解析不出来时不要原样贴 JSON：先尝试「截断 JSON 的尽力提取」，
+  // 只有真的是纯文本审核意见才原样返回。
+  // （实测 2026-11-20：模型输出被 max_tokens 截断，JSON 在 issues 数组中途断掉，
+  //   整段 ```json 被原样贴在聊天面板里，就是用户看到的「又输出 JSON 了」。）
   if (!obj || typeof obj !== 'object') {
     const text = String(raw || '').trim()
-    return text ? text.slice(0, 800) : ''
+    if (!text) return ''
+    const salvaged = salvageTruncatedReviewJson(text, maxIssues)
+    if (salvaged) return salvaged
+    // 确实不是 JSON（纯文本意见）→ 原样返回，这本身就是人话
+    return text.slice(0, 800)
   }
 
   const lines: string[] = []
