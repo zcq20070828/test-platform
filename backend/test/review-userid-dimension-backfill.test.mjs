@@ -201,6 +201,64 @@ t('补算在证据门禁之前、用例门禁之前', () => {
   assert.ok(fill < caseGate, '补算应在本测用例门禁之前');
 });
 
+// ---------------- 用例数暴跌的真正原因：工具结果超窗口被截断 ----------------
+// 用户反馈「感觉现在生成出来的用例在覆盖率上比之前低了」「是不是把组合数阈值设成 50 了」。
+// 实测：用例数从 257 掉到 40~50。根因不是 pairwise 阈值，而是
+// 9dem_executor 的工具结果有 468KB~7.8MB（带几万条 pairwise 明细），
+// enforceContextBudget 把它截到 TOOL_RESULT_CAP=4000 字符，
+// 里面的 design.cases(113~216 条) 几乎全被砍掉，模型只能凭印象编 40 来条。
+t('工具结果先瘦身再截断，保住 design.cases', () => {
+  assert.ok(/function slimToolResultPayload/.test(SERVER), '缺少工具结果瘦身函数');
+  const fn = SERVER.slice(SERVER.indexOf('function slimToolResultPayload'));
+  const body = fn.slice(0, 3000);
+  assert.ok(/delete obj\.pairwiseFull|'pairwiseFull' in obj/.test(body), '未剔除 pairwiseFull');
+  assert.ok(/dropPairwise/.test(body), '未剔除 data.pairwise 明细');
+  // 瘦身必须在硬截断之前
+  const slimIdx = SERVER.indexOf('const slim = slimToolResultPayload(out[i])');
+  const hardIdx = SERVER.indexOf('if (c > TOOL_RESULT_CAP)');
+  assert.ok(slimIdx > 0 && hardIdx > 0 && slimIdx < hardIdx, '瘦身必须在硬截断之前');
+});
+
+t('design.cases 由系统确定性落地（模型抄不完）', () => {
+  assert.ok(/function buildDesignCasesMarkdown/.test(SERVER), '缺少基线用例落地函数');
+  assert.ok(/toolDesignCases = out\.design\.cases/.test(SERVER), '没有收集工具的 design.cases');
+  assert.ok(/DesignBackfill/.test(SERVER), '没有落地日志');
+  // 落地必须在门禁循环之前
+  const dcIdx = SERVER.indexOf('buildDesignCasesMarkdown(text, toolDesignCases');
+  const gateIdx = SERVER.indexOf('while (repairRound <= CASE_QUALITY_MAX_REPAIR_ROUNDS)');
+  assert.ok(dcIdx > 0 && gateIdx > 0 && dcIdx < gateIdx, '基线落地必须在门禁之前');
+});
+
+t('基线用例落地时做确定性补强（否则可用率暴跌）', () => {
+  assert.ok(/function strengthenAssertion/.test(SERVER), '缺少断言补强函数');
+  const fn = SERVER.slice(SERVER.indexOf('function buildDesignCasesMarkdown'));
+  const body = fn.slice(0, 4000);
+  assert.ok(/repairPlaceholderInput\(input, rowCtx\)/.test(body), '落地时未修复占位输入');
+  assert.ok(/strengthenAssertion\(expected/.test(body), '落地时未补强预期结果');
+  assert.ok(/if \(!steps\)/.test(body), '落地时未补执行步骤');
+  // 编号前缀要与模型用例区分
+  assert.ok(/DC-\$\{String\(seq\)/.test(body), '基线用例编号未用 DC- 前缀');
+});
+
+t('所有服务的 contextChars 不超过其上下文窗口', () => {
+  // 上一版我凭印象填了 400000/200000 等值，19 个服务商全部超出实际窗口
+  // （智谱 GLM-4 只有 128K tokens ≈ 96K 字符，却填了 40 万字符）。这里守住。
+  const block = SERVER.slice(SERVER.indexOf('const PROVIDERS = {'), SERVER.indexOf('/** 取服务商配置'));
+  const entries = [...block.matchAll(/^ {2}([a-z][a-z0-9]*): \{([\s\S]*?)^ {2}\},/gm)];
+  assert.ok(entries.length >= 18, `只解析到 ${entries.length} 个服务商`);
+  for (const [, id, body] of entries) {
+    const m = body.match(/contextChars: (\d+)/);
+    if (!m) continue;
+    const chars = Number(m[1]);
+    // 中文约 1.5 字符/token：字符数不应超过「窗口 tokens × 1.5」
+    // 这里只做上限守卫：最大允许 1.5M 字符（对应 1M 窗口的 Gemini）
+    assert.ok(chars <= 900000, `${id} 的 contextChars=${chars} 过大，可能超出模型窗口`);
+  }
+  // 智谱必须是 96000（128K tokens × 1.5 × 0.5）
+  const zhipu = block.match(/zhipu: \{([\s\S]*?)^ {2}\},/m);
+  assert.ok(zhipu && /contextChars: 96000/.test(zhipu[1]), '智谱 GLM-4 的预算应为 96000（128K 窗口）');
+});
+
 // ---------------- pairwise 口径 ----------------
 t('pairwise 输出上限不再把 65536 以内的组合砍掉', () => {
   const inv = fs.readFileSync(path.join(ROOT, 'qclaw-skills', '9dem-executor', 'backend', '9dem-invoker.js'), 'utf8');
