@@ -12321,7 +12321,13 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
           }
         }
 
-        while (repairRound <= CASE_QUALITY_MAX_REPAIR_ROUNDS) {
+        // 打磨轮次独立计数：达标后的「收尾打磨」与「不达标的定向修复」是两件事，
+        // 共用一个计数器会让「先修到达标、再打磨一轮」超出总轮数预算。
+        let polishRound = 0;
+        let polishBaseline = null;   // { text, usabilityRate } 打磨前基线，用于变差回退
+        let polishBeforeRate = null; // 首轮打磨前的可用率（用于统计打磨净收益）
+
+        while (true) {
           // 九维必测点确定性补齐：放在门禁之前，让本轮检查就看到补齐后的结果。
           // 只在工具确实返回了必测用例时才补，避免凭空造用例。
           if (toolDimensionCases && toolDimensionCases.length) {
@@ -12376,7 +12382,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
           addGateDefects(gateReport.byReason, (gateReport.cases || []).map((c) => c.id));
 
           if (!gateReport.applicable) {
-            if (repairRound > 0) {
+            if (repairRound > 0 || polishRound > 0) {
               // 修复轮之后解析不到用例表，说明模型输出了非交付物（如「修复说明表」），必须回退
               console.error(`[CaseGate] 修复轮后无法解析用例表，回退到修复前内容`);
               text = textBeforeRepair;
@@ -12420,25 +12426,59 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             timestamp: new Date().toISOString(),
           });
 
-          if (gateReport.pass) break;
-          if (!CASE_QUALITY_AUTO_REPAIR) break;
-          if (repairRound >= CASE_QUALITY_MAX_REPAIR_ROUNDS) break;
+          // 达标即停会把「刚好过线」的交付物原样放出去。实测任务 5d1f488c：
+          // 186 条里 24 条不可用（18 条弱断言 + 6 条步骤不合规），可用率 87.1%
+          // 刚过 85% 门槛就直接 break，一轮都没修——用户拿到的仍是要人工筛的半成品。
+          // 因此达标后再给一轮「收尾打磨」：走同一套定向修复，只改待修用例。
+          // 打磨有基线：修完可用率反而下降就整轮回退，不能让打磨把东西改坏。
+          const canPolish = gateReport.pass
+            && CASE_QUALITY_AUTO_REPAIR
+            && CASE_QUALITY_MAX_POLISH_ROUNDS > 0
+            && CASE_QUALITY_POLISH_TARGET > CASE_QUALITY_MIN_RATE
+            && polishRound < CASE_QUALITY_MAX_POLISH_ROUNDS
+            && gateReport.usabilityRate < CASE_QUALITY_POLISH_TARGET
+            && (gateReport.cases || []).length > 0;
+
+          let isPolishRound = false;
+          if (gateReport.pass) {
+            if (!canPolish) break;
+            polishRound += 1;
+            isPolishRound = true;
+            if (polishBeforeRate === null) polishBeforeRate = gateReport.usabilityRate;
+            polishBaseline = {
+              text,
+              usabilityRate: gateReport.usabilityRate,
+              usable: gateReport.usable,
+            };
+            console.log(
+              `[CaseGate] ${agentId} 已达标（可用率 ${(gateReport.usabilityRate * 100).toFixed(1)}%）` +
+              `但低于打磨目标 ${(CASE_QUALITY_POLISH_TARGET * 100).toFixed(0)}%，` +
+              `发起第 ${polishRound} 轮收尾打磨（待修 ${gateReport.cases.length} 条）`,
+            );
+          } else {
+            if (!CASE_QUALITY_AUTO_REPAIR) break;
+            if (repairRound >= CASE_QUALITY_MAX_REPAIR_ROUNDS) break;
+            repairRound += 1;
+          }
 
           // 外科式定向修复：只让模型返回「待修用例的预期结果/执行步骤」，
           // 本地按用例编号替换回原文。相比全量重写，输出量从整份文档降到几十行，
           // 单轮耗时从 ~9 分钟降到 ~1 分钟，且不会破坏文档其余部分。
           textBeforeRepair = text;
-          repairRound += 1;
+          const roundLabel = isPolishRound ? `第 ${polishRound} 轮打磨` : `第 ${repairRound} 轮`;
           const repairPrompt = buildSurgicalRepairPrompt(gateReport, { maxItems: 60 });
-          console.log(`[CaseGate] ${agentId} 发起定向修复（第 ${repairRound} 轮），待修 ${gateReport.cases.length} 条`);
+          console.log(`[CaseGate] ${agentId} 发起定向修复（${roundLabel}），待修 ${gateReport.cases.length} 条`);
           broadcast({
             type: 'case_quality_repair',
             agentId,
             userId: userId || null,
             taskId,
-            round: repairRound,
+            round: repairRound + polishRound,
+            polish: isPolishRound,
             issues: gateReport.cases.length,
-            message: `🔧 用例质量问题 ${gateReport.cases.length} 条，正在定向修复…`,
+            message: isPolishRound
+              ? `✨ 已达标，正在收尾打磨剩余 ${gateReport.cases.length} 条…`
+              : `🔧 用例质量问题 ${gateReport.cases.length} 条，正在定向修复…`,
             timestamp: new Date().toISOString(),
           });
 
@@ -12537,6 +12577,34 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             }
             text = spliced.text;
             console.log(`[CaseGate] 定向修复已替换 ${spliced.replaced} 条${spliced.skipped.length ? `，未匹配 ${spliced.skipped.length} 条` : ''}，进入复检`);
+
+            // 打磨回退：打磨的目的是提高可用率，改完反而更低就说明补丁有害
+            // （常见情形：模型把原本可判定的断言改写成了套话）。
+            // 这一轮立即作废返回打磨前内容，不再消耗后续轮次。
+            if (polishBaseline && isPolishRound) {
+              const after = checkCaseQuality(text, {
+                originalInput: taskInput,
+                minUsabilityRate: CASE_QUALITY_MIN_RATE,
+                requireDimension: true,
+                minProbeCoverage: CASE_QUALITY_MIN_PROBE_COVERAGE,
+              });
+              if (after.applicable && after.usabilityRate < polishBaseline.usabilityRate) {
+                console.warn(
+                  `[CaseGate] ${agentId} 打磨后可用率从 ${(polishBaseline.usabilityRate * 100).toFixed(1)}% ` +
+                  `降到 ${(after.usabilityRate * 100).toFixed(1)}%，作废本轮打磨、保留打磨前内容`,
+                );
+                text = polishBaseline.text;
+                gateReport = checkCaseQuality(text, {
+                  originalInput: taskInput,
+                  minUsabilityRate: CASE_QUALITY_MIN_RATE,
+                  requireDimension: true,
+                  minProbeCoverage: CASE_QUALITY_MIN_PROBE_COVERAGE,
+                });
+                addGateDefects(gateReport.byReason, (gateReport.cases || []).map((c) => c.id));
+                polishBaseline = null;
+                break;
+              }
+            }
           } catch (repairErr) {
             console.warn(`[CaseGate] 定向修复失败: ${repairErr.message}`);
             break;
@@ -12556,7 +12624,16 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
               blockerCount: gateReport.bySeverity?.blocker || 0,
               majorCount: gateReport.bySeverity?.major || 0,
               autoRepairs: gateReport.repairs?.length || 0,
+              // repairRounds 只计「不达标修复」，打磨单列——否则趋势页上
+              // 「修了几轮才过」这个指标会被达标后的收尾打磨污染。
               repairRounds: repairRound,
+              polishRounds: polishRound,
+              // 打磨到底有没有用：打磨前基线 → 打磨后最终值。
+              // 回退过的轮次净收益记 0（保持基线），这样趋势页不会把
+              // 「试着修但改坏了、已回退」误读成提升。
+              polishGain: polishRound > 0 && typeof polishBeforeRate === 'number'
+                ? Number(Math.max(0, (gateReport.usabilityRate || 0) - polishBeforeRate).toFixed(4))
+                : null,
               byReason: gateReport.byReason || {},
               // 九维覆盖与漏检行：让趋势页能区分「可用率不达标」和「维度没覆盖」两类问题
               dimensionCoverage: gateReport.dimensions ? gateReport.dimensions.probeCoverage : null,
@@ -14154,6 +14231,15 @@ const CASE_QUALITY_AUTO_REPAIR = process.env.CASE_QUALITY_AUTO_REPAIR !== '0';
 // （任务 590f：一轮修 40/121 条，可用率 49.8%→64.3%，仍不达标）。
 // 设为 2 轮：第一轮修掉大部分机械问题，第二轮收尾，总耗时增加约 3 分钟。
 const CASE_QUALITY_MAX_REPAIR_ROUNDS = Number(process.env.CASE_QUALITY_MAX_REPAIR_ROUNDS) || 2;
+// 达标后的「收尾打磨」：达标即停会把刚好过线的交付物原样放出去。
+// 实测任务 5d1f488c 可用率 87.1%（186 条里 24 条不可用）刚过 85% 门槛，
+// 一轮都没修就交付了；而同样输入稍有波动就会掉到门禁以下。
+// 所以只要还没到打磨目标，就用同一套定向修复再收一遍尾。
+// 打磨与「不达标修复」分开计数，不占定向修复的轮数预算。
+const CASE_QUALITY_MAX_POLISH_ROUNDS = Number(process.env.CASE_QUALITY_MAX_POLISH_ROUNDS) || 1;
+// 打磨目标：达到这个可用率就不再打磨（默认比门槛高 10 个百分点）
+const CASE_QUALITY_POLISH_TARGET = Number(process.env.CASE_QUALITY_POLISH_TARGET)
+  || Math.min(1, CASE_QUALITY_DEFAULT_MIN_RATE + 0.1);
 // 需要跑用例门禁的智能体
 const CASE_QUALITY_GATE_AGENTS = new Set(['test-case-generator']);
 // 按智能体规则集做确定性检查（2026-11-06 阶段四 4.3）：
