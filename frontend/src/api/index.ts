@@ -1405,6 +1405,22 @@ export const experienceApi = {
     return body.data || null
   },
 
+  /** 某条经验的同期对照结果（RCT） */
+  async trialEffect(id: string): Promise<{
+    ready: boolean
+    treatment: { n: number; hit: number }
+    control: { n: number; hit: number }
+    treatmentRate?: number
+    controlRate?: number
+    effect?: number
+    message: string
+  } | null> {
+    const res = await request<any>(`/api/quality/experiences/${id}/trial`)
+    if (!res.success) return null
+    const body = unwrapQualityBody(res.data)
+    return body.data || null
+  },
+
   async calibrationApply(days = 90): Promise<{ applied: boolean; message: string; data: any }> {
     const res = await request<any>('/api/quality/threshold-auto-calibration', {
       method: 'POST',
