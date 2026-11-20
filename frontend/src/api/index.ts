@@ -1317,6 +1317,108 @@ export function createWebSocket(onMessage: (event: MessageEvent) => void): WebSo
 }
 
 // 交付物质量 API（2026-11-06 阶段四）
+// ─── 自我进化：经验库 + 阈值自动校准（2026-11-20）────────────────────────
+export interface AgentExperience {
+  id: string
+  agentId: string
+  category: string
+  title: string
+  guidance: string
+  source: string
+  status: 'active' | 'watch' | 'dormant' | 'suppressed' | string
+  level: number
+  occurrencesTotal: number
+  occurrencesBefore: number
+  occurrencesAfter: number
+  tasksBefore: number
+  tasksAfter: number
+  effectiveness: number | null
+  suppressedReason: string | null
+  samples: string[]
+  firstSeenAt: string | null
+  lastSeenAt: string | null
+  injectedSince: string | null
+}
+
+export interface ExperienceStats {
+  totals: { all: number; active: number; watch: number; dormant: number; suppressed: number; improved: number; occurrences: number }
+  byAgent: Record<string, { all: number; active: number; watch: number; dormant: number; suppressed: number }>
+}
+
+function unwrapQualityBody(raw: any) {
+  return raw && typeof raw === 'object' ? raw : {}
+}
+
+export const experienceApi = {
+  /** 经验列表 + 汇总统计 */
+  async list(params: { agentId?: string; status?: string; limit?: number } = {}): Promise<{
+    experiences: AgentExperience[]
+    stats: ExperienceStats
+  }> {
+    const q = new URLSearchParams()
+    if (params.agentId) q.set('agentId', params.agentId)
+    if (params.status) q.set('status', params.status)
+    if (params.limit) q.set('limit', String(params.limit))
+    const res = await request<any>(`/api/quality/experiences?${q.toString()}`)
+    const body = unwrapQualityBody(res.data)
+    const d = body.data || {}
+    return {
+      experiences: Array.isArray(d.experiences) ? d.experiences : [],
+      stats: d.stats || { totals: { all: 0, active: 0, watch: 0, dormant: 0, suppressed: 0, improved: 0, occurrences: 0 }, byAgent: {} },
+    }
+  },
+
+  /** 进化动作日志 */
+  async evolutionLog(params: { agentId?: string; limit?: number } = {}): Promise<any[]> {
+    const q = new URLSearchParams()
+    if (params.agentId) q.set('agentId', params.agentId)
+    if (params.limit) q.set('limit', String(params.limit))
+    const res = await request<any>(`/api/quality/experiences/evolution-log?${q.toString()}`)
+    const body = unwrapQualityBody(res.data)
+    return Array.isArray(body.data) ? body.data : []
+  },
+
+  /** 废除 / 恢复一条经验（人工否决权，防止错误经验反复注入） */
+  async setStatus(id: string, status: 'suppressed' | 'active' | 'watch' | 'dormant', reason = ''): Promise<{ ok: boolean; message: string }> {
+    const res = await request<any>(`/api/quality/experiences/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, reason }),
+    })
+    const body = unwrapQualityBody(res.data)
+    return { ok: res.success, message: res.success ? (body.message || '已更新') : (res.error || '更新失败') }
+  },
+
+  /** 立刻跑一次进化（升级/休眠/降级） */
+  async evolve(agentId?: string): Promise<{ agents: number; changes: any[] }> {
+    const res = await request<any>('/api/quality/experiences/evolve', {
+      method: 'POST',
+      body: JSON.stringify(agentId ? { agentId } : {}),
+    })
+    const body = unwrapQualityBody(res.data)
+    return body.data || { agents: 0, changes: [] }
+  },
+
+  /** 阈值自动校准：GET 看建议，POST 采纳 */
+  async calibrationPreview(days = 90): Promise<any> {
+    const res = await request<any>(`/api/quality/threshold-auto-calibration?days=${days}`)
+    const body = unwrapQualityBody(res.data)
+    return body.data || null
+  },
+
+  async calibrationApply(days = 90): Promise<{ applied: boolean; message: string; data: any }> {
+    const res = await request<any>('/api/quality/threshold-auto-calibration', {
+      method: 'POST',
+      body: JSON.stringify({ days }),
+    })
+    const body = unwrapQualityBody(res.data)
+    return {
+      applied: !!body.applied,
+      message: body.message || (res.success ? '' : (res.error || '采纳失败')),
+      data: body.data || null,
+    }
+  },
+}
+
 export const qualityApi = {
   /** 质量趋势（门禁可用率 vs 人工可用率） */
   async trend(days = 30): Promise<ApiResponse<any>> {

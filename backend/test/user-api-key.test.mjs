@@ -619,10 +619,13 @@ t('审核员调用带 userId（每轮任务都要跑，消耗最大）', () => {
 
 t('spawnAgentSession 内部首次 callOpenClawAPI 带 userId（否则一切外层传参白费）', () => {
   const calls = parseCalls(SERVER, 'callOpenClawAPI');
-  // 5 参且第 5 个是 userId 的那次就是首次调用
-  const first = calls.find((c) => c.args.length === 5);
-  assert.ok(first, '找不到 5 参的首次调用');
-  assert.ok(/userId/.test(first.args[4] || ''), `首次调用未传 userId：${first.args[4]}`);
+  // 排除启动预热（'ping'，3 参；没有用户上下文，用平台 Key 是正确的）
+  const real = calls.filter((c) => c.args[1] !== "'ping'");
+  assert.ok(real.length >= 1, '找不到真实调用');
+  // 首次调用 = 真实调用里参数最少的那次（后续会带 forceToolCall / experienceOverride）
+  const first = [...real].sort((a, b) => a.args.length - b.args.length)[0];
+  assert.ok(/userId/.test(first.args[4] || ''),
+    `首次调用（${first.args.length} 参）第 5 个参数不是 userId：${first.args[4]}`);
 });
 
 t('所有 callOpenClawAPI 调用都带 userId（启动预热除外）', () => {

@@ -51,8 +51,14 @@ import {
 } from './lib/case-quality-gate.js';
 import { diagnoseFailure } from './lib/failure-diagnosis.js';
 import {
+  experienceFromReviewIssue,
+  experienceFromGateReason,
+} from './lib/experience-normalizer.js';
+import * as experienceDAO from './database/experience-dao.js';
+import {
   calibrateThreshold as calibrateGateThreshold,
   listDisagreements as listThresholdDisagreements,
+  calibrateByReviewVerdict,
 } from './lib/threshold-calibration.js';
 import { buildReviewerSystemPrompt } from './lib/reviewer-prompt.js';
 import bcrypt from 'bcrypt';
@@ -604,6 +610,15 @@ function applyReviewVerdictToTask(task, verdict, attempts) {
   const u = verdict.union;
   if (u) {
     task.reviewStats = `blocker=${u.blocker} major=${u.major} minor=${u.minor} 总=${u.total} major密度=${((verdict.majorDensity || 0) * 100).toFixed(1)}%（分母 ${verdict.totalCases || 0}）`.slice(0, 255);
+  }
+
+  // 审核评分中位数：作为「这条交付物好不好」的弱标签，
+  // 供门禁阈值自动校准使用（不需要人工标注也能闭环）
+  const scores = Array.isArray(verdict.scores) ? verdict.scores.map(Number).filter((n) => Number.isFinite(n) && n > 0) : [];
+  if (scores.length) {
+    const sorted = [...scores].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    task.reviewMedian = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
   }
 
   const notes = Array.isArray(verdict.issues) ? verdict.issues : [];
@@ -3817,6 +3832,135 @@ app.get('/api/quality/threshold-calibration', authenticate, async (req, res) => 
  * 采纳校准结果（管理员操作）。写入 system_config 后立即对后续任务生效，
  * 并保留原阈值与人工样本数作为审计记录。
  */
+/**
+ * 经验库接口（2026-11-20 自我进化闭环）
+ */
+app.get('/api/quality/experiences', authenticate, async (req, res) => {
+  try {
+    const agentId = req.query.agentId ? String(req.query.agentId) : null;
+    const status = req.query.status ? String(req.query.status) : null;
+    const [list, stats] = await Promise.all([
+      experienceDAO.listExperiences({ agentId, status, limit: req.query.limit }),
+      experienceDAO.experienceStats(),
+    ]);
+    res.json({ success: true, data: { experiences: list, stats } });
+  } catch (e) {
+    console.error('[Experience] 列表失败', e.message);
+    res.status(500).json({ success: false, error: '读取经验库失败' });
+  }
+});
+
+app.get('/api/quality/experiences/evolution-log', authenticate, async (req, res) => {
+  try {
+    const log = await experienceDAO.listEvolutionLog({
+      agentId: req.query.agentId ? String(req.query.agentId) : null,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, data: log });
+  } catch (e) {
+    res.status(500).json({ success: false, error: '读取进化日志失败' });
+  }
+});
+
+/**
+ * 人工废除 / 恢复一条经验
+ *
+ * 必须留这个口子：自动沉淀的经验可能是错的（比如审核员误报某类问题），
+ * 没有人工否决权，错误经验会被反复注入、越积越多。
+ */
+app.patch('/api/quality/experiences/:id', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const status = String(req.body?.status || '');
+    const reason = String(req.body?.reason || '');
+    const ok = await experienceDAO.setExperienceStatus(req.params.id, status, {
+      reason,
+      by: req.user?.username || req.user?.name || null,
+    });
+    if (!ok) return res.status(404).json({ success: false, error: '经验不存在或状态非法' });
+    res.json({ success: true, message: status === 'suppressed' ? '已废除这条经验' : '已恢复这条经验' });
+  } catch (e) {
+    res.status(500).json({ success: false, error: '更新经验状态失败' });
+  }
+});
+
+/**
+ * 触发一次进化（升级/休眠/降级）
+ *
+ * 平时由定时任务自动跑；这个接口用于「刚跑完一批任务，想立刻看到效果」。
+ */
+app.post('/api/quality/experiences/evolve', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const agentId = req.body?.agentId ? String(req.body.agentId) : null;
+    const agents = agentId
+      ? [agentId]
+      : [...new Set((await experienceDAO.listExperiences({ limit: 500 })).map((e) => e.agentId))];
+    const summary = [];
+    for (const a of agents) {
+      const r = await experienceDAO.evolveExperiences(a);
+      if (r.promoted || r.dormant || r.demoted) summary.push({ agentId: a, ...r });
+    }
+    res.json({ success: true, data: { agents: agents.length, changes: summary } });
+  } catch (e) {
+    console.error('[Experience] 进化失败', e.message);
+    res.status(500).json({ success: false, error: '执行进化失败' });
+  }
+});
+
+/**
+ * 用审核评分（弱标签）自动校准门禁阈值
+ *
+ * 与人工校准（/api/quality/threshold-calibration）的区别：
+ *   - 人工校准需要逐条标记用例可用性，样本极难积累（实测全库只有 3 条）
+ *   - 本接口用审核结论当弱标签，样本量足够，能形成闭环
+ * GET 只看建议；POST 采纳（管理员）。
+ */
+app.get('/api/quality/threshold-auto-calibration', authenticate, async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(365, Number(req.query.days) || 90));
+    const samples = await experienceDAO.getThresholdSamples({ days });
+    const result = calibrateByReviewVerdict(samples, {
+      currentThreshold: CASE_QUALITY_MIN_RATE,
+      minSamples: Number(req.query.minSamples) || 8,
+    });
+    const history = await experienceDAO.listThresholdHistory(10);
+    res.json({ success: true, data: { ...result, history } });
+  } catch (e) {
+    console.error('[Threshold] 自动校准失败', e.message);
+    res.status(500).json({ success: false, error: '自动校准失败' });
+  }
+});
+
+app.post('/api/quality/threshold-auto-calibration', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(365, Number(req.body?.days) || 90));
+    const samples = await experienceDAO.getThresholdSamples({ days });
+    const result = calibrateByReviewVerdict(samples, {
+      currentThreshold: CASE_QUALITY_MIN_RATE,
+      minSamples: Number(req.body?.minSamples) || 8,
+    });
+    if (result.status !== 'ok' || !result.applied || result.recommended == null) {
+      return res.json({ success: true, applied: false, message: result.message, data: result });
+    }
+    const previous = CASE_QUALITY_MIN_RATE;
+    await caseFeedbackDAO.saveGateThreshold(result.recommended, `auto:${req.user?.username || 'system'}`);
+    await experienceDAO.saveThresholdChange({
+      threshold: result.recommended,
+      previous,
+      sampleTasks: result.sampleCount,
+      agreement: result.best?.agreement ?? null,
+      source: 'auto_review',
+      detail: `误放行率 ${((result.best?.falsePassRate || 0) * 100).toFixed(1)}%，拒绝召回 ${((result.best?.rejectRecall || 0) * 100).toFixed(1)}%`,
+    });
+    CASE_QUALITY_MIN_RATE = result.recommended;
+    CASE_QUALITY_MIN_RATE_SOURCE = 'system_config';
+    console.log(`[Threshold] 按审核弱标签自动调整：${previous} → ${result.recommended}`);
+    res.json({ success: true, applied: true, message: result.message, data: result });
+  } catch (e) {
+    console.error('[Threshold] 自动校准采纳失败', e.message);
+    res.status(500).json({ success: false, error: '自动校准采纳失败' });
+  }
+});
+
 app.post('/api/quality/threshold', authenticate, requireAdmin, async (req, res) => {
   try {
     const rate = Number(req.body?.rate);
@@ -11790,6 +11934,36 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     // 门禁代码在分支之外，走「模型没调工具」的路径时若变量不在作用域内，
     // 就是 ReferenceError: toolDimensionCases is not defined（任务 44dd1eab 实测踩到）。
     let toolDimensionCases = null;
+
+    // 门禁缺陷汇总（收尾时统一沉淀经验）
+    //
+    // 两条门禁覆盖不同智能体，必须都收：
+    //   CASE_QUALITY_GATE → test-case-generator（用例结构/可用率/维度）
+    //   RULE_GATE         → 其余十几个智能体（需求分析/方案/执行/缺陷/报告/脱敏/安全/性能/兼容/脚本）
+    // 早先只收前者，导致经验只覆盖「用例生成」一类任务，与「要覆盖所有任务」不符。
+    const gateDefects = {};   // reasonKey -> { count, sample }
+    const addGateDefects = (byReason, samples = []) => {
+      if (!byReason || typeof byReason !== 'object') return;
+      for (const [k, v] of Object.entries(byReason)) {
+        const cnt = Number(v) || 0;
+        if (!cnt) continue;
+        if (!gateDefects[k]) gateDefects[k] = { count: 0, sample: samples[0] || '' };
+        gateDefects[k].count += cnt;
+      }
+    };
+
+    // 经验注入（自我进化闭环）：整个任务取一批，所有 AI 调用共用，
+    // 并记录「本任务是在注入后跑的」——这是效果统计的基准。
+    let injectedExperiences = [];
+    try {
+      injectedExperiences = await experienceDAO.getInjectableExperiences(agentId, { limit: 8 });
+      if (injectedExperiences.length) {
+        await experienceDAO.markInjected(injectedExperiences.map((e) => e.id), agentId);
+        console.log(`[Experience] ${agentId} 注入 ${injectedExperiences.length} 条历史经验（L${injectedExperiences.map((e) => e.level).join('/L')}）`);
+      }
+    } catch (e) {
+      console.warn(`[Experience] 取经验失败（不影响主流程）: ${e.message}`);
+    }
     // 工具的基线用例与统计：用于确定性落地（2026-11-20）
     let toolDesignCases = null;
     let toolDesignStats = null;
@@ -11831,7 +12005,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     // 首次调用必须带 userId：这是每个任务的第一发请求，
     // 漏传会让 resolveApiKey(null) 直接返回平台 Key，外层再补 userId 也绕不过这一行。
     // （它同时决定 callOpenClawAPI 用的 baseUrl / model 与记录归属，2026-11-20）
-    const resultFromAPI = await callOpenClawAPI(agentId, taskInput, unifiedStreamCallback, initialMessages, userId);
+    const resultFromAPI = await callOpenClawAPI(agentId, taskInput, unifiedStreamCallback, initialMessages, userId, false, injectedExperiences);
     if (resultFromAPI) {
       let text = typeof resultFromAPI === 'string' ? resultFromAPI : resultFromAPI.content;
       let toolCalls = typeof resultFromAPI === 'string' ? [] : (resultFromAPI.toolCalls || []);
@@ -11849,7 +12023,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
         const nudgeMessages = conversationMessages
           ? [...conversationMessages, { role: 'system', content: systemPrompt }, { role: 'user', content: taskInput }, { role: 'user', content: nudge }]
           : [{ role: 'system', content: systemPrompt }, { role: 'user', content: taskInput }, { role: 'user', content: nudge }];
-        const nudged = await callOpenClawAPI(agentId, taskInput, unifiedStreamCallback, nudgeMessages, userId, true);
+        const nudged = await callOpenClawAPI(agentId, taskInput, unifiedStreamCallback, nudgeMessages, userId, true, injectedExperiences);
         if (nudged) {
           text = nudged.content || text;
           toolCalls = nudged.toolCalls || [];
@@ -11957,7 +12131,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             }
             messages.push({ role: 'tool', tool_call_id: callId, content: String(toolResult) });
           }
-          const next = await callOpenClawAPI(agentId, taskInput, unifiedStreamCallback, messages, userId, forceToolCall);
+          const next = await callOpenClawAPI(agentId, taskInput, unifiedStreamCallback, messages, userId, forceToolCall, injectedExperiences);
           text = (next && next.content) || '';
           toolCalls = (next && next.toolCalls) || [];
         }
@@ -12118,6 +12292,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             requireDimension: true,
             minProbeCoverage: CASE_QUALITY_MIN_PROBE_COVERAGE,
           });
+          addGateDefects(gateReport.byReason, (gateReport.cases || []).map((c) => c.id));
 
           if (!gateReport.applicable) {
             if (repairRound > 0) {
@@ -12130,6 +12305,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                 requireDimension: true,
                 minProbeCoverage: CASE_QUALITY_MIN_PROBE_COVERAGE,
               });
+              addGateDefects(gateReport.byReason, (gateReport.cases || []).map((c) => c.id));
             }
             console.log(`[CaseGate] ${agentId} 非用例类交付物，跳过门禁（${gateReport.reason}）`);
             break;
@@ -12352,6 +12528,8 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
 
         if (ruleReport && ruleReport.applicable) {
           console.log(`[RuleGate] ${agentId} ${ruleReport.summary.text}`);
+          // 规则门禁的缺陷同样沉淀 → 覆盖非用例类智能体
+          addGateDefects(ruleReport.byReason);
           broadcast({
             type: 'rule_quality_gate',
             agentId,
@@ -12417,6 +12595,33 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
         // V2 进库:异步写 DB(不 await,不阻塞响应)
         saveConversationTurn(userId, agentId, 'user', taskInput);
         if (text) saveConversationTurn(userId, agentId, 'assistant', text);
+      }
+
+      // === 经验沉淀（自我进化闭环）===
+      // 本任务暴露出的质量问题 → 归一成经验 → 累加命中次数。
+      // afterInjection 标明本任务是否在「经验已注入」之后跑的：
+      //   注入前命中记 occurrences_before，注入后命中记 occurrences_after，
+      //   两者相比就是这条经验的效果。
+      // 只在这一处记录（不在审核完成后重复记），避免同一问题被数两次。
+      try {
+        const candidates = [];
+        // 两条门禁的缺陷统一沉淀（用例门禁 + 规则门禁），覆盖所有智能体
+        for (const [reasonKey, info] of Object.entries(gateDefects)) {
+          const c = experienceFromGateReason(reasonKey, info.count || 0, info.sample || '');
+          if (c) candidates.push(c);
+        }
+        // 无缺陷也要记一次观测（干净任务计入分母，否则「问题消失」看不出效果）
+        const rec = await experienceDAO.recordTaskExperiences({
+          agentId,
+          taskId,
+          candidates,
+          afterInjection: injectedExperiences.length > 0,
+        });
+        if (rec.recorded) {
+          console.log(`[Experience] ${agentId} 沉淀 ${rec.recorded} 条经验（新建 ${rec.created} 条）`);
+        }
+      } catch (expErr) {
+        console.warn(`[Experience] 沉淀失败（不影响主流程）: ${expErr.message}`);
       }
 
       // === 审核由 executeTaskWithReview 统一处理 ===
@@ -13320,7 +13525,7 @@ async function callDeepSeekRewrite(messages, options = {}) {
   }
 }
 
-async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverride = null, userId = null, forceToolCall = false) {
+async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverride = null, userId = null, forceToolCall = false, experienceOverride = null) {
   // 添加详细入口日志
   console.log(`[GatewayAPI] ===== ENTRY: callOpenClawAPI =====`);
   console.log(`[GatewayAPI]   agentId: ${agentId}`);
@@ -13443,6 +13648,43 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
 
   // 反例库注入（阶段四 4.2）：把近期被人工判定不可用的用例类型附到提示词末尾，
   // 缓存 1 小时，避免每次请求都查库。
+  // 经验注入（2026-11-20 自我进化闭环）
+  //
+  // 过去只注入 case_feedback 的反例（人工标注），而那张表长期只有个位数记录，
+  // 等于没有学习。现在主渠道换成 agent_experiences：由审核员 issues、
+  // 门禁缺陷分布自动沉淀，跨任务累计，并按「注入前后命中率」自动升级/休眠。
+  // 反例库降级为补充（人工标注的权重最高，但仍然保留）。
+  let experiencePrompt = '';
+  let injectedExperienceIds = [];
+  try {
+    // experienceOverride：调用方（spawnAgentSession）已经把经验取好并记录了注入，
+    // 避免这里再查一次库、也避免「查到的」和「记录到的」不是同一批
+    const exps = Array.isArray(experienceOverride)
+      ? experienceOverride
+      : await experienceDAO.getInjectableExperiences(agentId, { limit: 8 });
+    if (exps.length) {
+      // 注入即开始观测：第一次注入时打时间戳，之后才能算「注入后命中率」
+      injectedExperienceIds = exps.map((e) => e.id);
+      if (!Array.isArray(experienceOverride)) {
+        await experienceDAO.markInjected(injectedExperienceIds, agentId);
+      }
+
+      const lines = ['【本平台历史经验（来自真实审核与本模块的历史缺陷，必须遵守）】'];
+      for (const e of exps) {
+        // level 越高语气越强：L1 提示 / L2 强约束 / L3 明确告知会被拦
+        const prefix = e.level >= 3
+          ? `- 【会被门禁拦截】${e.title}\n  必须：${e.guidance}`
+          : e.level === 2
+            ? `- 【高频问题】${e.title}\n  必须：${e.guidance}`
+            : `- ${e.title}\n  要求：${e.guidance}`;
+        lines.push(prefix);
+      }
+      experiencePrompt = `\n\n${lines.join('\n')}`;
+    }
+  } catch (e) {
+    console.warn(`[Experience] 注入经验失败（不影响主流程）: ${e.message}`);
+  }
+
   let counterExamplesPrompt = '';
   if (agentId === 'test-case-generator') {
     try {
@@ -13458,7 +13700,7 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
     } catch (_) { /* 表未建或查询失败时静默跳过 */ }
   }
 
-  const systemPrompt = basePrompt + skillsPrompt + counterExamplesPrompt;
+  const systemPrompt = basePrompt + skillsPrompt + experiencePrompt + counterExamplesPrompt;
   // 仅为"拥有可执行 JS 的 skill"的智能体注册 OpenAI tools
   const tools = getAgentToolSchemas(agentId);
 
@@ -14292,6 +14534,13 @@ async function executeTaskWithReview(task, userId = null) {
       //   passed_with_notes  = 门禁达标 + 无 blocker + 密度 ≤6%（交付，但附改进建议）
       // 两者交付物可用性相同，区别只在「是否需要把审核意见呈现给用户」。
       applyReviewVerdictToTask(task, lastVerdict, retryCount + 1);
+      // 回填审核标签到质量快照：门禁阈值自动校准需要它（2026-11-20）
+      try {
+        await caseFeedbackDAO.backfillReviewLabel(task.id, {
+          reviewMedian: task.reviewMedian ?? null,
+          reviewVerdict: task.reviewVerdict ?? null,
+        });
+      } catch (_) { /* 回填失败不影响任务 */ }
 
       // 设置任务完成状态
       task.status = 'completed';
@@ -14370,6 +14619,14 @@ async function executeTaskWithReview(task, userId = null) {
       task.reviewFailed = true;
       applyReviewVerdictToTask(task, lastVerdict, retryCount + 1);
 
+
+      // 回填审核标签到质量快照：门禁阈值自动校准需要它（2026-11-20）
+      try {
+        await caseFeedbackDAO.backfillReviewLabel(task.id, {
+          reviewMedian: task.reviewMedian ?? null,
+          reviewVerdict: task.reviewVerdict ?? null,
+        });
+      } catch (_) { /* 回填失败不影响任务 */ }
       // 执行阶段已经失败（如 402 余额不足/网关错误）时保留 failed，
       // 不能被审核流程覆盖成 completed；只有“执行成功但审核未通过”才是 completed。
       if (task.status !== 'failed') task.status = 'completed';
@@ -14629,7 +14886,58 @@ async function callReviewersSequentially(taskId, agentName, output, retryCount =
     REVIEWER_AGENTS.map((reviewerId, i) => runOneReviewer(reviewerId, i)),
   );
 
-  return settled.filter(Boolean);
+  const validResults = settled.filter(Boolean);
+
+  // === 经验沉淀：审核 issues 是最有价值的学习来源（2026-11-20）===
+  // 三个审核员各轮会产出十几到几十条 issues，措辞不同但类型有限
+  // （assertion/placeholder/duplicate/coverage/format/logic/traceability）。
+  // 归一后累加进经验库，下次生成前注入——这是「自我进化」的主要燃料。
+  // 注意：只统计「审核自身跑成功」的结果；score=0 且 error 的是审核挂了，不是交付物缺陷。
+  try {
+    const agentForExp = reviewContext?.agentId || agentName || '';
+    if (agentForExp) {
+      // 优先用调用方记录的真实 agentId（如 test-case-generator）；
+      // 拿不到就退回 agentName（工作流链路传的是中文名），仍能分桶。
+      const candidates = [];
+      const seen = new Set();
+      for (const r of validResults) {
+        if (r.error || r.parseOk === false) continue;
+        for (const issue of (r.issues || [])) {
+          const c = experienceFromReviewIssue(issue);
+          if (!c) continue;
+          if (seen.has(c.patternKey)) continue; // 三个审核员报同一问题只算一次
+          seen.add(c.patternKey);
+          candidates.push(c);
+        }
+      }
+      if (candidates.length) {
+        // 判定这批命中算「注入前」还是「注入后」：
+        // 看该 agent 的经验库里是否已经有条目开始注入了。
+        // 有 → 说明平台已经进入「按经验改」的阶段，本次命中记 after；
+        // 没有 → 还是冷启动阶段，记 before。
+        // 这样冷启动期的历史命中会成为基线，之后的下降才有对照。
+        let afterInjection = false;
+        try {
+          const existing = await experienceDAO.listExperiences({ agentId: agentForExp, limit: 1 });
+          afterInjection = existing.some((e) => e.injectedSince);
+        } catch (_) { /* 查不到按 before 处理，保守 */ }
+
+        const rec = await experienceDAO.recordTaskExperiences({
+          agentId: agentForExp,
+          taskId,
+          candidates,
+          afterInjection,
+        });
+        if (rec.recorded) {
+          console.log(`[Experience] ${agentForExp} 从审核意见沉淀 ${rec.recorded} 条经验（新建 ${rec.created}）`);
+        }
+      }
+    }
+  } catch (expErr) {
+    console.warn(`[Experience] 审核沉淀失败（不影响主流程）: ${expErr.message}`);
+  }
+
+  return validResults;
 }
 
 /**
@@ -19140,6 +19448,52 @@ async function start() {
   await preloadLearnedKnowledgeCache();
   // 加载成本配置到内存缓存
   await loadCostConfig();
+
+  // 自我进化闭环：每 30 分钟跑一次进化 + 阈值自动校准
+  //
+  // 为什么用定时而不是「任务一结束就跑」：进化要看趋势（注入前后命中率），
+  // 单次任务后跑没有意义；而且会拖慢任务收尾。30 分钟一次足够跟上产出节奏。
+  // 首次延迟 3 分钟，避开启动高峰。
+  setTimeout(() => {
+    const evolveTick = async () => {
+      try {
+        const agents = [...new Set((await experienceDAO.listExperiences({ limit: 500 })).map((e) => e.agentId))];
+        let total = { promoted: 0, dormant: 0, demoted: 0 };
+        for (const a of agents) {
+          const r = await experienceDAO.evolveExperiences(a);
+          total.promoted += r.promoted;
+          total.dormant += r.dormant;
+          total.demoted += r.demoted;
+        }
+        if (total.promoted || total.dormant || total.demoted) {
+          console.log(`[Experience] 进化完成：升级 ${total.promoted} / 休眠 ${total.dormant} / 降级 ${total.demoted}`);
+        }
+
+        // 阈值自动校准：只在样本足够且建议差异明显时才采纳（calibrateByReviewVerdict 内部已判）
+        const samples = await experienceDAO.getThresholdSamples({ days: 90 });
+        const cal = calibrateByReviewVerdict(samples, { currentThreshold: CASE_QUALITY_MIN_RATE });
+        if (cal.status === 'ok' && cal.applied && cal.recommended != null) {
+          const previous = CASE_QUALITY_MIN_RATE;
+          await caseFeedbackDAO.saveGateThreshold(cal.recommended, 'auto:evolve');
+          await experienceDAO.saveThresholdChange({
+            threshold: cal.recommended,
+            previous,
+            sampleTasks: cal.sampleCount,
+            agreement: cal.best?.agreement ?? null,
+            source: 'auto_review',
+            detail: `定时自动校准；误放行率 ${((cal.best?.falsePassRate || 0) * 100).toFixed(1)}%`,
+          });
+          CASE_QUALITY_MIN_RATE = cal.recommended;
+          CASE_QUALITY_MIN_RATE_SOURCE = 'system_config';
+          console.log(`[Threshold] 定时自动校准：${previous} → ${cal.recommended}（一致率 ${((cal.best?.agreement || 0) * 100).toFixed(1)}%）`);
+        }
+      } catch (e) {
+        console.warn(`[Experience] 定时进化失败（不影响主流程）: ${e.message}`);
+      }
+    };
+    evolveTick();
+    setInterval(evolveTick, 30 * 60 * 1000);
+  }, 3 * 60 * 1000);
 
   // 启动统计聚合定时任务
   scheduleAggregation();

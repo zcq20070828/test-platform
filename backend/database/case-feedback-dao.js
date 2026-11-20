@@ -270,6 +270,41 @@ export async function getTaskQuality(taskId) {
   return { text: lines.join('\n'), samples: rows.map((r) => ({ reason: r.reject_reason, count: Number(r.cnt) })) };
 }
 
+/**
+ * 回填审核结论到质量快照（2026-11-20）
+ *
+ * 为什么需要回填：task_quality_metrics 是在**门禁阶段**写的，那时审核还没跑，
+ * 所以表里只有「门禁自己怎么判」，没有「审核认为好不好」。
+ * 而门禁阈值校准恰恰需要这个对照——没有它，阈值永远无法被验证，
+ * 也就永远停在默认 0.85（这正是之前的真实状态：34 条快照里 usability_human 全 NULL）。
+ *
+ * 审核跑完后调用本函数把弱标签补上。
+ *
+ * @param {string} taskId
+ * @param {Object} p
+ * @param {number|null} p.reviewMedian 三审评分中位数
+ * @param {string|null} p.reviewVerdict passed/passed_with_notes/failed/inconclusive
+ */
+export async function backfillReviewLabel(taskId, { reviewMedian = null, reviewVerdict = null } = {}) {
+  if (!taskId) return false;
+  try {
+    const [res] = await pool.execute(
+      `UPDATE task_quality_metrics
+          SET review_median = ?, review_verdict = ?
+        WHERE task_id = ?`,
+      [
+        reviewMedian === null || reviewMedian === undefined ? null : Number(reviewMedian),
+        reviewVerdict || null,
+        taskId,
+      ],
+    );
+    return (res.affectedRows || 0) > 0;
+  } catch (e) {
+    console.warn(`[CaseFeedback] 回填审核标签失败 ${taskId}: ${e.message}`);
+    return false;
+  }
+}
+
 // ============================================================
 // 审核历史（2026-11-11）
 // ============================================================
@@ -402,5 +437,6 @@ export default {
   getCalibrationSamples,
   saveGateThreshold,
   getSavedGateThreshold,
+  backfillReviewLabel,
   getReviewHistory,
 };
