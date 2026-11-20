@@ -49,6 +49,13 @@ import {
   parseCaseTable as parseCaseTableForCount,
   repairPlaceholderInput,
 } from './lib/case-quality-gate.js';
+import {
+  classifyChatIntent,
+  applyRowPatch as applyChatRowPatch,
+  appendRows as appendChatRows,
+  summarizeDeliverableForQuestion,
+} from './lib/chat-intent.js';
+import { analyzeTaskIntent } from './lib/task-intent.js';
 import { diagnoseFailure } from './lib/failure-diagnosis.js';
 import {
   experienceFromReviewIssue,
@@ -2767,86 +2774,34 @@ function getDispatchableAgents() {
     }));
 }
 
-// 根据任务内容自动识别目标智能体(关键词匹配)
-// 当未明确指定agent时,自动分析任务内容并选择合适的智能体
+// 根据任务内容自动识别目标智能体
+//
+// 2026-11-20：规则表已抽到 backend/lib/task-intent.js（单一事实来源），
+// 这里保留「返回单个智能体」的旧签名供自动工作流等调用方使用。
+// 评分与置信度逻辑不要在这里重复实现——两份规则表一定会漂移。
 function autoSelectAgent(taskInput, taskType) {
   if (!taskInput) return null;
-
-  const input = taskInput.toLowerCase();
-
-  // 关键词到智能体的映射(按优先级排序,与文档描述一致)
-  const keywordRules = [
-    // 测试需求分析
-    { keywords: ['测试需求分析', '需求分析', '分析需求', '拆解需求', '测试需求'], agent: 'test-requirement-analyzer' },
-
-    // 测试方案生成
-    { keywords: ['测试方案生成', '测试方案', '方案设计', '制定方案'], agent: 'test-scheme-generator' },
-
-    // AI 应用测试 —— 必须排在普通「测试用例生成」之前。
-    // 理由：用户说「给这个 AI 助手设计用例」时既命中「用例」也命中「AI 助手」，
-    // 而列表是按顺序取第一个命中项。AI 应用需要 AI 断言语义与七个风险维度，
-    // 交给 test-case-generator 会把「准确率 ≥90%」判成弱断言。
-    { keywords: ['ai应用测试', 'ai测试', 'ai助手', '大模型', 'llm', 'rag', '知识库问答', '智能体测试', 'agent测试', '幻觉', '提示注入', '越狱', 'gpt', 'deepseek应用'], agent: 'ai-app-tester' },
-
-    // 测试用例生成
-    { keywords: ['测试用例生成', '用例生成', '测试用例', '设计用例', '生成用例', 'case'], agent: 'test-case-generator' },
-
-    // 测试数据生成
-    { keywords: ['测试数据生成', '数据生成', '测试数据', '生成数据', '测试输入', '测试参数'], agent: 'test-data-generator' },
-
-    // 信息脱敏
-    { keywords: ['信息脱敏', '脱敏', '数据脱敏', '敏感信息', '隐私数据'], agent: 'data-masking' },
-
-    // 接口测试
-    { keywords: ['接口测试', 'api测试', '接口'], agent: 'api-executor' },
-
-    // UI/E2E测试
-    { keywords: ['ui/e2e测试', 'ui测试', '界面测试', '端到端', 'ui自动化', 'e2e测试', 'app自动化', '移动端测试', '安卓测试', 'ios测试', '鸿蒙测试', '手机e2e', '手机端回归', 'appium', 'xCUITest', '移动端e2e', '移动端回归测试'], agent: 'ui-e2e-executor' },
-
-    // 缺陷分析
-    { keywords: ['缺陷分析', '缺陷', 'bug', '分析失败'], agent: 'defect-analyzer' },
-
-    // 测试报告生成
-    { keywords: ['测试报告生成', '报告生成', '测试报告', '生成报告', 'report'], agent: 'test-reporter' },
-
-    // 自动化脚本生成
-    { keywords: ['自动化脚本', '生成脚本', '脚本生成', '写测试脚本', '生成测试脚本', 'jest脚本', 'playwright脚本', 'pytest脚本', 'newman脚本', 'cypress脚本', '生成自动化', '自动化代码'], agent: 'test-script-generator' },
-
-    // AI质量审核类
-    { keywords: ['ai质量审核', '质量审核', 'ai审核', '事实审核', '幻觉检测', 'ai quality review', '安全审核', '合规审核', '敏感词检测', '偏见检测', '提示注入', 'safety review', '格式审核', '结构审核', 'schema校验', 'format review', '全面审核', '完整审核', 'full review', '综合审核'], agent: 'ai-quality-reviewer-1' },
-
-    // AI能力评估类
-    { keywords: ['智能体评估', '能力评估', 'ai评估', '质量评估', '性能评估', '智能体质量', 'agent evaluation', '能力分析', '三层五级', '评估报告', 'evaluator', 'AI能力评估', '智能体能力'], agent: 'ai-evaluation-agent' },
-
-    // 安全测试类
-    { keywords: ['安全测试', '安全扫描', '漏洞扫描', '渗透测试', 'OWASP', '安全检测', 'XSS', 'SQL注入', 'CSRF', '安全审计', 'vulnerability scan', 'penetration test', 'security scan'], agent: 'security-sentinel' },
-
-    // 性能测试类
-    { keywords: ['性能测试', '负载测试', '压力测试', '并发测试', '稳定性测试', '压测', 'TPS', '响应时间', 'benchmark', 'load test', 'stress test', 'performance test', 'jmeter', 'k6', 'locust'], agent: 'performance-tester' },
-
-    // Web 兼容性测试类
-    { keywords: ['浏览器兼容性', 'web兼容', '多浏览器测试', '浏览器矩阵', 'Chrome兼容性', 'Firefox兼容性', 'Safari兼容性', 'Edge兼容性', '分辨率适配', '响应式测试', '视觉回归', 'browser matrix', 'browser compatibility', 'cross-browser', 'web compatibility', '兼容测试', '兼容性测试', '多端兼容', '跨平台测试'], agent: 'compatibility-coordinator' },
-  ];
-
-  // 按优先级匹配关键词
-  for (const rule of keywordRules) {
-    for (const keyword of rule.keywords) {
-      if (input.includes(keyword)) {
-        console.log(`[AutoSelect] Keyword "${keyword}" matched → ${rule.agent}`);
-        return rule.agent;
-      }
-    }
+  const intent = analyzeTaskIntent(taskInput, { taskType });
+  if (intent.agentId && intent.confident) {
+    console.log(`[AutoSelect] ${intent.agentName}（${intent.reason}）`);
+    return intent.agentId;
   }
-
-  // 如果taskType已知,使用TASK_AGENT_MAP
+  // 不确定时：有首选就给首选（工作流编排需要一个具体值），没有就用任务类型映射
+  if (intent.agentId) {
+    console.log(`[AutoSelect] ${intent.agentName}（置信度不足，按首选返回：${intent.reason}）`);
+    return intent.agentId;
+  }
   if (taskType && TASK_AGENT_MAP[taskType]) {
-    console.log(`[AutoSelect] Task type "${taskType}" → ${TASK_AGENT_MAP[taskType]}`);
+    console.log(`[AutoSelect] 按任务类型 "${taskType}" → ${TASK_AGENT_MAP[taskType]}`);
     return TASK_AGENT_MAP[taskType];
   }
-
-  // 未匹配到任何规则,返回null(后续会使用test-master)
   return null;
 }
+
+// 说明：历史上这里有一份「按顺序首个命中即返回」的关键词规则表，2026-11-20 已删除。
+// 删除原因：命中即返回使规则顺序比相关性更重要（「接口」命中就派给 api-executor，
+// 即使整句更符合缺陷分析）；且没有置信度，无法在识别不准时请用户确认。
+// 现在由 backend/lib/task-intent.js 统一打分 + 给候选，规则表只维护那一份。
 
 // ============================================================================
 // API路由
@@ -3156,22 +3111,50 @@ app.post('/api/tasks', authenticate, async (req, res) => {
   const taskId = uuidv4();
   const timestamp = new Date().toISOString();
 
-  // 确定目标Agent(优先级:指定Agent > 自动选择 > 任务类型映射 > 默认test-master)
+  // 确定目标Agent(优先级:指定Agent > 自动识别 > 任务类型映射)
   let targetAgent = null;
+  // 用户明确指定（或从候选里点选后重新提交）时才算 confirmed，
+  // 此时不再做意图识别，也不再因为识别不准而回退成确认请求。
+  let confirmedAgent = false;
 
   // 1. 如果指定了Agent,解析名称或ID
   if (specifiedAgent) {
     targetAgent = resolveAgentId(specifiedAgent);
     if (targetAgent) {
+      confirmedAgent = true;
       console.log(`[Dispatch] Resolved "${specifiedAgent}" → "${targetAgent}"`);
     }
   }
 
-  // 2. 如果未指定或解析失败,根据任务内容自动选择
-  if (!targetAgent && input) {
-    targetAgent = autoSelectAgent(input, type);
-    if (targetAgent) {
-      console.log(`[AutoDispatch] Auto-selected agent: ${targetAgent} for input: "${String(input || '').substring(0, 50)}..."`);
+  // 2. 如果未指定或解析失败,根据任务内容识别意图
+  //
+  // 2026-11-20 改造：不再是「首个命中即返回」。
+  // 现在会给出置信度与候选，识别不准时**不替用户猜**——
+  // 返回 409 + 3 个候选让前端弹窗确认（用户点选后带 agent 重新提交即可）。
+  // 只有识别明确时才像以前那样自动派单。
+  let intentInfo = null;
+  if (!targetAgent && enrichedInput) {
+    intentInfo = analyzeTaskIntent(enrichedInput, { taskType: type });
+    if (intentInfo.confident && intentInfo.agentId) {
+      targetAgent = intentInfo.agentId;
+      console.log(`[AutoDispatch] 意图明确 → ${targetAgent}（${intentInfo.reason}）`);
+    } else if (!confirmedAgent) {
+      // 未明确指定且识别不准 → 交给用户确认，不创建任务
+      console.log(`[AutoDispatch] 意图不明确（${intentInfo.reason}），返回候选供用户确认`);
+      return res.status(409).json({
+        error: '需要确认任务类型',
+        code: 'INTENT_CONFIRM_REQUIRED',
+        message: intentInfo.reason,
+        actionKind: intentInfo.actionKind,
+        candidates: intentInfo.candidates,
+        // 前端原样带回来即可，避免用户输入被二次解析
+        intent: {
+          confident: false,
+          agentId: intentInfo.agentId,
+          agentName: intentInfo.agentName,
+          confidence: intentInfo.confidence,
+        },
+      });
     }
   }
 
@@ -3181,10 +3164,19 @@ app.post('/api/tasks', authenticate, async (req, res) => {
     console.log(`[AutoDispatch] Using TASK_AGENT_MAP: ${type} → ${targetAgent}`);
   }
 
-  // 4. 默认由test-master处理
-  if (!targetAgent) {
-    targetAgent = 'test-master';
-    console.log(`[AutoDispatch] Defaulting to test-master`);
+  // 4. 仍未确定：同样不给通用智能体兜底，返回候选让用户选
+  //    以前静默落到 test-master，用户看不出任务被派给了通用智能体。
+  if (!targetAgent && !confirmedAgent) {
+    const fallback = analyzeTaskIntent(enrichedInput, { taskType: type });
+    console.log(`[AutoDispatch] 无法确定智能体，返回候选供用户确认`);
+    return res.status(409).json({
+      error: '需要确认任务类型',
+      code: 'INTENT_CONFIRM_REQUIRED',
+      message: fallback.reason || '无法判断要执行哪类测试任务',
+      actionKind: fallback.actionKind,
+      candidates: fallback.candidates,
+      intent: { confident: false, agentId: null, agentName: '', confidence: 0 },
+    });
   }
 
   const task = {
@@ -4767,18 +4759,116 @@ async function saveUserRevisionFile(taskId, att) {
   return fp;
 }
 
-function buildChatContinuationInput(task, message, userFileContents, chatHistory) {
+/**
+ * 构建对话续写的提示词
+ *
+ * 2026-11-20 重构：原实现写死「请输出更新后的**完整**交付件」，
+ * 于是无论用户说什么都全量重写。实测三例：「怎么没输出交付物」（提问）
+ * 重生成了 143K 字符、「把质量最差的 3 条改得更具体」重生成 63K 字符。
+ * 现在按 intent.mode 给出不同的产出要求，并只在需要时附上现有交付物。
+ *
+ * @param {object} task
+ * @param {string} message
+ * @param {string[]} userFileContents
+ * @param {Array} chatHistory
+ * @param {object} intent classifyChatIntent 的结果
+ * @param {string} [currentDeliverable] 现有交付物正文（surgical/append/question 需要）
+ */
+function buildChatContinuationInput(task, message, userFileContents, chatHistory, intent = {}, currentDeliverable = '') {
+  const mode = intent.mode || 'refine';
   const parts = [];
-  parts.push('# 多轮对话续写 / 交付物修改任务\n你正在对已有任务进行多轮对话续写。请基于全部上下文直接输出更新后的**完整**交付件（用 Markdown 代码块包裹），系统会自动派生 Word/Excel 副本。');
+
+  // 每种模式的产出要求完全不同，这是本次改造的核心
+  const MODE_INSTRUCTIONS = {
+    question: [
+      '# 多轮对话 · 用户提问',
+      '用户在就已有交付物提问或反馈疑问，**不是**让你修改交付物。',
+      '请直接回答问题。**不要输出新的交付物，不要重写文档，不要输出 Markdown 代码块形式的完整交付件。**',
+      '如果问题暴露了交付物本身的缺陷，在回答末尾用一段「建议修改」说明该怎么改即可。',
+    ],
+    regenerate: [
+      '# 多轮对话续写 / 交付物重建',
+      '用户要求重新生成交付物。请基于原始需求重新产出**完整**交付件（用 Markdown 代码块包裹），系统会自动派生 Word/Excel 副本。',
+    ],
+    surgical: [
+      '# 多轮对话 · 定点修改',
+      '用户只要求修改下面点名的少数条目，其余内容必须原样保留。',
+      '',
+      '**输出要求（严格遵守）**：',
+      '1. 只输出一个 Markdown 表格，表头与原交付物的用例表**完全一致**；',
+      '2. 表里**只包含待修改的那几条**，不要输出整份文档，不要输出其它未点名的行；',
+      '3. 每条给出**完整的整行**（所有列都填），不是只填改动的那几列；',
+      '4. 修复方向以用户指令为准；用户没说到的字段，保持原值不变；',
+      '5. 不要输出解释、说明、前言或结语。',
+      '',
+      '系统会按「用例编号」把你返回的行替换回原文对应位置',
+      intent.caseIds && intent.caseIds.length ? `（已识别到编号：${intent.caseIds.join('、')}）` : '',
+      intent.count ? `（用户提到 ${intent.count} 条）` : '',
+    ].filter(Boolean).join('\n'),
+    append: [
+      '# 多轮对话 · 追加内容',
+      '用户要求在现有交付物中**新增**内容，已有内容不要改动。',
+      '',
+      '**输出要求（严格遵守）**：',
+      '1. 只输出一个 Markdown 表格，表头与原交付物的用例表**完全一致**；',
+      '2. 表里**只包含新增的行**，用例编号接着原有编号往后排（不要与已有编号重复）；',
+      '3. 不要输出原有行，不要输出整份文档，不要输出解释文字。',
+      intent.count ? '' : '（数量未指定时按需求覆盖需要补充，一般 3~10 条）',
+    ].filter(Boolean).join('\n'),
+    refine: [
+      '# 多轮对话续写 / 交付物修改任务',
+      '你正在对已有任务进行多轮对话续写。请基于全部上下文直接输出更新后的**完整**交付件（用 Markdown 代码块包裹），系统会自动派生 Word/Excel 副本。',
+    ],
+  };
+
+  parts.push(MODE_INSTRUCTIONS[mode] || MODE_INSTRUCTIONS.refine);
   parts.push(`## 原始任务需求\n${task.input || task.original_input || '(见历史对话)'}`);
+
   if (chatHistory && chatHistory.length) {
-    parts.push('## 历史对话记录\n' + chatHistory.map(h => `【${h.role === 'user' ? '用户' : '智能体'}】${(h.content || '').slice(0, 4000)}`).join('\n\n'));
+    // 历史里的助手消息可能是十几万字的完整交付物，全塞进去会撑爆上下文。
+    // 只保留最近几轮，且助手段落截断——用户在追问时关心的是「上一轮说了什么」，不是全文。
+    const recent = chatHistory.slice(-6);
+    parts.push('## 历史对话记录\n' + recent.map((h) => {
+      const limit = h.role === 'user' ? 2000 : 3000;
+      const content = String(h.content || '');
+      const shown = content.length > limit ? `${content.slice(0, limit)}\n…（本轮内容共 ${content.length} 字符，已截断）` : content;
+      return `【${h.role === 'user' ? '用户' : '智能体'}】${shown}`;
+    }).join('\n\n'));
   }
+
+  // 现有交付物：定点修改/追加必须给全文（否则模型不知道原编号长什么样）；
+  // 提问给结构摘要（避免 14 万字塞进上下文）；全量重写不需要（要按需求重新生成）。
+  if (currentDeliverable && (mode === 'surgical' || mode === 'append')) {
+    parts.push(`## 现有交付物（请基于此修改，编号必须与原文一致）\n\`\`\`markdown\n${currentDeliverable}\n\`\`\``);
+  } else if (currentDeliverable && mode === 'question') {
+    const brief = summarizeDeliverableForQuestion(currentDeliverable);
+    parts.push(`## 现有交付物（供你回答问题时参考${brief.truncated ? '，超长已截断，如需更多细节可说明' : ''}）\n${brief.text}`);
+  }
+
   if (userFileContents && userFileContents.length) {
     parts.push('## 用户本次上传的补充材料（可能为人工修改过的交付物，请基于其内容继续完善）\n' + userFileContents.join('\n\n---\n\n'));
   }
   parts.push(`## 用户最新指令\n${message || '(仅上传了补充材料，请基于上传内容继续完善交付物)'}`);
   return parts.join('\n\n');
+}
+
+/**
+ * 取任务当前的交付物正文
+ *
+ * 定点修改/追加/问答都要基于「用户此刻看到的那一份」。
+ * 优先取最新 agent 版本的文件；读不到再退回任务 result。
+ */
+async function loadCurrentDeliverable(task) {
+  try {
+    const outs = await taskDAO.getTaskOutputFiles(task.id);
+    const latest = (outs || []).find((o) => o.versionSource === 'agent' && o.filePath);
+    if (latest && latest.filePath) {
+      const txt = await fs.readFile(latest.filePath, 'utf-8').catch(() => '');
+      if (txt && txt.trim()) return txt;
+    }
+  } catch (_) { /* 读文件失败退回 result */ }
+  const raw = task.result || task.resultText || '';
+  return typeof raw === 'string' ? raw : '';
 }
 
 async function executeChatRound(task, message, userFiles) {
@@ -4831,7 +4921,20 @@ async function executeChatRound(task, message, userFiles) {
         userFileContents.push(`### 文件: ${uf.name || '附件'}\n${fitted.text}${note}${originNote}`);
       }
     }
-    const chatInput = buildChatContinuationInput(task, message, userFileContents, chatHistory);
+
+    // ── 先判断「该怎么执行」（2026-11-20）──
+    // 用户说「怎么没输出交付物」是提问，不该重生成 14 万字；
+    // 「把最差 3 条改具体」只需替换 3 行，不该重写整份。
+    // 原实现写死全量重写，三种指令被同样对待。
+    const currentDeliverable = await loadCurrentDeliverable(task);
+    const intent = classifyChatIntent(message, { hasDeliverable: !!currentDeliverable });
+    console.log(
+      `[Chat] ${task.id} 意图=${intent.mode}（${intent.reason}）` +
+      `${intent.caseIds.length ? ` 编号=${intent.caseIds.join(',')}` : ''}` +
+      `${intent.count ? ` 条数=${intent.count}` : ''}` +
+      ` 现有交付物 ${currentDeliverable.length} 字符`,
+    );
+    const chatInput = buildChatContinuationInput(task, message, userFileContents, chatHistory, intent, currentDeliverable);
 
     // ── 过程事件（2026-11-19）──
     // 以前 chat 轮次只发流式 chunk + 末尾一条 chat_message，中间没有任何阶段提示：
@@ -4848,9 +4951,11 @@ async function executeChatRound(task, message, userFiles) {
       data: {
         role: 'system',
         type: 'system',
-        content: '📝 正在按对话指令修订交付物…',
+        // 开场就说清本轮要做什么，用户不必等到结束才知道「它把我 14 万字重写了一遍」
+        content: `📝 ${intent.label}：${intent.reason}…`,
         taskId: task.id,
         agentId: task.agent,
+        intentMode: intent.mode,
         timestamp: new Date().toISOString(),
       },
     });
@@ -4894,10 +4999,61 @@ async function executeChatRound(task, message, userFiles) {
     const text = result && result.text ? result.text : (typeof result === 'string' ? result : '');
     let agentVerLabel = '';
     if (text) {
-      const { deliverables } = extractDeliverables(text);
-      if (deliverables && deliverables.length) {
-        try { await saveDeliverablesToFiles(task.id, 'chat', task.agent, deliverables); } catch (e) { console.error('[Chat] 落盘失败', e.message); }
+      // ── 结果落地：按执行模式分别处理（2026-11-20）──
+      //
+      // question ：模型只该回答问题，不产出新交付物。不落盘、不覆盖版本，
+      //            避免「用户只是问一句」就多出一个版本。
+      // surgical ：模型只返回待改的那几行 → 按编号替换回原交付物，
+      //            其余行原样保留（这是「改 3 条不该重写全文」的落实）。
+      // append   ：模型只返回新增行 → 按表头对齐后插到用例表末尾。
+      // regenerate / refine：模型返回完整交付物 → 照旧整体落盘。
+      let effectiveText = text;       // 真正要落盘/质检的内容
+      let producedDeliverable = true;
+      let patchInfo = null;
+
+      if (intent.mode === 'question') {
+        producedDeliverable = false;
+      } else if (intent.mode === 'surgical') {
+        const patched = applyChatRowPatch(currentDeliverable, text);
+        if (patched.replaced > 0) {
+          effectiveText = patched.text;
+          patchInfo = {
+            mode: 'surgical',
+            replaced: patched.replaced,
+            ids: patched.replacedIds,
+            missed: patched.missed,
+          };
+          console.log(`[Chat] ${task.id} 定点修改已替换 ${patched.replaced} 条${patched.missed.length ? `，未匹配 ${patched.missed.join(',')}` : ''}`);
+        } else {
+          // 补丁没匹配上任何编号（模型没按要求出表格）：不能静默丢弃这一轮，
+          // 退化为「把模型输出当作说明」并明确告知，让用户能重试。
+          producedDeliverable = false;
+          patchInfo = { mode: 'surgical', replaced: 0, ids: [], missed: patched.missed, failed: true };
+          console.warn(`[Chat] ${task.id} 定点修改补丁未匹配任何编号，本轮不改动交付物`);
+        }
+      } else if (intent.mode === 'append') {
+        const added = appendChatRows(currentDeliverable, text);
+        if (added.added > 0) {
+          effectiveText = added.text;
+          patchInfo = { mode: 'append', added: added.added, ids: added.addedIds };
+          console.log(`[Chat] ${task.id} 追加 ${added.added} 条（${added.addedIds.join(',')}）`);
+        } else {
+          producedDeliverable = false;
+          patchInfo = { mode: 'append', added: 0, ids: [], failed: true };
+          console.warn(`[Chat] ${task.id} 追加未产生新行，本轮不改动交付物`);
+        }
       }
+
+      if (producedDeliverable) {
+        const { deliverables } = extractDeliverables(effectiveText);
+        // 定点/追加模式下 effectiveText 是完整文档（由原交付物拼成），
+        // 直接落盘；若它本身不含代码块，把整份内容作为一个 md 交付物落盘。
+        const toSave = (deliverables && deliverables.length)
+          ? deliverables
+          : [{ format: 'md', content: effectiveText, fileName: 'output.md', deliverableName: '交付物' }];
+        try { await saveDeliverablesToFiles(task.id, 'chat', task.agent, toSave); } catch (e) { console.error('[Chat] 落盘失败', e.message); }
+      }
+
       // 取最新 agent 交付物版本号用于展示
       try {
         const outs = await taskDAO.getTaskOutputFiles(task.id);
@@ -4908,15 +5064,19 @@ async function executeChatRound(task, message, userFiles) {
       // 修订后的确定性质量检查（2026-11-19）：chat 轮的产出同样是要交付的，
       // 过去只在 spawnAgentSession 内部跑一次、结果会被后续轮次覆盖，
       // 而且界面上看不到。这里显式再检一次并广播，让用户知道这次修订是变好还是变差。
-      if (CASE_QUALITY_GATE_AGENTS.has(task.agent)) {
+      //
+      // 2026-11-20：检查对象改为 effectiveText（真正落盘的那份）。
+      // 定点修改模式下模型只返回几行补丁，拿补丁去跑门禁会得到「0 条用例」的假结果。
+      if (producedDeliverable && CASE_QUALITY_GATE_AGENTS.has(task.agent)) {
         try {
-          const fixed = applyCaseInputRepairs(text);
-          const candidate = fixed.applied > 0 ? fixed.text : text;
+          const fixed = applyCaseInputRepairs(effectiveText);
+          const candidate = fixed.applied > 0 ? fixed.text : effectiveText;
           const afterGate = checkCaseQuality(candidate, {
             originalInput: task.originalInput || task.input || '',
             minUsabilityRate: CASE_QUALITY_MIN_RATE,
             requireDimension: true,
             minProbeCoverage: CASE_QUALITY_MIN_PROBE_COVERAGE,
+            targetKind: AI_APP_TARGET_AGENTS.has(task.agent) ? 'ai-app' : 'software',
           });
           if (afterGate.applicable) {
             broadcast({
@@ -4949,6 +5109,21 @@ async function executeChatRound(task, message, userFiles) {
         }
       }
 
+      // 执行模式与落地结果要告诉前端：用户需要知道「这一轮到底动了什么」。
+      // 定点修改时若模型返回的编号没匹配上，必须明说，不能让用户以为已生效。
+      let modeNote = '';
+      if (intent.mode === 'question') {
+        modeNote = '（本轮为问答，未改动交付物）';
+      } else if (patchInfo && patchInfo.mode === 'surgical') {
+        modeNote = patchInfo.failed
+          ? '⚠️ 定点修改未匹配到任何用例编号，交付物未改动，请换个说法（如「修改 TC-005 的预期结果」）重试'
+          : `✅ 已定点修改 ${patchInfo.replaced} 条：${patchInfo.ids.join('、')}（其余内容未改动）`;
+      } else if (patchInfo && patchInfo.mode === 'append') {
+        modeNote = patchInfo.failed
+          ? '⚠️ 未解析到新增用例行，交付物未改动'
+          : `✅ 已追加 ${patchInfo.added} 条：${patchInfo.ids.join('、')}`;
+      }
+
       broadcast({
         type: 'chat_message',
         taskId: task.id,
@@ -4960,6 +5135,11 @@ async function executeChatRound(task, message, userFiles) {
           agentName: (AGENTS[task.agent] || {}).name || task.agent,
           taskId: task.id,
           versionLabel: agentVerLabel,
+          // 前端据此展示本轮执行模式徽标
+          intentMode: intent.mode,
+          intentLabel: intent.label,
+          intentNote: modeNote,
+          patchInfo,
           timestamp: new Date().toISOString(),
         },
       });

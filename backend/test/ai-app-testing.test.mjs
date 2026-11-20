@@ -287,10 +287,16 @@ t('智能体注册齐备（漏一处就会调度失败）', () => {
     ["'ai-app-tester': `你是测试中台AI智能体", '系统提示词'],
     ["'ai-app-tester': 'ai-app-tester'", 'AGENT_SKILL_MAP'],
     ["'ai-app-tester': '🤖'", 'emoji'],
-    ["agent: 'ai-app-tester'", '自动选择关键词'],
   ]) {
     assert.ok(SERVER.includes(pat), `缺 ${desc}（${pat}）`);
   }
+
+  // 自动选择关键词的规则表 2026-11-20 已统一收进 task-intent.js（单一事实来源）。
+  // 这里要验证的是「ai-app-tester 仍在自动识别规则里」，位置变了而已。
+  const TI = fs.readFileSync(path.join(ROOT, 'backend', 'lib', 'task-intent.js'), 'utf8');
+  assert.ok(/agent: 'ai-app-tester'/.test(TI), '缺自动识别规则（应在 task-intent.js 的 AGENT_RULES 里）');
+  // 且 AI 应用关键词必须能识别出来（不能只在表里躺着）
+  assert.ok(/ai助手|ai应用测试/.test(TI), 'AI 应用识别关键词缺失');
 });
 
 t('系统提示词写明了三类断言与七个风险维度（生成侧的前提）', () => {
