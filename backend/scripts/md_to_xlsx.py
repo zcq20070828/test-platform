@@ -12,12 +12,22 @@
   - **列结构不同的用例表各自成页**。接口用例的字段数量和名称都不同
     （接口编号/接口名称/请求方式/用例类型 而非 所属模块/输入数据），
     硬塞进同一张表会造出大量空列（主用例行的接口列全空、接口行的模块列全空），
-    所以按「表头结构」分组：同结构合并、异结构分页。页名取该表前最近的 Markdown 标题。
+    所以按「表头结构」分组：同结构合并、异结构分页。
   - **其余表格各自保留独立 sheet**：覆盖分析 / 维度覆盖矩阵 / 设计方法覆盖矩阵 /
     豁免声明等，一张表一页。
 
   判定依据是**列集合**而不是表格数量：所以「测试用例清单 + 测试用例清单(续)」合并，
   而「测试用例清单 + 接口测试用例」分开——前者列相同，后者不同。
+
+页名口径（2026-11-20 修正）：
+  页名取「这页真正装了什么」，不是「第一张表上面写了什么」。真实文档里模型会把
+  用例清单拆成 `### 测试用例清单 → #### A. 九维必测点用例(42条) / #### B. 黑盒9法
+  设计用例 / ##### B1~B9 各方法`，这些表列结构相同会合并成一页（实测 257 行）。
+  过去页名取第一张表的小标题，于是出现「A. 九维必测点用例(42条)」装 257 行的
+  自相矛盾标题——范围只写了九维（漏了黑盒9法）、数量也只有九维的 42 条。
+  现在：多张表合并时取它们**共同的父标题**（本例即「测试用例清单」）；单张表仍用
+  自己的标题，但去掉「A.」这类章节序号与「(42条)」这类模型自报条数——自报数量
+  经常与实际行数不符，页名里不写数量就不会写错。
 """
 import sys
 import re
@@ -49,8 +59,8 @@ CASE_COLUMN_ORDER = [
     '关联需求',
 ]
 
-# 合并后的用例清单页名
-CASE_SHEET_TITLE = '测试用例'
+# 合并后的用例清单页名（多张同结构用例表共用时的兜底名）
+CASE_SHEET_TITLE = '测试用例清单'
 
 # 同义列表头归一：不同智能体写「测试步骤」还是「执行步骤」都要落到同一列
 HEADER_ALIASES = {
@@ -90,16 +100,36 @@ def _is_separator(cells):
 
 
 def parse_blocks(md):
-    """把 Markdown 切成 [(section_title, header_cells, data_rows)]"""
+    """把 Markdown 切成 [(section_title, header_cells, data_rows)]
+
+    section_title 是这张表**前最近的**标题（行为不变，其他调用方依赖它）。
+    额外的标题栈通过 parse_blocks_with_stack 返回，用于给合并页起更准确的名字。
+    """
+    return [(title, header, body) for title, _, header, body in parse_blocks_with_stack(md)]
+
+
+def parse_blocks_with_stack(md):
+    """同 parse_blocks，但多返回一份标题栈
+
+    标题栈 = 该表之前所有「层级连续」的标题，如
+      ['测试用例集', '托管系统技术方案(...)', '项目信息']
+    模型常在用例清单下再分层（### 测试用例清单 → #### A.九维必测点用例 → ##### B1.等价类…），
+    合并页需要据此找到这些表共同的父标题，而不是只拿最近一级。
+    """
     lines = md.split('\n')
     blocks = []
-    last_heading = ''
+    stack = []          # [(level, text)]
     i = 0
     while i < len(lines):
         line = lines[i]
-        h = re.match(r'^#{1,4}\s+(.+)$', line)
+        h = re.match(r'^(#{1,6})\s+(.+)$', line)
         if h:
-            last_heading = h.group(1).strip()
+            level = len(h.group(1))
+            text = h.group(2).strip()
+            # 弹出层级 >= 当前标题的祖先，保持栈内层级严格递增
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, text))
         stripped = line.strip()
         if stripped.startswith('|') and stripped.endswith('|') and '|' in stripped[1:-1]:
             block = [line]
@@ -119,7 +149,8 @@ def parse_blocks(md):
                     continue
                 body.append(cells)
             if body:
-                blocks.append((last_heading, header, body))
+                titles = [t for _, t in stack]
+                blocks.append((titles[-1] if titles else '', list(titles), header, body))
             i = j
             continue
         i += 1
@@ -149,12 +180,13 @@ def group_case_blocks(case_blocks):
       （主用例行的接口列全空、接口行的模块列全空），既难看也没法按接口筛。
       所以同结构合并（模型把用例清单拆成多章时仍是一页），异结构分页。
 
+    @param case_blocks: [(section, title_stack, header, body)]
     @returns {list[dict]} [{ signature, blocks, title }]
     """
     groups = []
     by_sig = {}
     for block in case_blocks:
-        sig = case_signature(block[1])
+        sig = case_signature(block[2])
         if sig in by_sig:
             by_sig[sig]['blocks'].append(block)
         else:
@@ -164,12 +196,64 @@ def group_case_blocks(case_blocks):
     return groups
 
 
+# 页名里要剥掉的模型自报信息：
+#   「A. 九维必测点用例(42条)」→ 章节序号 A. + 自报条数 (42条)
+#   「B. 黑盒9法设计用例(216条,去重后)」→ (216条,去重后)
+_CHAPTER_PREFIX = re.compile(r'^[A-Za-zＡ-Ｚ][\.．、]\s*')
+_COUNT_SUFFIX = re.compile(r'[（(][^（()）]*?(?:\d+\s*条|\d+\s*个|去重|截取|共\s*\d+)[^（()）]*?[）)]\s*$')
+
+
+def _clean_sheet_name(title):
+    """去掉章节序号与自报条数，避免页名与页内实际内容不符"""
+    s = (title or '').strip()
+    s = _CHAPTER_PREFIX.sub('', s)
+    # 可能叠加多层括号，反复剥到稳定
+    for _ in range(4):
+        new = _COUNT_SUFFIX.sub('', s).strip()
+        if new == s:
+            break
+        s = new
+    return s.strip(' -—·:：')
+
+
+def _common_parent_title(title_stacks, fallback):
+    """多张表合并时，取它们共同的父标题（最长公共前缀的最后一级）
+
+    真实文档：
+      表1 栈 ['测试用例集', '方案名', '测试用例清单', 'A. 九维必测点用例(42条)']
+      表2 栈 ['测试用例集', '方案名', '测试用例清单', 'B. 黑盒9法设计用例', 'B1. 等价类划分法']
+    公共前缀 = [...'测试用例清单']，最后一级 → 「测试用例清单」，正是这一页的全部内容。
+    """
+    if not title_stacks:
+        return fallback
+    prefix = title_stacks[0]
+    for stack in title_stacks[1:]:
+        k = 0
+        while k < len(prefix) and k < len(stack) and prefix[k] == stack[k]:
+            k += 1
+        prefix = prefix[:k]
+        if not prefix:
+            break
+    if not prefix:
+        return fallback
+    # 公共父标题只剩文档标题（如「测试用例集」）时，它并不能说明这一页装了什么
+    # （模型可能把功能/安全用例直接挂在文档标题下），回落成标准页名。
+    if len(prefix) == 1:
+        return fallback
+    cleaned = _clean_sheet_name(prefix[-1])
+    return cleaned or fallback
+
+
 def pick_group_title(group, index):
-    """给分组起页名：优先用其中第一张表前最近的 Markdown 标题"""
-    for section, _, _ in group['blocks']:
-        if section:
-            return section
-    return CASE_SHEET_TITLE if index == 0 else f'{CASE_SHEET_TITLE}_{index + 1}'
+    """给分组起页名：单张表用自己的小标题，多张表合并用共同父标题"""
+    blocks = group['blocks']
+    if len(blocks) > 1:
+        title = _common_parent_title([b[1] for b in blocks], CASE_SHEET_TITLE)
+    else:
+        title = _clean_sheet_name(blocks[0][0]) or CASE_SHEET_TITLE
+    if index == 0 and not title:
+        return CASE_SHEET_TITLE
+    return title
 
 
 def build_case_sheet(wb, group, title, used_titles):
@@ -186,7 +270,7 @@ def build_case_sheet(wb, group, title, used_titles):
     blocks = group['blocks']
 
     # 这一组内列结构一致，直接用第一张表的表头（保留原始顺序，不做跨表并集）
-    columns = [_norm_header(h) for h in blocks[0][1]]
+    columns = [_norm_header(h) for h in blocks[0][2]]
 
     ws.append(columns)
     for c in ws[1]:
@@ -195,7 +279,7 @@ def build_case_sheet(wb, group, title, used_titles):
         c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
     case_rows = 0
-    for _, header, body in blocks:
+    for _, _, header, body in blocks:
         index_map = {}
         for idx, h in enumerate(header):
             index_map.setdefault(_norm_header(h), idx)
@@ -258,7 +342,8 @@ def build_table_sheet(wb, section, header, body, used_titles, table_idx):
 def build_multi_sheet(wb, blocks):
     """旧行为：每张表一页（含用例表），保留用于对比/调试"""
     used_titles = set()
-    for idx, (section, header, body) in enumerate(blocks, start=1):
+    for idx, block in enumerate(blocks, start=1):
+        section, _, header, body = block
         build_table_sheet(wb, section, header, body, used_titles, idx)
     print('OK multi-sheet: ' + ','.join(wb.sheetnames))
 
@@ -287,7 +372,7 @@ def md_to_xlsx(md_path, xlsx_path, multi_sheet=False):
         print(f'read error: {e}')
         sys.exit(1)
 
-    blocks = parse_blocks(md)
+    blocks = parse_blocks_with_stack(md)
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -301,8 +386,8 @@ def md_to_xlsx(md_path, xlsx_path, multi_sheet=False):
         wb.save(xlsx_path)
         return
 
-    case_blocks = [b for b in blocks if is_case_table(b[1])]
-    other_blocks = [b for b in blocks if not is_case_table(b[1])]
+    case_blocks = [b for b in blocks if is_case_table(b[2])]
+    other_blocks = [b for b in blocks if not is_case_table(b[2])]
 
     # 1) 用例表：按列结构分组，同结构合并成一页、异结构各自成页
     #    （主用例清单 11 列、接口用例 12 列且字段名不同，不能强行合并）
@@ -311,7 +396,8 @@ def md_to_xlsx(md_path, xlsx_path, multi_sheet=False):
         build_case_sheet(wb, group, pick_group_title(group, gi), used_titles)
 
     # 2) 其余表格：一张表一页（覆盖分析 / 维度矩阵 / 方法矩阵 / 豁免声明…）
-    for idx, (section, header, body) in enumerate(other_blocks, start=1):
+    for idx, block in enumerate(other_blocks, start=1):
+        section, _, header, body = block
         build_table_sheet(wb, section, header, body, used_titles, idx)
 
     # 3) 一张表都没有（纯文本）：兜底
