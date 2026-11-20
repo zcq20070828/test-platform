@@ -94,11 +94,31 @@ t('补齐在门禁循环内、且不依赖模型（确定性）', () => {
   assert.ok(backfillIdx < repairIdx, '补齐必须在门禁检查之前执行');
 });
 
-t('只补「完全缺失」的维度，不重复堆用例', () => {
-  const fn = SERVER.slice(SERVER.indexOf('function buildDimensionCasesMarkdown('));
-  const body = fn.slice(0, fn.indexOf('\nfunction ', 10) > 0 ? fn.indexOf('\nfunction ', 10) : 6000);
-  assert.ok(/present\.has\(mark\)/.test(body), '没有「该维度已有用例就跳过」的判断');
-  assert.ok(/present\.add\(/.test(body), '没有收集已有维度');
+// 这条是任务 3df0c26a / 829d97fb 的教训：只按「维度有没有用例」判断不够，
+// 门禁还要求每个维度的「正常/边界/异常」三层齐全。
+// 实测补齐后必测点覆盖已到 81~83%，却仍提示「九维覆盖未达标：缺层级 ① 用户、④ 操作」。
+t('按「缺失层级」补齐，不只按维度补齐', () => {
+  const fnStart = SERVER.indexOf('function buildDimensionCasesMarkdown(');
+  assert.ok(fnStart > 0);
+  const rest = SERVER.slice(fnStart);
+  const body = rest.slice(0, rest.indexOf('\nfunction appendToPrimaryDeliverable'));
+
+  // 必须统计已有用例的层级
+  assert.ok(/existingLayers/.test(body), '没有统计已有用例的层级');
+  // 必须读门禁给的 missingLayers
+  assert.ok(/missingLayers/.test(body), '没有使用门禁的 missingLayers');
+  assert.ok(/needThisLayer/.test(body), '没有「该维度缺这个层级才补」的判断');
+  // 维度完全缺失时全部补
+  assert.ok(/existingDims\.has\(mark\)/.test(body), '没有区分「维度完全没用例」');
+  // 必测点去重
+  assert.ok(/seenProbe/.test(body), '没有按 probeId 去重（会重复堆同一条）');
+});
+
+t('缺层级判定用 normalizeLayer 的三层口径', () => {
+  const fnStart = SERVER.indexOf('function buildDimensionCasesMarkdown(');
+  const rest = SERVER.slice(fnStart);
+  const body = rest.slice(0, rest.indexOf('\nfunction appendToPrimaryDeliverable'));
+  assert.ok(/'正常', '边界', '异常'/.test(body), '层级口径不是 正常/边界/异常');
 });
 
 t('工具返回的 dimensionCases 被收集（否则无从补齐）', () => {
