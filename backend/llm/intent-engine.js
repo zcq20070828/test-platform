@@ -24,7 +24,9 @@
 let DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 let DEEPSEEK_BASE_URL =
   process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/chat/completions';
-let DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro';
+// 不预设具体模型名：model 由调用方按「服务商」注入。
+// 硬编码 deepseek-v4-pro 会让选了别家服务商的用户收到 model not found（2026-11-20）。
+let DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || '';
 
 /**
  * 注入运行时配置（供 server.js 按当前用户的默认 Key 调用）
@@ -113,8 +115,13 @@ function extractJson(text) {
  */
 async function chatJSON({ system, user, maxTokens = 2000, timeoutMs = 60000, temperature = 0 }) {
   if (!DEEPSEEK_API_KEY) {
-    const err = new Error('未配置 DEEPSEEK_API_KEY,intent-engine 不可用');
+    const err = new Error('未配置 API Key,intent-engine 不可用');
     err.code = 'NO_LLM_KEY';
+    throw err;
+  }
+  if (!DEEPSEEK_MODEL) {
+    const err = new Error('未解析出可用模型（请检查 API KEY 配置里的服务商与模型）');
+    err.code = 'NO_LLM_MODEL';
     throw err;
   }
 

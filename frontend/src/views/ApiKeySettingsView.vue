@@ -145,7 +145,10 @@
           </el-select>
           <div class="field-hint">
             接口地址由服务商自动确定，无需手填 URL。
-            默认模型：{{ providerModel(form.provider) || '需在下方填写' }}
+            <template v-if="providerModel(form.provider)">
+              该服务商推荐模型：<strong>{{ providerModel(form.provider) }}</strong>
+            </template>
+            <template v-else>该服务商需在下方指定模型。</template>
           </div>
         </el-form-item>
 
@@ -153,7 +156,7 @@
         <el-form-item label="模型" prop="model">
           <el-input
             v-model="form.model"
-            :placeholder="currentProvider?.modelHint || `留空使用默认：${providerModel(form.provider)}`"
+            :placeholder="currentProvider?.modelHint || (providerModel(form.provider) ? `留空使用：${providerModel(form.provider)}` : '请填写该服务商支持的模型名')"
           />
           <div class="field-hint">
             <template v-if="currentProvider?.requiresModel">
@@ -233,8 +236,10 @@ interface ProviderOption {
 }
 
 // 服务商清单由后端返回（两边各硬编码一份会悄悄发错地址）
+// 初始清单留空占位，真实清单由后端下发（不要在本地写死某家的模型名：
+// 用户可能是阿里/Kimi 的 Key，写死 deepseek-v4-pro 会让人误以为是默认值）
 const providers = ref<ProviderOption[]>([
-  { value: 'deepseek', group: '国内', label: 'DeepSeek', model: 'deepseek-v4-pro', modelHint: '', requiresModel: false },
+  { value: 'deepseek', group: '国内', label: 'DeepSeek', model: '', modelHint: '', requiresModel: false },
 ])
 
 // 「国内 / 国外 / 其他」分组，避免二十多个选项平铺成一长串
