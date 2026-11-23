@@ -5084,9 +5084,13 @@ async function executeChatRound(task, message, userFiles) {
       }
 
       // 取最新 agent 交付物版本号用于展示
+      //
+      // 注意：getTaskOutputFiles 是 ORDER BY created_at DESC（新→旧），
+      // 原来用 `.filter(...).pop()` 取到的是**最旧**那条，导致每轮对话都显示 v1
+      // （实测 c1e6dc32 已迭代到 v14，界面仍标 v1）。要最新就用 [0]。
       try {
         const outs = await taskDAO.getTaskOutputFiles(task.id);
-        const lastAgent = outs.filter(o => o.versionSource === 'agent').pop();
+        const lastAgent = outs.find(o => o.versionSource === 'agent');
         agentVerLabel = lastAgent ? lastAgent.displayVersion : '';
       } catch (_) {}
 
@@ -5153,6 +5157,27 @@ async function executeChatRound(task, message, userFiles) {
           : `✅ 已追加 ${patchInfo.added} 条：${patchInfo.ids.join('、')}`;
       }
 
+      // 取本轮产出的交付物文件卡片
+      //
+      // 这是「优化完没见输出交付物」的直接原因：chat_message 原来只带正文，
+      // 不带 artifacts。文件确实落盘了（实测 c1e6dc32 每轮都生成 md/docx/xlsx），
+      // 但前端拿不到文件列表，界面上就只看到一大段文字、没有可下载的交付物卡片。
+      let chatArtifacts = [];
+      if (producedDeliverable) {
+        try {
+          const outs = await taskDAO.getTaskOutputFiles(task.id);
+          const recent = (outs || []).slice(0, 4);   // 新→旧，本轮刚写的在最前
+          chatArtifacts = recent.map((f) => ({
+            id: f.id,
+            name: String(f.filePath || '').split('/').pop(),
+            type: String(f.filePath || '').endsWith('.md') ? 'report' : 'file',
+            path: f.filePath,
+            version: f.displayVersion,
+            source: f.versionSource,
+          }));
+        } catch (_) { /* 取文件失败不影响消息发送 */ }
+      }
+
       broadcast({
         type: 'chat_message',
         taskId: task.id,
@@ -5164,6 +5189,8 @@ async function executeChatRound(task, message, userFiles) {
           agentName: (AGENTS[task.agent] || {}).name || task.agent,
           taskId: task.id,
           versionLabel: agentVerLabel,
+          // 交付物卡片：没有它用户看不到本轮产出的 md/docx/xlsx
+          artifacts: chatArtifacts.length ? chatArtifacts : undefined,
           // 前端据此展示本轮执行模式徽标
           intentMode: intent.mode,
           intentLabel: intent.label,
@@ -11768,7 +11795,17 @@ async function enrichInputWithRecentContext(agentId, taskInput, userId, currentT
   // 2026-11-23 补「继续优化/继续改进/还有优化空间/在此基础上」等——
   // 用户看完审核意见说「继续优化」时，指的是**上一份交付物**，
   // 若当成新需求会从需求重跑一遍，与意图不符且更慢。
-  const refersToPrevious = /刚才|刚刚|上面|之前|上次|上一个|前一个|那份|这份|该需求|同样的需求|重新生成|再生成|再来一次|重做|重跑|重新做|继续优化|继续改进|继续完善|再优化|优化一下|进一步优化|还有优化空间|继续调整|接着优化|在此基础上|基于上面|基于刚才|针对上面|针对这份/.test(input);
+  // 续做/改稿指令识别
+  //
+  // 2026-11-23 二次修正：穷举动词永远补不完。实测连续漏了两次：
+  //   「…还有优化空间，继续优化」→ 词表没有「继续优化」
+  //   「优化完要输出交付物」    → 词表有「优化一下」没有「优化完」
+  // 改为与前端同一套**模式识别**：出现改稿动词（且不是长需求描述）就算改稿，
+  // 或出现明确的指代/重做词。前后端判断必须一致（测试会比对判定结果）。
+  const REVISE_VERB_RE = /优化|改进|完善|修订|调整|改一下|改改|再改|重写|改写|润色|补充|精简|细化/;
+  const REVISE_REF_RE = /刚才|刚刚|上面|之前|上次|上一个|前一个|那份|这份|该需求|同样的需求|重新生成|再生成|再来一次|重做|重跑|重新做|继续|接着|在此基础上|基于上面|基于刚才|针对上面|针对这份/;
+  const refersToPrevious = REVISE_REF_RE.test(input)
+    || (REVISE_VERB_RE.test(input) && input.length <= 80);
   if (!refersToPrevious) return null;
 
   let recent = [];
@@ -11798,7 +11835,10 @@ async function enrichInputWithRecentContext(agentId, taskInput, userId, currentT
   //      给需求原文会诱使模型从零重写，把本来满意的部分改坏（实测就是这个问题：
   //      用户看到审核五维评分后说「继续优化」，结果从需求重跑了一遍）。
   //      这类要给：完整交付物（不是摘要）+ 审核意见（改哪里）+ 明确「保留其余部分」。
-  const isRefine = /继续优化|继续改进|继续完善|再优化|优化一下|进一步优化|还有优化空间|继续调整|接着优化|在此基础上|基于上面|基于刚才|针对上面|针对这份/.test(input);
+  // 优化改稿 vs 重新生成：用改稿动词判断（与前端同一套模式）
+  // 「继续优化」「优化完」「完善一下」都属优化；「重新生成」「重做」属重新生成。
+  const isRefine = REVISE_VERB_RE.test(input)
+    && !/重新生成|重做|重跑|重新做|再来一次|再生成一?份/.test(input);
   const prevRequirement = String(prev.input || '').slice(0, 20000);
 
   if (isRefine) {

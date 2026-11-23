@@ -486,7 +486,22 @@ console.log('[Dashboard] handleSendTask called', {
   // 原实现只弹一个「要不要新建」的提示，用户点了「去对话修改」还得自己去历史里
   // 找那个任务——路径太长，实测用户会直接点「仍要新建」。
   // 现在识别到改稿指令时**直接送他进上一份任务的对话模式并把这句发过去**。
-  const isRevisionInstruction = /刚才|刚刚|上面|之前|上次|上一个|前一个|那份|这份|重新生成|再生成|再来一次|重做|重跑|继续优化|继续改进|继续完善|再优化|优化一下|进一步优化|还有优化空间|继续调整|接着优化|在此基础上|基于上面|基于刚才|针对上面|针对这份/.test(taskInputValue)
+  // 续做/改稿指令识别
+  //
+  // 2026-11-23 二次修正：靠穷举动词永远补不完。实测连续漏了两次：
+  //   「…还有优化空间，继续优化」（词表没有「继续优化」）
+  //   「优化完要输出交付物」（词表有「优化一下」，但没有「优化完」）
+  // 现在改为**模式识别**：出现改稿动词就认为是「对已有产出的动作」。
+  //
+  // 误判防护：像「优化登录接口性能，关注 TPS 和响应时间，需要压测报告」这种
+  // 明显是新需求描述。用长度做粗筛——改稿指令通常很短（它只描述"改什么"），
+  // 完整需求描述通常较长（它要描述"做什么"）。判错也只是弹一次确认框，
+  // 用户可以直接选「我要新建任务」，不会造成事实错误。
+  const REVISE_VERB = /优化|改进|完善|修订|调整|改一下|改改|再改|重写|改写|润色|补充|精简|细化/
+  const REVISE_REF = /刚才|刚刚|上面|之前|上次|上一个|前一个|那份|这份|重新生成|再生成|再来一次|重做|重跑|继续|接着|在此基础上|基于上面|基于刚才|针对上面|针对这份/
+  const trimmedInput = taskInputValue.trim()
+  const isRevisionInstruction = REVISE_REF.test(trimmedInput)
+    || (REVISE_VERB.test(trimmedInput) && trimmedInput.length <= 80)
   if (isRevisionInstruction && (!files || files.length === 0)) {
     const prevTask = findContinuableTask()
     if (prevTask) {
