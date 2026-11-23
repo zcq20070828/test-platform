@@ -520,43 +520,12 @@ console.log('[Dashboard] handleSendTask called', {
   }
 
   const targetAgentId = selectedAgentId.value
-  console.log('[Dashboard] Target agent:', targetAgentId)
+  console.log('[Dashboard] 下拉框偏好:', targetAgentId, '（实际执行哪个由输入内容决定）')
 
-  // ========== 预检查 1: 检查输入与智能体是否匹配 ==========
-  // 如果用户输入的指令关键词与所选智能体的能力不匹配,提示用户
-  const agentKeywords = AGENT_KEYWORDS[targetAgentId]
-  if (agentKeywords && taskInputValue.trim()) {
-    const inputText = taskInputValue.trim().toLowerCase()
-    const hasMatch = agentKeywords.keywords.some(kw => inputText.includes(kw.toLowerCase()))
-    if (!hasMatch) {
-      // 未匹配到任何关键词
-      const agentName = getAgentChineseName({ id: targetAgentId })
-      // 找出可能更合适的智能体
-      const suggestedAgent = findBestMatchingAgent(inputText, targetAgentId)
-      const suggestion = suggestedAgent
-        ? `\n\n您可能想选择:[${suggestedAgent.name}] (适用于${suggestedAgent.description})`
-        : ''
-
-      try {
-        await ElMessageBox.confirm(
-          `您选择的智能体是 [${agentName}],主要用于${agentKeywords.description}。\n\n您的输入:\n"${taskInputValue.substring(0, 100)}${taskInputValue.length > 100 ? '...' : ''}"\n\n未检测到与该智能体相关的关键词。${suggestion}\n\n请确认:\n• 是:继续提交给 [${agentName}]\n• 否:取消提交,请检查智能体选择`,
-          '输入与智能体不匹配',
-          {
-            confirmButtonText: '仍然提交',
-            cancelButtonText: '取消',
-            type: 'warning',
-            distinguishCancelAndClose: true,
-            dangerouslyUseHTMLString: false
-          }
-        )
-        // 用户选择"仍然提交",继续流程
-      } catch {
-        // 用户取消
-        console.log('[Dashboard] 用户取消提交 - 输入与智能体不匹配')
-        return
-      }
-    }
-  }
+  // 注：这里原本有一个「输入与下拉框智能体不匹配」的确认弹窗，2026-11-23 移除。
+  // 现在提交走 intentDriven——由输入内容决定执行哪个智能体，下拉框只是弱偏好，
+  // 「下拉框跟输入不匹配」不再是问题。再弹一次只会白打扰用户，
+  // 还会让人误以为「必须先选对下拉框」（这正是之前意图识别形同虚设的原因之一）。
 
   // ========== 预检查 2:查询后端确认是否有正在执行的任务 ==========
   try {
@@ -620,7 +589,7 @@ console.log('[Dashboard] handleSendTask called', {
             timestamp: new Date().toISOString()
           }
           store.messages.push(userMessage)
-          await store.createTask(targetAgentId, fullMessage, filesToSubmit, { source: 'step', type: targetAgentId })
+          await store.createTask(targetAgentId, fullMessage, filesToSubmit, { source: 'step', intentDriven: true, type: targetAgentId })
           taskInput.value = ''
         } else {
           ElMessage.error(res.error || '发送消息失败')
@@ -647,7 +616,9 @@ console.log('[Dashboard] handleSendTask called', {
       fullMessagePreview: fullMessage.substring(0, 100)
     })
     try {
-      const task = await store.createTask(targetAgentId, fullMessage, filesToSubmit, { source: 'step', type: targetAgentId })
+      // intentDriven：由输入框内容决定执行哪个智能体，下拉框只是弱偏好。
+      // 之前传 { type: targetAgentId } 是把 agentId 当任务类型传，等于绕开意图识别。
+      const task = await store.createTask(targetAgentId, fullMessage, filesToSubmit, { source: 'step', intentDriven: true, type: targetAgentId })
       if (task === null) {
         // 创建失败（可能原因：网络异常 / 会话已过期）
         ElMessage.error('任务创建失败：网络异常或会话已过期，请重试')

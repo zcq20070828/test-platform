@@ -3090,7 +3090,14 @@ app.post('/api/performance/gc', authenticate, async (req, res) => {
 
 // 提交新任务
 app.post('/api/tasks', authenticate, async (req, res) => {
-  const { type, input, agent: specifiedAgent, priority = 'normal', files, source = 'step' } = req.body;
+  const { type, input, agent: specifiedAgent, preferAgent, priority = 'normal', files, source = 'step' } = req.body;
+  // intentDriven=true：由**输入内容**决定执行哪个智能体，下拉框只作为弱偏好。
+  // 之前前端每次都会把下拉框选中的 agent 当 specifiedAgent 传上来，
+  // 后端第一分支就 resolve 了它、confirmedAgent=true，意图识别整段被跳过——
+  // 结果是「输入框里写了什么」从来不参与决策，全靠用户先选对下拉框。
+  // 现在前端传 preferAgent（弱偏好）+ intentDriven，内容占主导；
+  // 只有内容完全识别不出、或用户从候选弹窗里明确选了某个，才用指定的那个。
+  const intentDriven = req.body.intentDriven === true;
 
   // ========== 注入上传文档内容 ==========
   const enrichedInput = await injectFilesToInput(input || '', files);
@@ -3111,14 +3118,17 @@ app.post('/api/tasks', authenticate, async (req, res) => {
   const taskId = uuidv4();
   const timestamp = new Date().toISOString();
 
-  // 确定目标Agent(优先级:指定Agent > 自动识别 > 任务类型映射)
+  // 确定目标Agent(优先级:指定Agent > 输入内容识别 > 任务类型映射)
   let targetAgent = null;
   // 用户明确指定（或从候选里点选后重新提交）时才算 confirmed，
   // 此时不再做意图识别，也不再因为识别不准而回退成确认请求。
   let confirmedAgent = false;
 
   // 1. 如果指定了Agent,解析名称或ID
-  if (specifiedAgent) {
+  //
+  // intentDriven 模式下 specifiedAgent 不参与决策（它只是下拉框的当前值，
+  // 不代表用户对「这次要做什么」做了选择）。只在内容完全识别不出时兜底。
+  if (specifiedAgent && !intentDriven) {
     targetAgent = resolveAgentId(specifiedAgent);
     if (targetAgent) {
       confirmedAgent = true;
@@ -3126,7 +3136,7 @@ app.post('/api/tasks', authenticate, async (req, res) => {
     }
   }
 
-  // 2. 如果未指定或解析失败,根据任务内容识别意图
+  // 2. 用**输入内容**识别意图（这是决定「执行什么」的主渠道）
   //
   // 2026-11-20 改造：不再是「首个命中即返回」。
   // 现在会给出置信度与候选，识别不准时**不替用户猜**——
@@ -3135,26 +3145,35 @@ app.post('/api/tasks', authenticate, async (req, res) => {
   let intentInfo = null;
   if (!targetAgent && enrichedInput) {
     intentInfo = analyzeTaskIntent(enrichedInput, { taskType: type });
+    const prefer = preferAgent ? resolveAgentId(preferAgent) : null;
     if (intentInfo.confident && intentInfo.agentId) {
       targetAgent = intentInfo.agentId;
-      console.log(`[AutoDispatch] 意图明确 → ${targetAgent}（${intentInfo.reason}）`);
+      console.log(`[AutoDispatch] 意图明确 → ${targetAgent}（${intentInfo.reason}）`
+        + (prefer && prefer !== targetAgent ? `；下拉框选的是 ${prefer}，以内容为准` : ''));
     } else if (!confirmedAgent) {
-      // 未明确指定且识别不准 → 交给用户确认，不创建任务
-      console.log(`[AutoDispatch] 意图不明确（${intentInfo.reason}），返回候选供用户确认`);
-      return res.status(409).json({
-        error: '需要确认任务类型',
-        code: 'INTENT_CONFIRM_REQUIRED',
-        message: intentInfo.reason,
-        actionKind: intentInfo.actionKind,
-        candidates: intentInfo.candidates,
-        // 前端原样带回来即可，避免用户输入被二次解析
-        intent: {
-          confident: false,
-          agentId: intentInfo.agentId,
-          agentName: intentInfo.agentName,
-          confidence: intentInfo.confidence,
-        },
-      });
+      // 内容识别不准。
+      // 先看下拉框（弱偏好）能不能兜住：它虽然不是「用户对本次任务的明确选择」，
+      // 但至少是用户的稳定习惯，比直接弹窗更少打扰。
+      if (prefer) {
+        targetAgent = prefer;
+        console.log(`[AutoDispatch] 内容识别不明确（${intentInfo.reason}），沿用下拉框偏好 ${prefer}`);
+      } else {
+        console.log(`[AutoDispatch] 意图不明确（${intentInfo.reason}），返回候选供用户确认`);
+        return res.status(409).json({
+          error: '需要确认任务类型',
+          code: 'INTENT_CONFIRM_REQUIRED',
+          message: intentInfo.reason,
+          actionKind: intentInfo.actionKind,
+          candidates: intentInfo.candidates,
+          // 前端原样带回来即可，避免用户输入被二次解析
+          intent: {
+            confident: false,
+            agentId: intentInfo.agentId,
+            agentName: intentInfo.agentName,
+            confidence: intentInfo.confidence,
+          },
+        });
+      }
     }
   }
 

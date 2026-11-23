@@ -259,15 +259,38 @@ export const taskApi = {
     agentId: string,
     input: string,
     files?: { kbType?: string; filename?: string; name?: string; content?: string; base64?: string }[],
-    options?: { source?: 'step' | 'workflow'; type?: string }
+    options?: {
+      source?: 'step' | 'workflow'
+      type?: string
+      /**
+       * 由输入内容决定执行哪个智能体（2026-11-23）
+       *
+       * 置 true 时 agentId 降级为「弱偏好」：
+       * 后端先用输入内容做意图识别，识别明确就按内容走（可能与 agentId 不同）；
+       * 内容识别不出时才回退到 agentId。
+       * 之前前端每次都把下拉框的值当「指定智能体」传，导致输入框内容从不参与决策。
+       */
+      intentDriven?: boolean
+    }
   ): Promise<{ task?: Task } & ApiResponse<any>> {
-    const body = { agent: agentId, input, files: files || [], source: options?.source || 'step', type: options?.type }
-    console.log('[taskApi.create] Request body:', JSON.stringify(body))
+    const body: Record<string, any> = {
+      input,
+      files: files || [],
+      source: options?.source || 'step',
+      type: options?.type,
+    }
+    if (options?.intentDriven) {
+      // 弱偏好，不叫 agent——后端据此不做 confirmedAgent 处理
+      body.preferAgent = agentId
+      body.intentDriven = true
+    } else {
+      body.agent = agentId
+    }
+    console.log('[taskApi.create] Request body:', JSON.stringify({ ...body, input: `${input.slice(0, 50)}…` }))
     const res = await request<Task>('/api/tasks', {
       method: 'POST',
       body: JSON.stringify(body)
     })
-    console.log('[taskApi.create] Response:', res)
     if (res.success) return { task: res.data!, success: true }
     return { task: undefined, success: false, error: res.error || '创建任务失败' }
   },
