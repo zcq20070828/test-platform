@@ -10447,12 +10447,16 @@ app.delete('/api/user/api-keys/:id', authenticate, async (req, res) => {
 });
 
 app.post('/api/user/api-keys/:id/default', authenticate, async (req, res) => {
+  // 「默认 Key」是**用户级**的：每个用户各自指定自己调模型用的 Key。
+  // 这里刻意不做管理员校验、也不按 role 分支——任何人都只能改自己的那一把，
+  // 由 DAO 里的 WHERE user_id = ? 兜住。平台统一 Key 是 .env 的 PLATFORM_API_KEY，
+  // 与本接口无关，改这里永远不会影响其他用户或平台兜底。
   const userId = req.user?.id || req.user?.sub;
   try {
     const ok = await userApiKeyDAO.setDefaultApiKey(userId, req.params.id);
     if (!ok) return res.status(404).json({ success: false, error: 'API Key 不存在' });
     invalidateUserApiKeyCache(userId);
-    res.json({ success: true, message: '已设为默认 API Key' });
+    res.json({ success: true, message: '已设为你的默认 API Key（仅影响你自己的任务）' });
   } catch (e) {
     console.error('[ApiKey] 设默认失败', e.message);
     res.status(500).json({ success: false, error: '设置默认 API Key 失败' });

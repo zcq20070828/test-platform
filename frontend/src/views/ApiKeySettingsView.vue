@@ -4,8 +4,10 @@
       <div>
         <h2 class="apikey-title"><MsIcon name="key" :size="22" /> API KEY 配置</h2>
         <p class="apikey-subtitle">
-          在这里管理你自己的大模型 API Key。平台调用大模型时优先使用你标记为「默认」的那一个；
-          没有配置时才会使用平台统一提供的 Key。选择服务商即可，接口地址由平台按服务商自动确定，无需手填。
+          在这里管理<strong>你自己的</strong>大模型 API Key。
+          「默认」是<strong>你的个人默认</strong>——只影响你自己的任务，不会改变其他用户，也不是平台级配置。
+          调用大模型时优先使用你标记为「默认」的那一个；你没有配置时才会用平台统一提供的 Key。
+          选择服务商即可，接口地址由平台按服务商自动确定，无需手填。
         </p>
       </div>
       <div class="header-actions">
@@ -46,10 +48,10 @@
       :closable="false"
       show-icon
       class="status-alert"
-      title="有 Key 但没有指定默认"
+      title="有 Key 但没有指定你的默认 Key"
     >
       <div class="alert-body">
-        请在列表里点「设为默认」，否则平台会{{ platformKeyAvailable ? '继续使用平台统一 Key' : '无法调用模型' }}。
+        请在列表里点「设为默认」，选一把你常用的 Key，否则你的任务会{{ platformKeyAvailable ? '继续使用平台统一 Key' : '无法调用模型' }}。
       </div>
     </el-alert>
 
@@ -60,7 +62,9 @@
           <template #default="{ row }">
             <div class="name-cell">
               <span class="key-name">{{ row.name }}</span>
-              <el-tag v-if="row.isDefault" type="success" size="small" effect="light">默认</el-tag>
+              <!-- 「我的默认」而不是「默认」：这三个字要让人一眼看出是个人设置，
+                   不是平台级配置（用户明确提过这个歧义） -->
+              <el-tag v-if="row.isDefault" type="success" size="small" effect="light">我的默认</el-tag>
             </div>
           </template>
         </el-table-column>
@@ -541,7 +545,8 @@ async function handleSave() {
 async function handleSetDefault(row: UserApiKey) {
   const res = await userApiKeyApi.setDefault(row.id)
   if (res.ok) {
-    ElMessage.success(res.message)
+    // 说清作用域：这是「你的」默认，不是平台默认，也不影响别人
+    ElMessage.success(`已把「${row.name}」设为你的默认 Key（只影响你自己的任务）`)
     await load()
   } else {
     ElMessage.error(res.message)
