@@ -56,6 +56,7 @@ import {
   summarizeDeliverableForQuestion,
 } from './lib/chat-intent.js';
 import { analyzeTaskIntent } from './lib/task-intent.js';
+import { verifyRuntimeResources, assertModulePathExist } from './lib/boot-check.js';
 import { diagnoseFailure } from './lib/failure-diagnosis.js';
 import {
   experienceFromReviewIssue,
@@ -12796,8 +12797,39 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                 }
               }
             } catch (e) {
-              toolResult = `工具执行错误: ${e.message}`;
-              console.error(`[ToolLoop] ${fnName} 执行失败:`, e.message);
+              // 工具执行失败不能再静默降级（2026-11-23）。
+              //
+              // 生产曾长期缺 9dem-planner/9dem-executor 的 6 个文件，
+              // 这里只打一行 `[ToolLoop] xxx 执行失败` 就继续，
+              // 任务照样「成功」返回——用户拿到的是少了 42 条九维必测点
+              // 与黑盒9法覆盖的交付物，从界面上完全看不出残缺。
+              //
+              // 现在：
+              //   1) 模块缺失（部署缺陷）→ 标 needsDeployFix，前端/日志都明确指向部署问题；
+              //   2) 其它错误 → 保留原有文案，但把错误种类带进工具结果，
+              //      让模型自己知道「这次没拿到确定性基线」，而不是当成拿到了空结果。
+              const missingModule = e && (e.code === 'RESOURCE_MISSING' || /Cannot find module/.test(String(e.message || '')));
+              if (missingModule) {
+                toolResult = `工具未执行：部署缺少运行时模块（${fnName}）。这不是参数问题，请说明本次交付物缺少确定性基线用例。原始错误：${e.message}`;
+                console.error(`[ToolLoop] ❌ ${fnName} 部署缺失（需要补部署包，不是业务错误）: ${e.message}`);
+                try {
+                  broadcast({
+                    type: 'tool_unavailable',
+                    agentId,
+                    taskId,
+                    userId: userId || null,
+                    tool: fnName,
+                    reason: 'deploy_missing_module',
+                    detail: e.message,
+                    needsDeployFix: true,
+                    message: `⚠️ 工具「${fnName}」不可用（部署缺少文件），本次交付物将缺少对应的确定性用例`,
+                    timestamp: new Date().toISOString(),
+                  });
+                } catch (_) {}
+              } else {
+                toolResult = `工具执行错误(${e.name || 'Error'}): ${e.message}`;
+                console.error(`[ToolLoop] ${fnName} 执行失败:`, e.message);
+              }
             }
             messages.push({ role: 'tool', tool_call_id: callId, content: String(toolResult) });
           }
@@ -12845,7 +12877,27 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
               }
             }
           } catch (pErr) {
-            console.warn(`[PlannerBackfill] 补调 9dem_planner 失败: ${pErr.message}`);
+            // 补算失败同样不能静默（2026-11-23）：
+            // 生产曾因缺 invoker 文件导致补算长期失败，只打一行 warn，
+            // 交付物少了维度规划依据却看不出来。
+            const missing = pErr && (pErr.code === 'RESOURCE_MISSING' || /Cannot find module/.test(String(pErr.message || '')));
+            console.error(
+              `[PlannerBackfill] ${missing ? '❌ 部署缺少 9dem-planner（需补部署包）' : '补调 9dem_planner 失败'}: ${pErr.message}`
+            );
+            try {
+              broadcast({
+                type: 'tool_unavailable',
+                agentId,
+                taskId,
+                userId: userId || null,
+                tool: '9dem_planner',
+                reason: missing ? 'deploy_missing_module' : 'execution_error',
+                detail: pErr.message,
+                needsDeployFix: !!missing,
+                message: `⚠️ 维度规划不可用，本次交付物缺少九维编排依据`,
+                timestamp: new Date().toISOString(),
+              });
+            } catch (_) {}
           }
         }
       }
@@ -20224,6 +20276,23 @@ app.use(express.static(UI_PATH));
 // ============================================================================
 
 async function start() {
+  // ── 运行时资源自检（2026-11-23）──
+  //
+  // 必须在任何事情之前做：qclaw-skills/ 下的文件是运行时按路径加载的，
+  // 构建期完全不校验。生产曾长期缺 9dem-planner/9dem-executor 的 6 个文件，
+  // 导致「测试用例生成」一直没有九维必测点与黑盒9法覆盖，
+  // 且失败被静默降级——任务显示成功，交付物残缺，从界面看不出来。
+  //
+  // 缺失关键资源就拒绝启动（PM2 会重试、监控能发现），
+  // 好过带着残缺能力对外服务。
+  try {
+    verifyRuntimeResources(SKILLS_DIR);
+  } catch (e) {
+    console.error(e.message);
+    console.error('\n[BootCheck] 启动中止。补齐 qclaw-skills 后重启。');
+    process.exit(1);
+  }
+
   await ensureKBDirs();
   await loadUsers();
   await createDefaultAdmin();
