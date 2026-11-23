@@ -1048,9 +1048,9 @@ export const useMainStore = defineStore('main', () => {
     agentId: string,
     input: string,
     files?: { kbType?: string; filename?: string; name?: string; content?: string; base64?: string }[],
-    options?: { source?: 'step' | 'workflow'; type?: string }
+    options?: { source?: 'step' | 'workflow'; type?: string; intentDriven?: boolean }
   ) {
-    console.log('[Store] createTask called:', { agentId, input: input.substring(0, 50), filesCount: files?.length || 0 })
+    console.log('[Store] createTask called:', { agentId, intentDriven: !!options?.intentDriven, input: input.substring(0, 50), filesCount: files?.length || 0 })
     try {
       const res = await taskApi.create(agentId, input, files, options)
       console.log('[Store] createTask result:', res)
