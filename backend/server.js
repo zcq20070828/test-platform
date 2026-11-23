@@ -15863,28 +15863,41 @@ function extractReportProjectName(content) {
   const clean = (v) => String(v || '').replace(/[|*_`【】\[\]]/g, '').replace(/V?\d+(?:\.\d+){1,3}/ig, '').trim();
   const looksLikeProjectName = (name) => {
     const v = String(name || '').trim();
-    if (v.length < 2 || v.length > 40) return false;
+    // 上限从 40 放宽到 80（2026-11-23）：
+    // 实测「中国移动云盘"算力大作战"活动(活动ID: National_TokenPK / 全网算力大作战)」
+    // 有 49 个字符，超过 40 直接被丢弃 → 文件名退化成「测试用例」，
+    // 项目名和版本号全没了。真实项目名带括号补充说明很常见，40 太紧。
+    if (v.length < 2 || v.length > 80) return false;
     if (/^(需求分析|测试用例|测试报告|报告|方案|需求|文档|接口测试执行报告|UI_E2E测试执行报告|数据脱敏记录)$/.test(v)) return false;
     // 标题只是报告类型（如“缺陷分析与分类报告”“安全测试报告”）时，不要当项目名
     if (/(报告|分析|用例|方案|记录|清单|汇总|总结|测试)/.test(v) && !/(项目|系统|平台|应用|活动|产品|业务|中台)/.test(v)) return false;
+    // 整句说明/指令不是项目名（2026-11-23）：
+    // 无 # 标题时的首行兜底会把「这是一段没有任何项目信息的内容」
+    // 这种整句话当成项目名，文件名变成「这是一段没有任何项目信息的内容测试用例」。
+    // 项目名是名词短语：不含句末标点、不含这些动词、不以代词开头。
+    if (/[。！？!?；;]$/.test(v)) return false;
+    if (/^(这|那|本|该|此|请|帮我|我们|你们|以下|下面|上述)/.test(v)) return false;
+    if (/(进行|完成|生成|输出|分析一下|测试一下|需要|应该|可以|不能|没有|是否)/.test(v)) return false;
     return true;
   };
 
-  for (const table of content.matchAll(/^\|\s*(?:项目名称|系统名称|产品名称|项目)\s*\|\s*([^|\n]{2,40})\s*\|/gm)) {
+  // 表格 | 项目名称 | xxx |
+  // 长度上限同步放宽到 80（原 40），否则带括号说明的项目名整行失配
+  for (const table of content.matchAll(/^\|\s*(?:项目名称|系统名称|产品名称|项目)\s*\|\s*([^|\n]{2,80})\s*\|/gm)) {
     const value = clean(table[1]);
     // 跳过表头 | 项目 | 内容 |
-    if (!/^(内容|值|说明|详情|信息|项目信息项)$/.test(value)) return value;
+    if (!/^(内容|值|说明|详情|信息|项目信息项)$/.test(value) && value) return value;
   }
 
-  const plain = content.match(/^(?:项目名称|项目|系统名称|产品名称)\s*[:：]\s*([^\n,，]{2,40})/m);
+  const plain = content.match(/^(?:项目名称|项目|系统名称|产品名称)\s*[:：]\s*([^\n,，]{2,80})/m);
   if (plain) return clean(plain[1]);
 
   // Markdown 列表标签：- **项目名称**：移动云盘...
-  const bullet = content.match(/^[-*+]\s*(?:\*\*)?(?:项目名称|系统名称|产品名称)(?:\*\*)?\s*[:：]\s*([^\n]{2,40})/m);
+  const bullet = content.match(/^[-*+]\s*(?:\*\*)?(?:项目名称|系统名称|产品名称)(?:\*\*)?\s*[:：]\s*([^\n]{2,80})/m);
   if (bullet) return clean(bullet[1]);
 
   // mammoth 解析 Word 后，表格会变成「项目名称\n\n移动云盘...\n\n版本号...」这种纯文本行对
-  const linePair = content.match(/^(?:项目名称|系统名称|产品名称)\s*\n+\s*([^\n]{2,40})\s*$/m);
+  const linePair = content.match(/^(?:项目名称|系统名称|产品名称)\s*\n+\s*([^\n]{2,80})\s*$/m);
   if (linePair) return clean(linePair[1]);
 
   const heading = content.match(/^#{1,2}\s+(.{2,80})$/m);
@@ -15899,9 +15912,8 @@ function extractReportProjectName(content) {
 
   // 无 # 标题时的首行兜底（Word 解析后常见：移动云盘...需求文档V1.0.0）
   const firstLine = content.split(/\r?\n/).map((x) => x.trim()).find(Boolean);
-  if (firstLine && firstLine.length >= 4 && firstLine.length <= 80) {
+  if (firstLine && firstLine.length >= 4 && firstLine.length <= 120) {
     const h = clean(firstLine)
-      .replace(/V?\d+(?:\.\d+){1,3}/ig, '')
       .replace(/(需求分析报告|需求文档|需求说明书|需求规格说明书|测试用例集?|测试报告|测试方案|缺陷分析报告|接口测试执行报告|UI_E2E测试执行报告|数据脱敏记录|报告|文档).*$/, '')
       .trim();
     if (looksLikeProjectName(h)) return h;
@@ -16185,7 +16197,19 @@ function sanitizeFileName(name) {
  */
 function buildDeliverableBaseName(content, deliverableName) {
   const info = extractProjectInfo(content);
-  const project = info.projectName && info.projectName !== '项目' ? info.projectName : '';
+  let project = info.projectName && info.projectName !== '项目' ? info.projectName : '';
+  // 剥掉括号里的补充说明（活动ID / 内部代号 / 需求来源等）：
+  // 实测「中国移动云盘"算力大作战"活动(活动ID: National_TokenPK / 全网算力大作战)」
+  // 直接进文件名会有 49 个字，既不美观也容易在 Windows 上撞路径长度上限。
+  // 保留主干「中国移动云盘"算力大作战"活动」就够识别了。
+  if (project) {
+    const stripped = project
+      .replace(/[（(][^（）()]{1,60}[)）]/g, '')   // 去掉所有括号补充
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    // 剥离后不能太短，否则宁可保留原文（避免把整个名字删空）
+    if (stripped.length >= 4) project = stripped;
+  }
   const version = info.versionOrFeature || '';
   if (!project) return deliverableName;
   return `${project}${version}${deliverableName}`;
