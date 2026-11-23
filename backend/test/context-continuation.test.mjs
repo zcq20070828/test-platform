@@ -62,9 +62,19 @@ t('UUID 通道未命中时会回落到续做通道', () => {
     '未接上回落逻辑');
 });
 
-t('续做识别只在输入很短时触发（避免误伤正常需求）', () => {
+t('续做识别有长度上限（避免误伤正常需求）', () => {
+  // 上限的作用是防止「粘贴一整份需求文档，里面恰好有『继续优化』四个字」
+  // 被误判成续做指令、把上一份任务的内容注入进来。
+  //
+  // 阈值本身可以调（2026-11-23 从 60 放宽到 400：实测一条真实的改稿指令
+  // 「…从审核结果看，该用例还有优化空间，继续优化」有 192 字，60 直接把它挡在门外，
+  // 于是被当成全新需求重跑）。要求的是「有上限且不会窄到挡掉真实指令」。
   const fn = SERVER.slice(SERVER.indexOf('async function enrichInputWithRecentContext'), SERVER.indexOf('async function enrichInputWithTaskReferences'));
-  assert.ok(/input\.length > 60/.test(fn), '缺少长度上限');
+  const m = fn.match(/input\.length > (\d+)\) return null/);
+  assert.ok(m, '缺少长度上限');
+  const limit = Number(m[1]);
+  assert.ok(limit >= 400, `上限 ${limit} 太窄：实测改稿指令有 192 字，留足余量才不误伤`);
+  assert.ok(limit <= 2000, `上限 ${limit} 过宽：正常需求文档会被误判为续做指令`);
 });
 
 t('续做识别要求含指代词', () => {
@@ -114,14 +124,18 @@ t('防护规则不误伤正常交付物', () => {
 });
 
 // ---------------- 前端提示 ----------------
-t('前端对「指代上一份产出」的短输入给出提示', () => {
-  assert.ok(/这是一条续做指令/.test(DASHBOARD), '缺少续做提示弹窗');
-  assert.ok(/沿用上次需求/.test(DASHBOARD), '缺少「沿用上次需求」选项说明');
+t('前端对「指代上一份产出」的输入给出续做引导', () => {
+  // 2026-11-23 起不再只是「提示」，而是直接把用户送进上一份任务的对话并发送，
+  // 引导文案与「新建 vs 继续改」的选择都要在。
+  assert.ok(/isRevisionInstruction/.test(DASHBOARD), '缺少续做指令识别');
+  assert.ok(/enterChatModeAndSend/.test(DASHBOARD), '缺少「进入对话并发送」的路径');
+  assert.ok(/在原任务里继续修改/.test(DASHBOARD), '缺少「在原任务里继续修改」选项');
 });
 
-t('前端提示只在短输入且无附件时触发', () => {
-  assert.ok(/refersToPrevious && taskInputValue\.trim\(\)\.length <= 60 && \(!files \|\| files\.length === 0\)/.test(DASHBOARD),
-    '缺少触发条件限制');
+t('前端续做引导排除带附件的提交', () => {
+  // 带附件通常是「基于这份材料做事」，不该被当成「改上一次的产出」
+  assert.ok(/isRevisionInstruction && \(!files \|\| files\.length === 0\)/.test(DASHBOARD),
+    '缺少「无附件」这个触发条件');
 });
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

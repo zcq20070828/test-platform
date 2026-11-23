@@ -11727,12 +11727,19 @@ const TASK_REFERENCE_AGENTS = new Set([
 async function enrichInputWithRecentContext(agentId, taskInput, userId, currentTaskId) {
   if (!userId) return null;
   const input = String(taskInput || '').trim();
-  if (!input || input.length > 60) return null;
+  // 长度上限放到 400：实测一条「…从审核结果看，该用例还有优化空间，继续优化」
+  // 有 192 字，原 60 字上限直接把它挡在门外，于是续做指令被当成全新需求重跑。
+  // 上限只是用来排除「整份需求文档」这类长输入（那种本来就不需要注入上文）。
+  if (!input || input.length > 400) return null;
   // 已显式引用某个任务 → 交给 enrichInputWithTaskReferences
   if (UUID_PATTERN.test(input)) { UUID_PATTERN.lastIndex = 0; return null; }
   UUID_PATTERN.lastIndex = 0;
 
-  const refersToPrevious = /刚才|刚刚|上面|之前|上次|上一个|前一个|那份|这份|该需求|同样的需求|重新生成|再生成|再来一次|重做|重跑|重新做/.test(input);
+  // 续做/改稿类指令。
+  // 2026-11-23 补「继续优化/继续改进/还有优化空间/在此基础上」等——
+  // 用户看完审核意见说「继续优化」时，指的是**上一份交付物**，
+  // 若当成新需求会从需求重跑一遍，与意图不符且更慢。
+  const refersToPrevious = /刚才|刚刚|上面|之前|上次|上一个|前一个|那份|这份|该需求|同样的需求|重新生成|再生成|再来一次|重做|重跑|重新做|继续优化|继续改进|继续完善|再优化|优化一下|进一步优化|还有优化空间|继续调整|接着优化|在此基础上|基于上面|基于刚才|针对上面|针对这份/.test(input);
   if (!refersToPrevious) return null;
 
   let recent = [];
@@ -11755,11 +11762,69 @@ async function enrichInputWithRecentContext(agentId, taskInput, userId, currentT
   );
   if (!prev) return null;
 
-  // 上一份任务的需求原文是这次续做最重要的输入（它才是「那份需求」）
+  // 两类续做指令，注入内容必须不同（2026-11-23）
+  //
+  //   A. 「重新生成/重做/再来一次」 → 用户要一份新的，给需求原文，模型重新产出；
+  //   B. 「继续优化/改进/完善/还有优化空间」 → 用户要的是**在现有交付物上改**，
+  //      给需求原文会诱使模型从零重写，把本来满意的部分改坏（实测就是这个问题：
+  //      用户看到审核五维评分后说「继续优化」，结果从需求重跑了一遍）。
+  //      这类要给：完整交付物（不是摘要）+ 审核意见（改哪里）+ 明确「保留其余部分」。
+  const isRefine = /继续优化|继续改进|继续完善|再优化|优化一下|进一步优化|还有优化空间|继续调整|接着优化|在此基础上|基于上面|基于刚才|针对上面|针对这份/.test(input);
   const prevRequirement = String(prev.input || '').slice(0, 20000);
+
+  if (isRefine) {
+    // 优化模式：交付物给尽量完整的内容（它是被修改的对象），需求只作判据
+    const prevFull = String(prev.result || '');
+    const budget = 40000;
+    const prevDeliverable = prevFull.length > budget
+      ? `${prevFull.slice(0, budget)}\n\n…（交付物共 ${prevFull.length} 字符，以下省略；请只修改你能看到的部分，其余保持原样）`
+      : prevFull;
+    // 审核意见是最直接的「改哪里」依据。
+    // 注意字段名：formatTask 把 review_notes 映射成驼峰 reviewNotes，
+    // 直接读 row.review_notes 永远是 undefined。
+    let reviewBrief = '';
+    try {
+      const notes = prev.reviewNotes
+        || (prev.review_notes
+          ? (typeof prev.review_notes === 'string' ? JSON.parse(prev.review_notes) : prev.review_notes)
+          : []);
+      if (Array.isArray(notes) && notes.length) {
+        reviewBrief = notes.slice(0, 20).map((n, i) => {
+          const sev = n.severity || n.level || '';
+          const desc = n.description || n.issue || n.title || '';
+          const sug = n.suggestion ? `　建议：${n.suggestion}` : '';
+          return `${i + 1}. [${sev}] ${desc}${sug}`;
+        }).join('\n');
+      }
+    } catch (_) { /* 审核意见解析失败不影响主流程 */ }
+
+    console.log(`[RecentContext] ${agentId} 优化指令，注入上一份任务 ${prev.id} 的完整交付物（${prevDeliverable.length} 字）+ 审核意见 ${reviewBrief ? '有' : '无'}`);
+
+    return [
+      '【续做上下文（系统自动注入：本次是「在上一份交付物基础上优化」）】',
+      `用户在说「${input}」，指的是同一智能体上一份任务（任务 ${prev.id}）产出的交付物。`,
+      '',
+      '**这是优化改稿，不是重新生成**：请在下面这份交付物的基础上做修改，',
+      '只改用户/审核意见指出的问题，**其余内容必须原样保留**（包括用例编号、顺序、统计表）。',
+      '不要因为「看不到完整需求」就拒绝，也不要从需求重新生成一份新的。',
+      '',
+      `## 上一份交付物（这是要被修改的对象，请输出修改后的完整版本）`,
+      prevDeliverable,
+      '',
+      reviewBrief ? `## 上一轮的审核意见（优先针对这些点修改）\n${reviewBrief}` : '',
+      '',
+      `## 上一份任务的需求原文（仅用于判断改得对不对，不需要重新分析）`,
+      prevRequirement.slice(0, 8000) || '(未保存)',
+      '',
+      '---',
+      `【用户本轮指令】${input}`,
+    ].filter(Boolean).join('\n');
+  }
+
+  // 重新生成模式：给需求原文，模型按需求重新产出
   const prevResultBrief = String(prev.result || '').slice(0, 6000);
 
-  console.log(`[RecentContext] ${agentId} 输入过短且含指代词，注入上一份任务 ${prev.id} 的需求原文（${prevRequirement.length} 字）`);
+  console.log(`[RecentContext] ${agentId} 输入含续做指令，注入上一份任务 ${prev.id} 的需求原文（${prevRequirement.length} 字）`);
 
   return [
     `【续做上下文（系统自动注入：本次输入指代了上一份产出）】`,
