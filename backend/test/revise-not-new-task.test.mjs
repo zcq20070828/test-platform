@@ -60,31 +60,70 @@ function enrichFn() {
 // ---------------- A) 词表 ----------------
 console.log('\n-- A. 续做词表 --');
 
-t('★★ 后端认识「继续优化」类改稿指令（实测漏判的直接原因）', () => {
+/**
+ * 从后端 enrichInputWithRecentContext 提取「是否改稿指令」的判定函数
+ *
+ * 2026-11-23 起后端改成两个常量 + 长度粗筛（与前端同一套模式）：
+ *   const REVISE_VERB_RE = /.../
+ *   const REVISE_REF_RE  = /.../
+ *   const refersToPrevious = REVISE_REF_RE.test(input) || (REVISE_VERB_RE.test(input) && input.length <= 80)
+ * 不能再按单行正则字面量提取。
+ */
+function backendRevisionDetector() {
   const fn = enrichFn();
-  const m = fn.match(/const refersToPrevious = \/(.+?)\/\.test/);
-  assert.ok(m, '找不到 refersToPrevious 正则');
-  const re = new RegExp(m[1]);
-  for (const phrase of ['继续优化', '继续改进', '继续完善', '还有优化空间', '进一步优化', '继续调整', '接着优化', '在此基础上']) {
-    assert.ok(re.test(phrase), `后端不认识「${phrase}」`);
+  const verbM = fn.match(/const REVISE_VERB_RE = \/(.+?)\/;/);
+  const refM = fn.match(/const REVISE_REF_RE = \/(.+?)\/;/);
+  assert.ok(verbM && refM, '后端缺少 REVISE_VERB_RE / REVISE_REF_RE');
+  const verb = new RegExp(verbM[1]);
+  const ref = new RegExp(refM[1]);
+  // 长度阈值从代码里读，避免测试硬编码
+  const limitM = fn.match(/input\.length <= (\d+)/);
+  const limit = limitM ? Number(limitM[1]) : 80;
+  return (s) => {
+    const t = String(s).trim();
+    return ref.test(t) || (verb.test(t) && t.length <= limit);
+  };
+}
+
+t('★★ 后端认识「继续优化」类改稿指令（实测漏判的直接原因）', () => {
+  const detect = backendRevisionDetector();
+  for (const phrase of ['继续优化', '继续改进', '继续完善', '还有优化空间', '进一步优化', '继续调整', '接着优化', '在此基础上', '优化完要输出交付物']) {
+    assert.ok(detect(phrase), `后端不认识「${phrase}」`);
   }
 });
 
 t('★ 原有「重新生成」类仍被识别（不能顾此失彼）', () => {
-  const fn = enrichFn();
-  const m = fn.match(/const refersToPrevious = \/(.+?)\/\.test/);
-  const re = new RegExp(m[1]);
+  const detect = backendRevisionDetector();
   for (const phrase of ['重新生成', '再生成', '重做', '重跑', '刚才那份']) {
-    assert.ok(re.test(phrase), `后端丢失了对「${phrase}」的识别`);
+    assert.ok(detect(phrase), `后端丢失了对「${phrase}」的识别`);
   }
 });
 
-t('★★ 前端词表与后端一致（两处不能各认一套）', () => {
-  const m = VIEW.match(/const isRevisionInstruction = \/(.+?)\/\.test/);
-  assert.ok(m, '找不到前端 isRevisionInstruction 正则');
-  const re = new RegExp(m[1]);
-  for (const phrase of ['继续优化', '继续改进', '还有优化空间', '重新生成', '重做', '刚才那份']) {
-    assert.ok(re.test(phrase), `前端不认识「${phrase}」`);
+t('★★ 前后端对「改稿指令」的判断必须一致', () => {
+  // 2026-11-23 前后端都改为「模式识别」（改稿动词 + 指代词 + 长度粗筛），
+  // 不再是一张逐字对齐的长词表 —— 所以比对的不是正则字面量，而是**判定结果**：
+  // 同一句话两边必须得出相同结论。
+  const vIdx = VIEW.indexOf('const REVISE_VERB');
+  assert.ok(vIdx > 0, '找不到前端 REVISE_VERB');
+  const vBlock = VIEW.slice(vIdx, VIEW.indexOf('\n  if (isRevisionInstruction'));
+  const verbM = vBlock.match(/const REVISE_VERB = \/(.+?)\//);
+  const refM = vBlock.match(/const REVISE_REF = \/(.+?)\//);
+  assert.ok(verbM && refM, '前端缺少 REVISE_VERB / REVISE_REF');
+  const verb = new RegExp(verbM[1]);
+  const ref = new RegExp(refM[1]);
+  const frontendSaysRevision = (s) => ref.test(s.trim()) || (verb.test(s.trim()) && s.trim().length <= 80);
+
+  const backendSaysRevision = backendRevisionDetector();
+
+  // 这批短语是真实用户说过的改稿指令，两边都必须认
+  for (const phrase of ['继续优化', '继续改进', '还有优化空间', '优化完要输出交付物', '完善一下这个需求的测试覆盖']) {
+    assert.ok(backendSaysRevision(phrase), `后端不认识「${phrase}」`);
+    assert.ok(frontendSaysRevision(phrase), `前端不认识「${phrase}」`);
+  }
+  // 明确的新需求，两边都不该认
+  for (const phrase of ['帮我给登录功能设计测试用例', '对支付模块做安全测试，检查SQL注入漏洞']) {
+    assert.ok(!backendSaysRevision(phrase), `后端误判「${phrase}」为改稿`);
+    assert.ok(!frontendSaysRevision(phrase), `前端误判「${phrase}」为改稿`);
   }
 });
 

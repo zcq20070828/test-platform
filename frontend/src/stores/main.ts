@@ -1428,6 +1428,13 @@ export const useMainStore = defineStore('main', () => {
               if (data.data.intentMode) dup.intentMode = data.data.intentMode
               if (data.data.intentLabel) dup.intentLabel = data.data.intentLabel
               if (data.data.intentNote) dup.intentNote = data.data.intentNote
+              // 交付物卡片必须补上（2026-11-23）：
+              // 流式消息先建、chat_message 后到，内容一致就在这里收尾。
+              // 原来没补 artifacts，结果「对话改完交付物」界面上只有一大段文字、
+              // 没有可下载的 md/docx/xlsx 卡片，用户以为没输出交付物。
+              if (Array.isArray(data.data.artifacts) && data.data.artifacts.length) {
+                dup.artifacts = data.data.artifacts
+              }
               return
             }
           }
