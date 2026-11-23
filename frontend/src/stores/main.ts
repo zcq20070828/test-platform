@@ -834,10 +834,64 @@ export const useMainStore = defineStore('main', () => {
   }
 
   /**
+   * 把一批消息按时间戳插进列表的正确位置
+   *
+   * 为什么需要它（2026-11-23 实测）：
+   *   恢复历史时是按「任务完成时间倒序」遍历的，每个任务的时间线却直接 push 到末尾，
+   *   于是最旧任务的最后一条事件落在列表最底部，看起来像「最新消息」——
+   *   用户看到的是 11-20 16:37 的旧门禁消息，而当天早上刚跑完的任务在上面。
+   *
+   * 规则：
+   *   - 列表里的「进行中/正在流式」消息固定在末尾（它们不属于历史）
+   *   - 其余按 timestamp 升序插入；时间解析不出来时追加到末尾（宁可顺序差一点，也不丢消息）
+   */
+  function insertMessagesByTime(incoming: ChatMessage[]) {
+    if (!incoming || !incoming.length) return
+    const toTime = (m: any) => {
+      const t = m?.timestamp ? new Date(m.timestamp).getTime() : NaN
+      return Number.isFinite(t) ? t : NaN
+    }
+    for (const msg of incoming) {
+      const t = toTime(msg)
+      if (!Number.isFinite(t)) {
+        messages.value.push(msg)
+        continue
+      }
+      // 从末尾往前找第一个「时间 <= 自己」的历史消息，插在它后面。
+      // 遇到流式消息直接跳过（它们时间上属于「现在」）。
+      let insertAt = -1
+      for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+        const cur = messages.value[i] as any
+        if (cur?.isStreaming) continue
+        const ct = toTime(cur)
+        if (!Number.isFinite(ct)) continue
+        if (ct <= t) { insertAt = i + 1; break }
+      }
+      if (insertAt < 0) {
+        // 比所有历史消息都早 → 插到最前面（跳过可能存在的流式消息）
+        const firstStreaming = messages.value.findIndex((m: any) => m?.isStreaming)
+        insertAt = firstStreaming >= 0 ? firstStreaming : 0
+      }
+      messages.value.splice(insertAt, 0, msg)
+    }
+  }
+
+  /**
    * 把任务时间线重放成聊天消息
    *
    * @param taskId 任务ID
    * @param agentId 用于过滤（只重放当前智能体的任务）
+   */
+  /**
+   * 把任务时间线事件还原成消息并入列表
+   *
+   * 2026-11-23 修：原来直接 `messages.value.push(msg)` 追加到末尾。
+   * 调用方 loadRecentTaskResults 是按**完成时间倒序**遍历任务的，
+   * 于是「最旧的那个任务」的时间线最后被追加 → 显示在面板最下面，
+   * 看起来就像「最新消息停在几天前」。实际是排序错了，不是时间算错了。
+   *
+   * 现在：收集本轮所有消息，按 timestamp 升序**穿插进已有列表的正确位置**，
+   * 保证「越新的越靠下」。
    */
   async function restoreTaskTimeline(taskId: string, agentId?: string) {
     try {
@@ -845,16 +899,18 @@ export const useMainStore = defineStore('main', () => {
       if (!data) return 0
 
       const events: any[] = Array.isArray(data.events) ? data.events : []
-      let added = 0
+      const collected: ChatMessage[] = []
       for (const evt of events) {
         const msg = timelineEventToMessage(evt)
         if (!msg) continue
         // 去重：实时链路可能已经生成过同语义消息，按 id 判重
         if (messages.value.some((m) => m.id === msg.id)) continue
+        if (collected.some((m) => m.id === msg.id)) continue
         if (agentId && msg.agentId && msg.agentId !== agentId) continue
-        messages.value.push(msg)
-        added += 1
+        collected.push(msg)
       }
+      insertMessagesByTime(collected)
+      let added = collected.length
 
       // 兜底：时间线表是本次上线才开始写的，历史任务为空。
       // 用审核历史 + 门禁快照合成一条摘要，至少让用户看到「三轮各打了多少分」。
@@ -881,14 +937,21 @@ export const useMainStore = defineStore('main', () => {
             }
           }
           if (lines.length) {
-            messages.value.push({
+            // 时间戳必须是任务自己的完成时间，不能用 new Date()：
+            // 用当前时间会让「几天前的历史任务」显示成刚刚执行，且会排到列表最底部，
+            // 用户看到的「最新消息」其实是上周的旧任务（2026-11-23 实测就是这个症状）。
+            const taskTime = data.task?.completedAt || data.task?.completed_at
+              || data.task?.updatedAt || data.task?.updated_at
+              || data.task?.createdAt || data.task?.created_at
+              || new Date().toISOString()
+            insertMessagesByTime([{
               id: summaryId,
               role: 'assistant',
               type: 'agent',
               agentName: '历史执行过程',
               content: `任务 ${taskId} 的历史执行过程（该任务早于过程留存上线，以下信息由数据库还原）：\n\n${lines.join('\n')}`,
-              timestamp: new Date().toISOString(),
-            })
+              timestamp: taskTime,
+            }])
             added += 1
           }
         }
@@ -957,7 +1020,9 @@ export const useMainStore = defineStore('main', () => {
           continue
         }
         const agentId = task.agentId || task.agent
-        messages.value.push({
+        // 与时间线同样按时间插入：任务按完成时间倒序遍历，直接 push 会让
+        // 最旧任务的交付物落在列表最底部，看起来像最新产出。
+        insertMessagesByTime([{
           id: `loaded-task-${taskId}`,
           role: 'assistant',
           type: 'agent',
@@ -968,7 +1033,7 @@ export const useMainStore = defineStore('main', () => {
           agentIcon: getAgentEmoji(agentId || 'unknown'),
           isStreaming: false,
           artifacts: taskArtifacts.length > 0 ? taskArtifacts : undefined,
-        })
+        }])
         // 恢复该任务的过程时间线（门禁/审核/修复），否则用户只看到「任务完成 + 最终产出」
         await restoreTaskTimeline(taskId, agentId)
         loadedCount++

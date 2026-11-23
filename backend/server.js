@@ -3770,6 +3770,16 @@ app.get('/api/tasks/:id/timeline', authenticate, async (req, res) => {
       taskId,
       afterSeq,
       events,
+      // 任务自身的时间信息：前端还原「历史执行过程」摘要时要用它做消息时间戳。
+      // 不给的话前端只能填 new Date()，导致几天前的旧任务显示成刚刚执行、
+      // 并被排到消息列表最底部（2026-11-23 实测症状：最新消息停在 11-20 16:37）。
+      task: {
+        id: task.id,
+        status: task.status,
+        createdAt: task.createdAt || task.created_at || null,
+        completedAt: task.completedAt || task.completed_at || null,
+        updatedAt: task.updatedAt || task.updated_at || null,
+      },
       // 兜底展示用的结构化摘要（时间线为空时前端用它渲染「审核 9 条 / 三轮」这类信息）
       quality: quality || null,
       reviews: reviews || [],
