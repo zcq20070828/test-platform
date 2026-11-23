@@ -363,6 +363,55 @@ async function submitAsQuestion(text: string, files?: AttachmentFile[]) {
   }
 }
 
+/**
+ * 找「可以继续修改」的上一份任务
+ *
+ * 判据：同属一个用户、已产出交付物（result 有实质内容）、状态不是失败。
+ * 优先当前选中智能体最近的一份；没有就退到「任意智能体最近一份」——
+ * 用户说「继续优化」时心里的对象是上一次看到的交付物，不一定是当前下拉里选的智能体。
+ *
+ * 不取正在运行的任务：它还没产出，拿去对话没有可改的对象。
+ */
+function findContinuableTask(): any | null {
+  const usable = (store.tasks || []).filter((t: any) => {
+    if (!t) return false
+    if (String(t.id || '').startsWith('loaded-task-')) return false
+    if (t.status === 'running' || t.status === 'pending') return false
+    const result = String(t.result || '')
+    return result.length > 200
+  })
+  if (!usable.length) return null
+  const sameAgent = usable.find((t: any) => (t.agentId || t.agent) === selectedAgentId.value)
+  return sameAgent || usable[0]
+}
+
+/**
+ * 进入指定任务的对话模式，并把这条指令直接发出去
+ *
+ * 用户点「好，在原任务里继续修改」后，不该再让他手动点一次发送——
+ * 他已经表达完意图了。这里复用 enterChatMode + taskApi.sendChat，
+ * 与手动进入对话后的发送走同一条链路（历史上限、版本号、质量复检都在后端）。
+ */
+async function enterChatModeAndSend(task: any, message: string) {
+  await enterChatMode(task, false)
+  const taskId = task.id || task.taskId
+  // 面板上要有这条用户消息，否则用户看不到自己刚发的内容
+  store.messages.push({
+    id: Date.now().toString(),
+    role: 'user',
+    type: 'user',
+    content: message,
+    timestamp: new Date().toISOString(),
+  })
+  taskInput.value = ''
+  try {
+    const res = await taskApi.sendChat(taskId, message, [])
+    if (!res.success) ElMessage.error(res.error || '对话发送失败')
+  } catch (e: any) {
+    ElMessage.error('对话发送失败：' + (e?.message || e))
+  }
+}
+
 // 发送任务(发送给当前选中的智能体)
 // files: 附件列表（可选）
 // inputOverride: 来自子组件的当前输入值（用于解决 v-model 与 emit 的时序问题）
@@ -425,24 +474,48 @@ console.log('[Dashboard] handleSendTask called', {
     return
   }
 
-  // 「指代上一份产出」的短指令提示（2026-11-17）
+  // 「在上一份交付物上继续改」的指令分流（2026-11-17 起，2026-11-23 重做）
   //
-  // 实测：用户输入「重新生成刚才那份需求的用例」（13 字）直接提交，
-  // 新任务里没有需求原文，模型只能回「需求缺失」，白跑 3.5 分钟。
-  // 后端已做自动续做注入，但这里先提示一句更稳妥：让用户确认是新建任务
-  // 还是在原任务里改 —— 后者能保住完整上下文与交付物版本。
-  const refersToPrevious = /刚才|刚刚|上面|之前|上次|上一个|前一个|那份|这份|重新生成|再生成|再来一次|重做|重跑/.test(taskInputValue)
-  if (refersToPrevious && taskInputValue.trim().length <= 60 && (!files || files.length === 0)) {
-    try {
-      await ElMessageBox.confirm(
-        `检测到你的输入较短且指代了之前的产出：\n"${taskInputValue.trim()}"\n\n` +
-        '建议在「原任务」里用对话模式继续修改（会带上完整需求原文与已有交付物）；\n' +
-        '直接新建任务则由系统自动沿用该智能体最近一份任务的需求原文。',
-        '这是一条续做指令',
-        { confirmButtonText: '新建任务（沿用上次需求）', cancelButtonText: '取消，我去原任务里改', type: 'info' },
-      )
-    } catch {
-      return
+  // 实测两次踩坑：
+  //   - 「重新生成刚才那份需求的用例」（13 字）直接提交 → 新任务里没有需求原文，
+  //     模型只能回「需求缺失」，白跑 3.5 分钟；
+  //   - 「…从审核结果看，该用例还有优化空间，继续优化」（192 字）→ 用户想针对
+  //     上一份交付物做优化，结果新建任务从需求重跑了一遍，耗时更长，
+  //     且本来满意的部分可能被改坏。
+  //
+  // 原实现只弹一个「要不要新建」的提示，用户点了「去对话修改」还得自己去历史里
+  // 找那个任务——路径太长，实测用户会直接点「仍要新建」。
+  // 现在识别到改稿指令时**直接送他进上一份任务的对话模式并把这句发过去**。
+  const isRevisionInstruction = /刚才|刚刚|上面|之前|上次|上一个|前一个|那份|这份|重新生成|再生成|再来一次|重做|重跑|继续优化|继续改进|继续完善|再优化|优化一下|进一步优化|还有优化空间|继续调整|接着优化|在此基础上|基于上面|基于刚才|针对上面|针对这份/.test(taskInputValue)
+  if (isRevisionInstruction && (!files || files.length === 0)) {
+    const prevTask = findContinuableTask()
+    if (prevTask) {
+      let goToChat = false
+      try {
+        await ElMessageBox.confirm(
+          `这看起来是要在上一份交付物上继续修改：\n"${taskInputValue.trim().slice(0, 120)}${taskInputValue.trim().length > 120 ? '…' : ''}"\n\n` +
+          `将切换到任务 ${String(prevTask.id).slice(0, 8)} 的对话模式继续。\n` +
+          '对话模式会带上完整需求原文、已有交付物和审核意见，只改该改的地方，耗时更短也不容易改坏。',
+          '检测到这是「继续修改」指令',
+          {
+            confirmButtonText: '好，在原任务里继续修改',
+            cancelButtonText: '我要新建任务',
+            type: 'warning',
+            distinguishCancelAndClose: true,
+          },
+        )
+        goToChat = true
+      } catch {
+        // cancel = 明确选「新建任务」；close = 关弹窗
+        // 两种情况都按「新建任务」走，但「继续优化」类指令新建时必须注入上下文（后端已处理）
+        goToChat = false
+      }
+      if (goToChat) {
+        await enterChatModeAndSend(prevTask, taskInputValue)
+        return
+      }
+    } else {
+      ElMessage.info('没找到可继续修改的历史任务，将作为新任务提交')
     }
   }
 
