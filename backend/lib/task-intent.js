@@ -166,6 +166,52 @@ const STRONG_SHORT_WORDS = new Set([
   'rag', 'llm', 'owasp', 'xss', 'csrf', 'jmeter', 'locust',
 ]);
 
+/**
+ * 判断输入是不是「某个智能体已经产出的文档」
+ *
+ * 实测事故（任务 f9d85b49）：用户上传了上一轮生成的《测试需求分析报告》，
+ * 想让系统据此生成测试用例。意图识别看到文档标题里的「测试需求分析」六个字
+ * （权重 3.0），把任务派给了 **test-requirement-analyzer** —— 让它去分析
+ * 「一份已经分析好的需求分析报告」，等于原地打转。
+ *
+ * 关键区分：
+ *   用户说「帮我做需求分析」= 要从原始需求开始分析 → 需求分析智能体
+ *   用户上传《需求分析报告》   = 上下游产物已在手上 → 应该往下一环节走
+ *
+ * 这段判定只做「排除」：识别到某个产出物特征时，把**产出该产物的智能体**
+ * 从候选里降权，不强行指定下一个是谁（下游可能是用例、方案、执行…）。
+ *
+ * @param {string} input
+ * @returns {Set<string>} 应该被降权的 agentId
+ */
+export function detectUpstreamArtifacts(input) {
+  const text = String(input || '');
+  const excluded = new Set();
+  if (!text) return excluded;
+
+  // 只在前 3000 字里找：用户上传的文档开头会带「=== 附件: xxx ===」声明，
+  // 后面的大段正文里必然反复出现各类标题词，全篇扫描会误判。
+  const head = text.slice(0, 3000);
+
+  // 需求分析报告 → 不应再派给「需求分析」
+  const isRequirementReport = /#\s*需求分析报告/.test(head)
+    || /【需求分析报告】/.test(head)
+    || (/功能需求清单/.test(head) && /FR-\d{3}/.test(head) && /非功能需求/.test(head));
+  if (isRequirementReport) excluded.add('test-requirement-analyzer');
+
+  // 测试方案 → 不应再派给「方案生成」
+  const isScheme = /#\s*测试方案/.test(head)
+    || (/测试策略/.test(head) && /准入|准出|测试范围/.test(head) && /测试资源/.test(head));
+  if (isScheme) excluded.add('test-scheme-generator');
+
+  // 测试用例集（表格带用例编号列）→ 不应再派给「用例生成」
+  const isCaseSet = /#\s*测试用例[集清单]/.test(head)
+    || (/用例编号/.test(head) && /执行步骤/.test(head) && /预期结果/.test(head));
+  if (isCaseSet) excluded.add('test-case-generator');
+
+  return excluded;
+}
+
 /** 英文词做词边界判断，避免 "case" 命中 "casey"、'rag' 命中 'storage' */
 function isAsciiWord(kw) {
   return /^[a-z0-9/._-]+$/i.test(kw);
@@ -186,10 +232,43 @@ function hitKeyword(text, kw) {
 }
 
 /**
+ * 统计某关键词在文本中的出现次数
+ *
+ * 用于「主题词」判定：长文档里反复出现的词才是主题，
+ * 只提一次的往往是顺带列举（实测：13509 字的报告里「测试用例」出现 5 次
+ * 却没被判成主题，「兼容性测试」只提 1 次反而成了首选）。
+ */
+function countOccurrences(text, kw) {
+  const k = String(kw).toLowerCase();
+  if (!k) return 0;
+  if (isAsciiWord(k)) {
+    const re = new RegExp(`(^|[^a-z0-9])${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'gi');
+    return (text.match(re) || []).length;
+  }
+  const compact = k.replace(/\s+/g, '');
+  const hay = compact !== k ? text.replace(/\s+/g, '') : text;
+  let n = 0;
+  let i = hay.indexOf(compact);
+  while (i >= 0 && n < 50) { n += 1; i = hay.indexOf(compact, i + compact.length); }
+  return n;
+}
+
+/**
  * 给所有智能体打分
+ *
+ * 评分 = Σ(关键词权重 × 频次系数)
+ *
+ * 频次系数用对数饱和：出现 1 次记 1.0，2 次 1.35，5 次 1.7，封顶 2.0。
+ *   - 不线性累加：「接口」在需求文档里天然出现几十次，线性累加会让
+ *     api-executor 无脑胜出，与用户真实意图无关；
+ *   - 也不能完全无视频次：长文档里「反复出现」才是主题信号
+ *     （实测 13509 字的报告：测试用例×5 / 兼容性测试×1，前者才该是主题）。
  *
  * 同一智能体下若多个关键词重叠命中（「测试用例」与「测试用例生成」），
  * 只计最长的那个：否则长词天然覆盖短词，会把分数虚推很高。
+ *
+ * 文档长度修正：文档越长，「出现 1 次」的偶然性越大，所以短词（≤3 字）
+ * 在长文档里进一步降权——它们更容易是列表里的顺手一提。
  *
  * @param {string} input
  * @returns {Array<{agent:string,name:string,desc:string,score:number,hits:string[]}>} 按分数降序
@@ -197,6 +276,8 @@ function hitKeyword(text, kw) {
 export function scoreAgents(input) {
   const text = String(input || '').toLowerCase();
   if (!text) return [];
+  // 长文本文档：超过 2000 字视为「用户上传的文档」而非一句话指令
+  const isLongDoc = text.length > 2000;
 
   const scored = AGENT_RULES.map((rule) => {
     const hits = [];
@@ -205,13 +286,20 @@ export function scoreAgents(input) {
     const sorted = [...rule.keywords].sort((a, b) => b.length - a.length);
     const coveredBy = [];
     for (const kw of sorted) {
-      if (!hitKeyword(text, kw)) continue;
+      const count = countOccurrences(text, kw);
+      if (!count) continue;
       const k = kw.toLowerCase();
       // 已被更长的命中词包含 → 跳过
       if (coveredBy.some((longer) => longer.includes(k))) continue;
       coveredBy.push(k);
-      hits.push(kw);
-      score += keywordWeight(kw);
+      hits.push(count > 1 ? `${kw}×${count}` : kw);
+
+      let w = keywordWeight(kw);
+      // 长文档里短词降权（减少「顺手一提」的干扰）
+      if (isLongDoc && String(kw).length <= 3) w *= 0.6;
+      // 频次系数：对数饱和，封顶 2.0
+      const freqFactor = Math.min(2.0, 1 + Math.log2(count) * 0.5);
+      score += w * freqFactor;
     }
     return { agent: rule.agent, name: rule.name, desc: rule.desc, score, hits, priority: rule.priority };
   });
@@ -266,7 +354,22 @@ export function analyzeTaskIntent(input, opts = {}) {
     };
   }
 
-  const ranked = scoreAgents(text);
+  let ranked = scoreAgents(text);
+
+  // 上传的是某个智能体已经产出的文档 → 把「产出该文档的智能体」排除掉。
+  // 实测任务 f9d85b49：上传《测试需求分析报告》被派给 test-requirement-analyzer，
+  // 等于让它再分析一遍已经分析好的报告。用户要的是往下一环节走。
+  const upstream = detectUpstreamArtifacts(text);
+  let excludedUpstream = [];
+  if (upstream.size && ranked.length) {
+    const kept = ranked.filter((r) => !upstream.has(r.agent));
+    // 只剩「产出方」一个候选时不排除：否则会变成零命中语义，
+    // 用户可能真的是想重新分析一遍。
+    if (kept.length) {
+      excludedUpstream = ranked.filter((r) => upstream.has(r.agent)).map((r) => r.agent);
+      ranked = kept;
+    }
+  }
 
   if (!ranked.length) {
     // 零命中时也必须给出候选：用户说的是「识别不准就给 3 个选项」，
@@ -287,6 +390,9 @@ export function analyzeTaskIntent(input, opts = {}) {
   const top = ranked[0];
   const second = ranked[1] || { score: 0 };
   const lead = second.score ? top.score / second.score : Infinity;
+  const upstreamNote = excludedUpstream.length
+    ? `（输入看起来是已完成的产出物：${excludedUpstream.map((id) => (AGENT_RULES.find((r) => r.agent === id) || {}).name || id).join('、')}，已排除对应智能体）`
+    : '';
 
   // 是否有「长词」支撑：只有短词命中时不敢自动定性
   const hasStrongHit = top.hits.some((kw) => keywordWeight(kw) >= 2.2);
@@ -298,19 +404,19 @@ export function analyzeTaskIntent(input, opts = {}) {
   let agentName = top.name;
   let reason = '';
   if (confident) {
-    reason = `命中「${top.hits.slice(0, 3).join('、')}」，领先次选 ${second.score ? `${lead.toFixed(1)} 倍` : '（无竞争）'}`;
+    reason = `命中「${top.hits.slice(0, 3).join('、')}」，领先次选 ${second.score ? `${lead.toFixed(1)} 倍` : '（无竞争）'}${upstreamNote}`;
   } else if (!hasStrongHit) {
-    reason = `只命中短词「${top.hits.join('、')}」，不足以确定任务类型`;
+    reason = `只命中短词「${top.hits.join('、')}」，不足以确定任务类型${upstreamNote}`;
     // 只命中短词且 taskType 已知 → 用 taskType 兜底
     if (taskType && TASK_TYPE_AGENT[taskType]) {
       agentId = TASK_TYPE_AGENT[taskType];
       const r = AGENT_RULES.find((x) => x.agent === agentId);
       agentName = r ? r.name : agentId;
       confident = true;
-      reason = `按任务类型「${taskType}」确定为${agentName}`;
+      reason = `按任务类型「${taskType}」确定为${agentName}${upstreamNote}`;
     }
   } else {
-    reason = `「${top.name}」与「${second.name}」得分接近（${top.score.toFixed(1)} vs ${second.score.toFixed(1)}）`;
+    reason = `「${top.name}」与「${second.name}」得分接近（${top.score.toFixed(1)} vs ${second.score.toFixed(1)}）${upstreamNote}`;
   }
 
   // 3 个候选：至少填满到 3 个（从全部规则里补，让用户能改选）
