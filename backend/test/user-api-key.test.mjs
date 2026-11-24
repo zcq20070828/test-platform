@@ -379,7 +379,19 @@ t('改了 Key 立即失效缓存（否则改了不生效）', () => {
 
 t('密文解不开时不静默回退（会误导用户以为在用自己 Key）', () => {
   const fn = SERVER.slice(SERVER.indexOf('async function resolveApiKey'), SERVER.indexOf('/** 只要 Key 字符串时用这个'));
-  assert.ok(/解密失败，回退平台 Key/.test(fn), '解密失败应留下明确日志');
+  // 2026-11-24 起兜底不止平台 Key（还有 admin 共享 Key），
+  // 所以断言「解密失败要留日志」而不是盯具体文案。
+  assert.ok(/解密失败/.test(fn), '解密失败应留下明确日志');
+
+  // 找到 else 分支（解密失败分支），它内部必须是 warn + 不赋值
+  const idx = fn.indexOf('解密失败');
+  assert.ok(idx > 0, '找不到解密失败处理');
+  // 取该行到分支结束，检查这一小块
+  const tail = fn.slice(idx, idx + 220);
+  assert.ok(/console\.warn/.test(tail), '解密失败只有注释没有 warn');
+  // 失败分支里不能出现「把 resolved 当作用户 Key」的赋值
+  assert.ok(!/resolved = \{[\s\S]{0,200}source: 'user'/.test(tail),
+    '解密失败分支仍把来源标成 user');
 });
 
 // ---------------- 调用层：所有 AI 调用都用默认 Key ----------------

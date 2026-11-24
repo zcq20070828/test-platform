@@ -849,6 +849,13 @@ export interface ApiKeyListResult {
   hasDefault: boolean
   platformKeyAvailable: boolean
   platformKeyHint: string
+  /**
+   * 管理员是否配置了可共享的 Key（2026-11-24）
+   *
+   * 回退顺序：用户自己的默认 Key → 管理员共享 Key → 平台 .env Key。
+   * 用户没配 Key 时，系统会优先用管理员的，所以提示要准确说"在用谁的"。
+   */
+  adminSharedKeyAvailable: boolean
   // 后端下发的服务商清单：前端不硬编码，避免两边不一致导致发错地址
   providers: Array<{
     value: string
@@ -879,6 +886,7 @@ export const userApiKeyApi = {
       hasDefault: !!payload.hasDefault,
       platformKeyAvailable: !!payload.platformKeyAvailable,
       platformKeyHint: payload.platformKeyHint || '',
+      adminSharedKeyAvailable: !!payload.adminSharedKeyAvailable,
       providers: Array.isArray(payload.providers) ? payload.providers : [],
     }
   },

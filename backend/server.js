@@ -9987,9 +9987,32 @@ console.log(`[Deepseek] 平台级 API Key: ${maskedKey}`);
 const USER_KEY_CACHE = new Map(); // userId -> { at, value, ttlMs }
 const USER_KEY_CACHE_TTL = 60_000;
 
+/**
+ * 清用户 Key 缓存
+ *
+ * 2026-11-24 起有两种情况要清：
+ *   1) 该用户自己改了 Key —— 只清他自己；
+ *   2) **admin** 改了 Key —— 所有「没配 Key、正在用 admin 共享 Key」的用户
+ *      缓存里还是旧 Key，必须一起清掉；否则换完 Key 后普通用户还要等最多 60 秒
+ *      （甚至更久，因为每次命中都会续期那 60 秒窗口）。
+ *      这里不区分是谁，只要传入的 userId 是 admin 就全清——用户量不大（几十人），
+ *      全清的代价远小于「换了 Key 但部分用户还在用旧的」这种难排查的现象。
+ */
 function invalidateUserApiKeyCache(userId) {
   if (!userId) return;
-  USER_KEY_CACHE.delete(String(userId));
+  const uid = String(userId);
+  USER_KEY_CACHE.delete(uid);
+  try {
+    const u = users.get(uid) || null;
+    // role 可能是 'admin'；users Map 里存的是已加载用户
+    if (u && String(u.role || '').toLowerCase() === 'admin') {
+      const before = USER_KEY_CACHE.size;
+      USER_KEY_CACHE.clear();
+      if (before > 0) {
+        console.log(`[ApiKey] admin ${uid} 变更了 Key，已清空全部用户 Key 缓存（${before} 条）`);
+      }
+    }
+  } catch (_) { /* 缓存清理失败不影响主流程，60 秒后自然过期 */ }
 }
 
 /**
@@ -10277,6 +10300,56 @@ function providerUnavailableReason(provider) {
   return null;
 }
 
+/**
+ * 取「管理员共享 Key」作为普通用户的兜底（2026-11-24）
+ *
+ * 背景：平台 `.env` 的 DEEPSEEK_API_KEY 失效后，没配自己 Key 的普通用户
+ * （76 人里的绝大多数）全部 401 失败，而配了 Key 的 admin 正常。
+ * 用户要求：用户没配 Key 时，用 admin 配置的 Key 兜底。
+ *
+ * 选哪个 admin：优先取**有默认 Key 的 admin**。多管理员时取最早创建的那个
+ * （`created_at ASC`），保证同一时刻只有一个兜底来源、不会随查询顺序漂移。
+ *
+ * 返回值与 resolveApiKey 同构，`source: 'admin'` 明确标出来源——
+ * 调用方（失败诊断、成本统计）据此区分「用的是谁的额度」。
+ */
+async function resolveAdminSharedKey() {
+  try {
+    const rows = await query(
+      `SELECT u.id AS admin_id, k.id AS key_id, k.provider, k.model, k.api_key_enc
+         FROM users u
+         JOIN user_api_keys k ON k.user_id = u.id AND k.is_default = 1
+        WHERE u.role = 'admin'
+        ORDER BY u.created_at ASC
+        LIMIT 1`
+    );
+    if (!rows.length) return null;
+    const row = rows[0];
+    if (!row.api_key_enc) return null;
+    const plain = await decryptSecret(row.api_key_enc);
+    if (!plain) {
+      // 密文解不开（LOCAL_JWT_SECRET 换过）不能静默当作没有：
+      // 否则用户会以为在用 admin 的 Key，实际无 Key 可用，报错还指向平台 Key。
+      console.warn(`[ApiKey] admin 共享 Key 解密失败（admin=${row.admin_id}），本次无兜底 Key`);
+      return null;
+    }
+    const prof = providerProfile(row.provider);
+    return {
+      apiKey: plain,
+      baseUrl: prof.baseUrl,
+      model: row.model || prof.model,
+      provider: String(row.provider || 'deepseek'),
+      contextChars: prof.contextChars,
+      source: 'admin',
+      keyId: row.key_id,
+      adminId: row.admin_id,
+    };
+  } catch (e) {
+    console.warn(`[ApiKey] 读取 admin 共享 Key 失败: ${e.message}`);
+    return null;
+  }
+}
+
 async function resolveApiKey(userId) {
   const uid = userId ? String(userId) : '';
   // 平台兜底：默认 DeepSeek，但允许运维用 PLATFORM_API_PROVIDER / _MODEL 覆盖，
@@ -10295,10 +10368,13 @@ async function resolveApiKey(userId) {
 
   const cached = USER_KEY_CACHE.get(uid);
   if (cached && Date.now() - cached.at < USER_KEY_CACHE_TTL) {
-    // 缓存命中，但平台 Key 可能为空——保持当时的结论即可
     return cached.value;
   }
 
+  // 解析顺序（2026-11-24 新增第 2 级）：
+  //   1) 用户自己的默认 Key
+  //   2) admin 共享 Key（用户没配时兜底，避免全员依赖 .env 里那把平台 Key）
+  //   3) 平台 .env Key
   let resolved = platform;
   try {
     const rec = await userApiKeyDAO.getDefaultApiKeyRecord(uid);
@@ -10321,13 +10397,24 @@ async function resolveApiKey(userId) {
           keyId: rec.id,
         };
       } else {
-        // 密文解不开（LOCAL_JWT_SECRET 换过）：不能静默回退成平台 Key，
-        // 否则用户会以为在用自己配的 Key，实际在消耗平台额度。
-        console.warn(`[ApiKey] 用户 ${uid} 的默认 Key 解密失败，回退平台 Key`);
+        // 密文解不开（LOCAL_JWT_SECRET 换过）：不能静默回退成别的 Key，
+        // 否则用户会以为在用自己配的 Key，实际在消耗别人额度。
+        console.warn(`[ApiKey] 用户 ${uid} 的默认 Key 解密失败，回退兜底 Key`);
       }
     }
   } catch (e) {
     console.warn(`[ApiKey] 解析用户 ${uid} 默认 Key 失败: ${e.message}`);
+  }
+
+  // 用户没有可用 Key → 尝试 admin 共享 Key
+  if (resolved.source !== 'user') {
+    const shared = await resolveAdminSharedKey();
+    if (shared) {
+      resolved = shared;
+      console.log(`[ApiKey] 用户 ${uid} 未配置可用 Key，使用 admin 共享 Key（provider=${shared.provider}）`);
+    } else {
+      console.warn(`[ApiKey] 用户 ${uid} 未配置 Key 且无 admin 共享 Key，回退平台 Key（source=${platform.source}）`);
+    }
   }
 
   USER_KEY_CACHE.set(uid, { at: Date.now(), value: resolved });
@@ -10388,6 +10475,10 @@ app.get('/api/user/api-keys', authenticate, async (req, res) => {
         hasDefault: keys.some((k) => k.isDefault),
         platformKeyAvailable: !!PLATFORM_API_KEY,
         platformKeyHint: PLATFORM_API_KEY ? keyHintOf(PLATFORM_API_KEY) : '',
+        // admin 共享 Key 是否可用（2026-11-24）：用户没配自己的 Key 时，
+        // 系统会优先用管理员配的默认 Key，其次才用平台 .env Key。
+        // 前端据此给出准确提示，而不是让用户以为「只能用平台 Key」。
+        adminSharedKeyAvailable: !!(await resolveAdminSharedKey()),
         // 服务商清单由后端给，前端不再硬编码一份（两边不一致会悄悄发错地址）
         // 只下发当前部署真能用的服务商（「其他」未配地址时不出现在下拉里）
         providers: Object.entries(PROVIDERS)
@@ -16998,15 +17089,31 @@ async function executeTaskAsync(task) {
       //   source='platform' → 用户没配 Key，用的是平台兜底，让他自己配一把
       //   source='none'     → 平台也没 Key，必须自己配
       if (failure.category === 'auth' && rk) {
-        if (rk.source === 'platform' || rk.source === 'none') {
+        if (rk.source === 'admin') {
+          // 用的是 admin 共享 Key 且被拒（2026-11-24 新增来源）。
+          // 普通用户自己改了也没用——需要管理员换 Key，必须说清楚该找谁。
+          failure = {
+            ...failure,
+            title: '管理员共享的 API Key 已失效',
+            detail: `你没有配置自己的 API Key，任务使用了管理员共享的 Key（服务商 ${rk.provider}），`
+              + '但这把 Key 已被拒绝（过期/撤销/余额为零）。',
+            actions: [
+              '把这条消息转给平台管理员，请他到「系统设置与管理 → API KEY 配置」验证并更新共享 Key',
+              '或者你自己配一把：打开「系统设置与管理 → API KEY 配置」→「新增 API Key」',
+              '配置后你的任务会优先用你自己的 Key，不再依赖管理员那把',
+              '然后回到这里重新提交任务',
+            ],
+          };
+          failure.scope = 'admin-shared-key-invalid';
+        } else if (rk.source === 'platform' || rk.source === 'none') {
           const noPlatformKey = rk.source === 'none';
           failure = {
             ...failure,
             title: noPlatformKey
-              ? '平台没有可用的 API Key，且你还没有配置自己的'
+              ? '没有可用的 API Key（平台与管理员都未配置，你也没有）'
               : '你还没有配置自己的 API Key，平台统一提供的 Key 已失效',
             detail: noPlatformKey
-              ? '本平台的统一 Key 未配置。任务需要一把有效的大模型 API Key 才能执行。'
+              ? '平台没有统一 Key，管理员也没有配置共享 Key。任务需要一把有效的大模型 API Key 才能执行。'
               : '任务回退到了平台统一提供的 Key，但这把 Key 已被服务商拒绝（过期/撤销/余额为零）。'
                 + '你自己配置一把 Key 后，任务就会用你的，与平台 Key 的状态无关。',
             actions: [

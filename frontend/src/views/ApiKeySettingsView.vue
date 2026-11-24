@@ -23,7 +23,7 @@
     <!-- 当前生效的 Key 概览 -->
     <el-alert
       v-if="!loading && keys.length === 0"
-      :type="platformKeyAvailable ? 'info' : 'warning'"
+      :type="(platformKeyAvailable || adminSharedKeyAvailable) ? 'info' : 'warning'"
       :closable="false"
       show-icon
       class="status-alert"
@@ -32,13 +32,16 @@
         还没有配置自己的 API Key
       </template>
       <div class="alert-body">
-        <template v-if="platformKeyAvailable">
+        <template v-if="adminSharedKeyAvailable">
+          你没有配置自己的 Key，当前使用<strong>管理员共享的 Key</strong>（管理员在「API KEY 配置」里设的默认 Key）。
+        </template>
+        <template v-else-if="platformKeyAvailable">
           当前使用<strong>平台统一 Key</strong>{{ platformKeyHint ? `（${platformKeyHint}）` : '' }}。
-          如需使用自己的额度，点击右上角「新增 API Key」，添加后会自动设为默认。
         </template>
         <template v-else>
-          <span>平台未提供统一 Key，<strong>必须先添加一个 API Key 才能执行任务</strong>。</span>
+          <span>平台与管理员都没有可用的统一 Key，<strong>必须先添加一个 API Key 才能执行任务</strong>。</span>
         </template>
+        如需使用自己的额度，点击右上角「新增 API Key」，添加后会自动设为默认，并优先于上述共享 Key。
       </div>
     </el-alert>
 
@@ -51,7 +54,11 @@
       title="有 Key 但没有指定你的默认 Key"
     >
       <div class="alert-body">
-        请在列表里点「设为默认」，选一把你常用的 Key，否则你的任务会{{ platformKeyAvailable ? '继续使用平台统一 Key' : '无法调用模型' }}。
+        请在列表里点「设为默认」，选一把你常用的 Key，否则你的任务会{{
+          adminSharedKeyAvailable ? '使用管理员共享的 Key'
+            : platformKeyAvailable ? '使用平台统一 Key'
+              : '无法调用模型'
+        }}。
       </div>
     </el-alert>
 
@@ -237,6 +244,8 @@ const keys = ref<UserApiKey[]>([])
 const hasDefault = ref(false)
 const platformKeyAvailable = ref(false)
 const platformKeyHint = ref('')
+// 管理员是否配了可共享的 Key（用户没配自己的时优先用它）
+const adminSharedKeyAvailable = ref(false)
 const loading = ref(false)
 const saving = ref(false)
 const verifyingId = ref('')
@@ -446,6 +455,7 @@ async function load() {
     hasDefault.value = res.hasDefault
     platformKeyAvailable.value = res.platformKeyAvailable
     platformKeyHint.value = res.platformKeyHint
+    adminSharedKeyAvailable.value = res.adminSharedKeyAvailable
     if (res.providers && res.providers.length) {
       providers.value = res.providers as ProviderOption[]
     }
