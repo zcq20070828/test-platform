@@ -16985,6 +16985,56 @@ async function executeTaskAsync(task) {
     try {
       const rk = await resolveApiKey(task.userId);
       failure = diagnoseFailure(error, { provider: rk.provider, model: rk.model });
+
+      // 鉴权失败要分清「谁的问题」（2026-11-24）
+      //
+      // 实测：普通用户「钟紫印」提交任务全部 401 失败，而错误里出现的是
+      // **平台 Key 的末 4 位** —— 因为他自己没配 Key，回退到了平台 Key，
+      // 而平台 Key 已失效。通用 auth 提示让他「到 API KEY 配置点这条 Key 的验证」，
+      // 但那个列表里根本没有这条（它是平台的，不在用户列表里），用户只会更困惑。
+      //
+      // 这里按 Key 来源给不同指引：
+      //   source='user'     → 是用户自己那把失效了，让他验证/换掉
+      //   source='platform' → 用户没配 Key，用的是平台兜底，让他自己配一把
+      //   source='none'     → 平台也没 Key，必须自己配
+      if (failure.category === 'auth' && rk) {
+        if (rk.source === 'platform' || rk.source === 'none') {
+          const noPlatformKey = rk.source === 'none';
+          failure = {
+            ...failure,
+            title: noPlatformKey
+              ? '平台没有可用的 API Key，且你还没有配置自己的'
+              : '你还没有配置自己的 API Key，平台统一提供的 Key 已失效',
+            detail: noPlatformKey
+              ? '本平台的统一 Key 未配置。任务需要一把有效的大模型 API Key 才能执行。'
+              : '任务回退到了平台统一提供的 Key，但这把 Key 已被服务商拒绝（过期/撤销/余额为零）。'
+                + '你自己配置一把 Key 后，任务就会用你的，与平台 Key 的状态无关。',
+            actions: [
+              '打开「系统设置与管理 → API KEY 配置」',
+              '点「新增 API Key」，选服务商（如 DeepSeek）、填你自己的 Key',
+              '保存后点「验证」确认可用；第一条 Key 会自动成为你的默认',
+              '回到这里重新提交任务',
+            ],
+          };
+          failure.scope = 'user-key-missing';
+        } else if (rk.source === 'user') {
+          // 用户自己的 Key 失效。不在这里拼 Key 末 4 位——resolveApiKey 返回的是明文 Key，
+          // 拼进错误文案会随 task.result 落库、下发前端，等于把凭证明文带出去。
+          // 需要末位提示由「API KEY 配置」页自己展示（那里只有脱敏后的 key_hint）。
+          failure = {
+            ...failure,
+            detail: `你配置的默认 Key 被 ${rk.provider} 拒绝：`
+              + '可能已过期、被撤销、余额不足，或服务商选错了（把 A 家的 Key 填成了 B 家）。',
+            actions: [
+              '打开「系统设置与管理 → API KEY 配置」，找到你的默认 Key',
+              '点「验证」看具体报错；确认服务商选对了',
+              '必要时重新生成 Key 并更新，或换用另一条 Key 设为默认',
+              '回到这里重新提交任务',
+            ],
+          };
+          failure.scope = 'user-key-invalid';
+        }
+      }
     } catch (_) {
       failure = diagnoseFailure(error, {});
     }
