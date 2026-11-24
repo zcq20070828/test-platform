@@ -11,6 +11,7 @@ import { sanitizeHtml, renderMarkdownSafe, escapeHtml } from '@/utils/safe-html'
 import MsIcon from '@/components/MsIcon.vue'
 import { formatClock } from '@/utils/time'
 import { getAgentIcon } from '@/utils/agentIcons'
+import { MAX_ATTACHMENT_SIZE, BASE64_INFLATE_RATIO, checkTotalAttachmentSize } from '@/utils/attachment'
 
 const props = defineProps<{
   modelValue: string
@@ -285,12 +286,24 @@ function guessMimeType(name: string): string {
   return map[ext] || 'application/octet-stream'
 }
 
-// 上传文件大小限制:单文件不超过 50MB(与后端 multer limits 一致)
-const MAX_FILE_SIZE = 50 * 1024 * 1024
+// 上传文件大小限制
+/**
+ * 单文件上限统一取自 utils/attachment（35MB）
+ *
+ * 原来这里写死 50MB，与 attachment.ts 的 35MB 不一致：
+ * 面板放行到 50MB，提交时 toAttachmentPayloads 又按 35MB 静默跳过，
+ * 用户看到文件在列表里、却根本没发出去。两处必须同一个来源。
+ */
+const MAX_FILE_SIZE = MAX_ATTACHMENT_SIZE
 
 function checkFileSize(file: File): boolean {
   if (file.size > MAX_FILE_SIZE) {
-    ElMessage.error(`文件 ${file.name} 超过 50MB 限制，已跳过`)
+    // 说明 base64 膨胀，否则用户不理解为什么 35MB 的文件也不行
+    const inflated = (file.size * BASE64_INFLATE_RATIO / 1024 / 1024).toFixed(1)
+    ElMessage.error(
+      `文件 ${file.name} 为 ${(file.size / 1024 / 1024).toFixed(1)}MB，超过 ${MAX_FILE_SIZE / 1024 / 1024}MB 限制，已跳过` +
+      `（附件以 base64 随请求提交，实际体积约 ${inflated}MB）`
+    )
     return false
   }
   return true
@@ -299,10 +312,19 @@ function checkFileSize(file: File): boolean {
 function handleFileSelect() { fileInput.value?.click() }
 
 function handleFileChange(e: Event) {
-  const files = (e.target as HTMLInputElement).files
+  const input = e.target as HTMLInputElement
+  const files = input.files
   if (files) {
     Array.from(files).forEach(file => {
       if (!checkFileSize(file)) return
+      // 追加前先估算总量：单文件都合规、叠起来仍可能超服务端上限，
+      // 那种情况提交时会被 413 打回且原因不明。
+      const probe = attachments.value.concat([{ name: file.name, size: file.size, type: file.type }])
+      const total = checkTotalAttachmentSize(probe)
+      if (!total.ok) {
+        ElMessage.error(total.message || '附件合计体积超出限制')
+        return
+      }
       const reader = new FileReader()
       reader.onload = (ev) => {
         const mimeType = file.type || guessMimeType(file.name)
@@ -311,7 +333,7 @@ function handleFileChange(e: Event) {
       reader.readAsDataURL(file)
     })
   }
-  ;(e.target as HTMLInputElement).value = ''
+  input.value = ''
 }
 
 function removeAttachment(index: number) { attachments.value.splice(index, 1) }
