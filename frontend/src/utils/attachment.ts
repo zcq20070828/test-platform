@@ -25,8 +25,21 @@ export interface AttachmentPayload {
   content?: string
 }
 
-/** 单文件上限：与后端 multer MAX_UPLOAD_SIZE 保持一致（50MB） */
-export const MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024
+/**
+ * 单文件上限
+ *
+ * 不能简单取后端的 50MB：前端是把附件转成 base64 随 JSON 一起提交的，
+ * base64 体积约为原始文件的 1.34 倍（4/3 再加 JSON 转义）。
+ * 若这里允许 50MB，实际请求体约 68MB，会被 Nginx / 后端直接拒绝，
+ * 用户看到的只是「请求失败」，根本不知道是文件太大。
+ *
+ * 反算：后端上限 50MB ÷ 1.36 ≈ 36MB。取整 35MB 留余量。
+ * 三个数字必须同口径：nginx client_max_body_size / 后端 express.json limit / 这里的上限。
+ */
+export const MAX_ATTACHMENT_SIZE = 35 * 1024 * 1024
+
+/** base64 与 JSON 包装带来的体积膨胀系数（用于提示文案与容量估算） */
+export const BASE64_INFLATE_RATIO = 1.36
 
 /** 从 dataUrl 中取出纯 base64（去掉 `data:xxx;base64,` 前缀） */
 export function stripDataUrl(dataUrl: string): string {
@@ -38,10 +51,49 @@ export function stripDataUrl(dataUrl: string): string {
 /** 校验并提示 */
 export function checkAttachmentSize(file: { name: string; size: number }): boolean {
   if (file.size > MAX_ATTACHMENT_SIZE) {
-    console.warn(`[attachment] ${file.name} 超过 ${MAX_ATTACHMENT_SIZE / 1024 / 1024}MB，已跳过`)
+    // 说清「为什么」而不只是「太大了」：
+    // 用户看到 35MB 会觉得莫名其妙，说明 base64 膨胀才能真正理解。
+    const mb = (file.size / 1024 / 1024).toFixed(1)
+    const inflated = (file.size * BASE64_INFLATE_RATIO / 1024 / 1024).toFixed(1)
+    console.warn(
+      `[attachment] ${file.name} 大小 ${mb}MB 超过上限 ${MAX_ATTACHMENT_SIZE / 1024 / 1024}MB，已跳过` +
+      `（附件会以 base64 随请求提交，实际体积约 ${inflated}MB，服务端上限 50MB）`
+    )
     return false
   }
   return true
+}
+
+/**
+ * 校验整批附件的总体积
+ *
+ * 单文件不超限，多个文件叠起来仍可能超。base64 后总量必须留在服务端 50MB 以内。
+ *
+ * @returns {{ok:boolean, totalBytes:number, inflatedBytes:number, message?:string}}
+ */
+export function checkTotalAttachmentSize(files: AttachmentFile[] | undefined | null): {
+  ok: boolean
+  totalBytes: number
+  inflatedBytes: number
+  message?: string
+} {
+  const list = Array.isArray(files) ? files : []
+  const totalBytes = list.reduce((s, f) => s + (Number(f?.size) || 0), 0)
+  const inflatedBytes = Math.round(totalBytes * BASE64_INFLATE_RATIO)
+  // 留 4MB 给 task input 与 JSON 结构
+  const BUDGET = 46 * 1024 * 1024
+  if (inflatedBytes > BUDGET) {
+    return {
+      ok: false,
+      totalBytes,
+      inflatedBytes,
+      message:
+        `附件合计 ${(totalBytes / 1024 / 1024).toFixed(1)}MB，以 base64 提交后约 ` +
+        `${(inflatedBytes / 1024 / 1024).toFixed(1)}MB，超出服务端上限。` +
+        '请减少附件数量或压缩文档后重试。',
+    }
+  }
+  return { ok: true, totalBytes, inflatedBytes }
 }
 
 /**
@@ -49,6 +101,10 @@ export function checkAttachmentSize(file: { name: string; size: number }): boole
  *
  * - 有 dataUrl 的文件 → `{ name, base64 }`，后端统一解析
  * - 只有 path 的文件 → `{ name, content: '[附件: ...]' }` 占位（无法读取内容时如实标注）
+ *
+ * 注意：超限文件会被跳过（返回的数组里没有它）。调用方必须用
+ * `checkAttachmentSize` / `checkTotalAttachmentSize` 先判断并给用户提示，
+ * 否则用户会以为文件传上去了——静默跳过是最糟的结果。
  */
 export function toAttachmentPayloads(files: AttachmentFile[] | undefined | null): AttachmentPayload[] {
   if (!files || files.length === 0) return []
