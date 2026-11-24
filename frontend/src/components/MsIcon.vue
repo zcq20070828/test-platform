@@ -47,5 +47,9 @@ const iconStyle = computed(() => ({
   user-select: none;
   vertical-align: middle;
   flex-shrink: 0;
+  /* 字体没加载时图标名会当文字渲染，必须裁掉溢出部分（2026-11-24）。
+     尺寸由 iconStyle 的 width/height 给出，这里只保证不外溢。 */
+  overflow: hidden;
+  text-overflow: clip;
 }
 </style>

@@ -202,6 +202,25 @@
   font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
   vertical-align: middle;
   user-select: none;
+
+  /* ── 字体未加载时的兜底（2026-11-24）──
+     Material Symbols 靠 ligature 把图标名（checklist、smart_toy）渲染成图形。
+     字体没到位时这些名字会当普通文字排出来：一长串英文撑开容器，
+     与旁边的中文叠在一起。内网/弱网下表现为「图标位置出现一坨英文字母」。
+
+     三道防护：
+       1) 容器限 1em 见方（跟随 font-size，任何尺寸的图标都适用）
+       2) overflow: hidden —— 多出来的字母直接裁掉，绝不外溢
+       3) text-overflow: clip —— 不要省略号（省略号同样是乱码观感）
+     MsIcon 通过 iconStyle 显式指定 width/height，优先级更高；
+     这里兜底的是直接写 <span class="material-symbols-outlined"> 的 10 处调用。 */
+  width: 1em;
+  height: 1em;
+  max-width: 1em;
+  overflow: hidden;
+  text-overflow: clip;
+  /* 把布局与绘制限制在自身盒子内，避免字体切换时触发父级重排 */
+  contain: layout paint;
 }
 .material-symbols-outlined.is-loading,
 .ms-icon.is-loading {
