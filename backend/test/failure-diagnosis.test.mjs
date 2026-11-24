@@ -169,11 +169,40 @@ t('后端三处失败路径都带 failure', () => {
   // executeTaskAsync catch
   const catchIdx = SERVER.indexOf('} catch (error) {\n    console.error(`[Task] Execution error:');
   assert.ok(catchIdx > 0, '找不到 executeTaskAsync 的 catch');
-  const block = SERVER.slice(catchIdx, catchIdx + 1800);
+  // 窗口要足够大：catch 里除了诊断还有「按 Key 来源分流」的分支（2026-11-24），
+  // 原来的 1800 字符会把 failure.title 挤出去。
+  const block = SERVER.slice(catchIdx, catchIdx + 6000);
   assert.ok(/failure/.test(block), 'task_error 广播未带 failure');
   assert.ok(/failure\.title/.test(block), '失败占位文本未用诊断标题');
+  assert.ok(/task\.failure = failure/.test(block), 'failure 没有落库到 task');
   // 余额检查
   assert.ok(/balFailure/.test(SERVER), '余额检查未带诊断');
+});
+
+t('★★ 鉴权失败按 Key 来源区分指引（用户没配 Key ≠ 自己的 Key 失效）', () => {
+  const SERVER = fs.readFileSync(path.join(ROOT, 'backend', 'server.js'), 'utf8');
+  const idx = SERVER.indexOf("failure.category === 'auth'");
+  assert.ok(idx > 0, '没有按 Key 来源分流鉴权失败');
+  const block = SERVER.slice(idx, idx + 3000);
+
+  assert.ok(/rk\.source === 'platform' \|\| rk\.source === 'none'/.test(block),
+    '没处理「用的是平台 Key」这种情况');
+  assert.ok(/你还没有配置自己的 API Key/.test(block),
+    '没有明确告诉用户「你没配 Key」');
+  assert.ok(/scope = 'user-key-missing'/.test(block), '缺缺失场景标记');
+
+  assert.ok(/rk\.source === 'user'/.test(block), '没处理「用户自己的 Key 失效」');
+  assert.ok(/scope = 'user-key-invalid'/.test(block), '缺失效场景标记');
+
+  assert.ok(/系统设置与管理 → API KEY 配置/.test(block), '指引没有指向具体页面');
+});
+
+t('★★ 失败文案里不能出现明文或末位 Key（会随 task.result 落库并下发前端）', () => {
+  const SERVER = fs.readFileSync(path.join(ROOT, 'backend', 'server.js'), 'utf8');
+  const idx = SERVER.indexOf("failure.category === 'auth'");
+  const block = SERVER.slice(idx, idx + 3000);
+  assert.ok(!/PLATFORM_API_KEY\.slice/.test(block), '把平台 Key 片段拼进了失败文案');
+  assert.ok(!/rk\.apiKey\.slice|rk\.apiKey\.substr/.test(block), '把用户 Key 片段拼进了失败文案');
 });
 
 t('前端两条链路都走 formatFailure（实时 + 时间线重放）', () => {
