@@ -353,6 +353,19 @@ function formatTask(row) {
     reviewNotes: safeParseReviewNotes(row.review_notes),
     reviewAttempts: row.review_attempts == null ? null : Number(row.review_attempts),
     reviewStats: row.review_stats || null,
+    // 交付物清单（2026-11-25 补）
+    //
+    // formatTask 原先**完全没有映射 artifacts**，于是：
+    //   - 任务列表接口拿到的是 undefined，前端输出物卡片既没有 content
+    //     也没有 downloadUrl，点「下载」直接弹「该输出物没有可下载的内容」；
+    //   - 只有详情接口 /api/tasks/:id 走的是另一条路径（resolveTaskForArtifact
+    //     单独查 artifacts 列），所以详情里能看到、列表里看不到。
+    // 这就是用户报「还是提示没有可下载的内容」的根因。
+    artifacts: Array.isArray(row.artifacts)
+      ? row.artifacts
+      : (typeof row.artifacts === 'string' && row.artifacts.trim()
+        ? (() => { try { const p = JSON.parse(row.artifacts); return Array.isArray(p) ? p : []; } catch { return []; } })()
+        : []),
     workflowId: row.workflow_id,
     workflowStep: row.workflow_step,
     // 会话归属（2026-11-25 · 对话改造第三步）：

@@ -3447,6 +3447,10 @@ app.get('/api/tasks', authenticate, async (req, res) => {
       const noteCount = Array.isArray(t.reviewNotes) ? t.reviewNotes.length : 0;
       const slim = { ...t };
       delete slim.reviewNotes;
+      // artifacts 统一过 normalizeArtifactsField 补 size（2026-11-25）
+      // formatTask 现在会映射 artifacts，但落库的记录没有 size 字段，
+      // 前端卡片会显示成「文件  -  14:38:09」。这里顺带补齐。
+      slim.artifacts = normalizeArtifactsField(slim.artifacts);
       return {
         ...slim,
         reviewNoteCount: noteCount,
