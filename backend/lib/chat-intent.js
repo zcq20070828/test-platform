@@ -40,10 +40,18 @@ const REGENERATE_PATTERNS = [
 const QUESTION_PATTERNS = [
   /[?？]\s*$/,
   /为什么|为啥|怎么没|怎么不|怎么回事|什么原因|哪里出|哪儿出|是不是|是否|有没有|能否解释|解释一下|如何理解|怎么理解/,
+  // 语气词结尾的短问句（2026-11-25 补）
+  //
+  // 实测漏判：「卡住了吗」被判成 refine，进而触发一次「变更计划」生成，
+  // 用户只是在问系统状态，却收到一张「打算改这些」的卡片。
+  // 这类短问句没有「为什么/是不是」等关键词，只能靠语气词识别。
+  /(?:吗|吧|呢)[\s。.!！~～]*$/,
+  // 「还在跑吗」「能继续吗」这类状态询问
+  /还在|在跑|跑完|完成了吗|结束了吗|进度/,
 ];
 
 /** 明确的修改动作动词 */
-const ACTION_VERB_RE = /改成|改为|修改|生成|补充|增加|追加|删除|删掉|去掉|重写|替换|加上|加入|调整|优化|细化|具体化|完善|补齐|修缮|润色/;
+const ACTION_VERB_RE = /改成|改为|改得|改一下|改下|整改|改|修改|生成|补充|增加|追加|删除|删掉|去掉|重写|替换|加上|加入|调整|优化|细化|具体化|完善|补齐|修缮|润色/;
 
 /** 追加新内容（不要求改已有的） */
 const APPEND_PATTERNS = [
@@ -68,6 +76,56 @@ const CASE_ID_RE = /\b((?:TC|AI|DC|NW|BE|PE|UC|CASE|AC|ST)[-_]?\d{1,4})\b/gi;
 const COUNT_RE = /(\d{1,3})\s*条/;
 
 /**
+ * 编号区间展开（2026-11-25 · 对话改造第二步）
+ *
+ * 真实缺陷：用户说「把 TC-001 到 TC-014 的预期结果改得更具体」，
+ * 正则只抓到首尾两个编号 → surgical 只改 2 条，中间 12 条被静默丢弃。
+ * 用户明确说了改 14 条却只改 2 条，界面还不报错——这是最坏的一类静默失败。
+ *
+ * 支持写法：TC-001 到 TC-014 / TC-001~TC-014 / TC-001至TC-014
+ *
+ * 区间设上限（默认 60 条）：用户说「TC-001 到 TC-999」多半是口误，
+ * 直接展开成 999 条会把执行拖死。超限时不展开，交给变更计划确认环节暴露。
+ */
+const RANGE_RE = /\b((?:TC|AI|DC|NW|BE|PE|UC|CASE|AC|ST))[-_]?(\d{1,4})\s*(?:到|至|~|～|－|—)\s*(?:[A-Za-z]{1,6}[-_]?)?(\d{1,4})\b/gi;
+
+const MAX_RANGE_EXPAND = 60;
+
+/**
+ * 把「TC-001 到 TC-014」这类区间展开成完整编号列表
+ *
+ * @param {string} text
+ * @param {number} [maxExpand=60]
+ * @returns {string[]} 展开后的编号（未命中区间时返回空数组）
+ */
+export function expandIdRange(text, maxExpand = MAX_RANGE_EXPAND) {
+  const out = [];
+  const src = String(text || '');
+  // 保持原编号的补零宽度：TC-001 → 三位，TC-01 → 两位
+  const widthOf = (prefix) => {
+    const m = src.match(new RegExp(`\\b${prefix}[-_]?(\\d{1,4})\\b`, 'i'));
+    return m ? m[1].length : 3;
+  };
+  for (const m of src.matchAll(RANGE_RE)) {
+    const prefix = m[1].toUpperCase();
+    const a = Number(m[2]);
+    const b = Number(m[3]);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+    if (a <= 0 || b <= 0) continue;
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
+    const size = hi - lo + 1;
+    if (size < 2) continue;
+    if (size > maxExpand) continue;
+    const width = widthOf(prefix);
+    for (let i = lo; i <= hi; i += 1) {
+      out.push(`${prefix}-${String(i).padStart(width, '0')}`);
+    }
+  }
+  return out;
+}
+
+/**
  * 识别对话指令的执行模式
  *
  * @param {string} message 用户本轮指令
@@ -85,7 +143,16 @@ export function classifyChatIntent(message, ctx = {}) {
     return { ...base, mode: 'refine', reason: '无指令文本（仅上传材料）', label: '全局修订' };
   }
 
-  const caseIds = [...new Set((text.match(CASE_ID_RE) || []).map((x) => x.toUpperCase()))];
+  // 编号提取 + 区间展开（2026-11-25 · 对话改造第二步）
+  //
+  // 「TC-001 到 TC-014」原来只抓到首尾两个编号，中间 12 条被静默丢弃——
+  // 用户说改 14 条实际只改 2 条，还不报错。这里把区间补全。
+  const explicitIds = (text.match(CASE_ID_RE) || []).map((x) => x.toUpperCase());
+  const expandedIds = expandIdRange(text);
+  const caseIds = [...new Set([...explicitIds, ...expandedIds])];
+  if (expandedIds.length > explicitIds.length) {
+    console.log(`[ChatIntent] 编号区间展开：${explicitIds.join(',')} → ${caseIds.length} 条`);
+  }
   const countMatch = text.match(COUNT_RE);
   const count = countMatch ? Number(countMatch[1]) : null;
 
@@ -95,9 +162,21 @@ export function classifyChatIntent(message, ctx = {}) {
   }
 
   // 2) 纯提问：有疑问句式，且没有任何修改动作
+  //
+  // ★ 语气词要分级判断（2026-11-25 修正）
+  //
+  //   短问句「卡住了吗」需要靠语气词识别成提问（否则会误生成变更计划）；
+  //   但「把 TC-001 的预期改一下吗」「能不能改得更具体吗」同样以语气词结尾，
+  //   却带着明确的修改动作或编号——这类必须按修改指令执行。
+  //
+  //   所以：**有修改动作或有编号时，语气词不算疑问**。
+  //   单纯把语气词塞进 QUESTION_PATTERNS 会误伤一批真实改稿指令。
   const isQuestion = QUESTION_PATTERNS.some((re) => re.test(text));
   const hasAction = ACTION_VERB_RE.test(text);
-  if (isQuestion && !hasAction) {
+  const hasParticle = /(?:吗|吧|呢)[\s。.!！~～]*$/.test(text);
+  // 语气词只有在「既没动作也没编号」时才算疑问信号
+  const particleIsQuestion = hasParticle && !hasAction && caseIds.length === 0;
+  if (!hasAction && (isQuestion || particleIsQuestion)) {
     return { ...base, caseIds, count, mode: 'question', reason: '是提问，不含修改动作', label: '问答（不改交付物）' };
   }
 
