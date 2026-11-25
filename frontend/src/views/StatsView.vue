@@ -29,9 +29,10 @@
           </div>
         </el-col>
         <el-col :span="4">
-          <div class="stat-item">
+          <div class="stat-item stat-clickable" @click="openActiveUsers" title="点击查看活跃用户清单">
             <div class="stat-value">{{ todayStats.active_users || 0 }}</div>
             <div class="stat-label">活跃用户</div>
+            <div class="stat-hint">点击查看清单</div>
           </div>
         </el-col>
         <el-col :span="4">
@@ -414,6 +415,56 @@
         </el-col>
       </el-row>
     </el-card>
+
+    <!-- 活跃用户清单（2026-11-25）
+         点「活跃用户」卡片打开。口径与卡片上的数字完全一致
+         （今天创建的任务数去重用户），所以条数一定等于卡片值。 -->
+    <el-dialog
+      v-model="activeUsersVisible"
+      :title="`今日活跃用户（${activeUsers.length} 人）`"
+      width="760px"
+      @open="loadActiveUsers"
+    >
+      <div v-if="activeUsersScope === 'self'" class="active-users-scope">
+        仅显示你自己的活跃记录（普通用户只能看到自己的数据）。
+      </div>
+      <el-table :data="activeUsers" v-loading="activeUsersLoading" stripe style="width: 100%" empty-text="今日暂无活跃用户">
+        <el-table-column label="用户名" min-width="150">
+          <template #default="{ row }">
+            <span class="au-username">{{ row.username }}</span>
+            <el-tag v-if="row.role === 'admin'" size="small" type="warning" effect="light" style="margin-left:6px">管理员</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="displayName" label="姓名" min-width="120">
+          <template #default="{ row }">
+            <span :class="{ 'au-empty': !row.displayName || row.displayName === row.username }">
+              {{ row.displayName && row.displayName !== row.username ? row.displayName : '—' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="活跃次数" width="110" align="right">
+          <template #default="{ row }">
+            <strong class="au-count">{{ row.activeCount }}</strong>
+          </template>
+        </el-table-column>
+        <el-table-column label="成功 / 失败" width="120" align="center">
+          <template #default="{ row }">
+            <span class="au-ok">{{ row.completedCount }}</span>
+            <span class="au-sep"> / </span>
+            <span :class="row.failedCount > 0 ? 'au-fail' : ''">{{ row.failedCount }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="最近活跃" width="160">
+          <template #default="{ row }">
+            <span class="au-time">{{ row.lastActiveAt ? formatClock(row.lastActiveAt) : '—' }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <span class="au-footer-hint">「活跃次数」= 今日创建的任务数，与上方卡片口径一致</span>
+        <el-button @click="activeUsersVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -425,6 +476,7 @@ import * as echarts from 'echarts'
 import { request, userActionApi } from '@/api'
 import { useMainStore } from '@/stores/main'
 import MsIcon from '@/components/MsIcon.vue'
+import { formatClock } from '@/utils/time'
 
 const router = useRouter()
 const mainStore = useMainStore()
@@ -509,6 +561,36 @@ const trendDays = ref(7)
 // 图表引用
 const trendChartRef = ref<HTMLElement>()
 let trendChart: echarts.ECharts | null = null
+
+// ── 活跃用户清单（2026-11-25）──
+// 卡片上只有个数字，看不出是谁。点开看明细：用户名 / 姓名 / 活跃次数。
+// 数据由 /api/stats/active-users 提供，口径与卡片数字一致（今天创建的任务数去重用户）。
+const activeUsersVisible = ref(false)
+const activeUsersLoading = ref(false)
+const activeUsers = ref<any[]>([])
+const activeUsersScope = ref<'platform' | 'self'>('platform')
+
+async function loadActiveUsers() {
+  activeUsersLoading.value = true
+  try {
+    const res = await request<{ users: any[]; scope: 'platform' | 'self' }>('/api/stats/active-users')
+    const payload = (res as any).data
+    // 后端统一包成 { success, data: { users, scope } }；这里兼容有无外层
+    const body = payload?.data ?? payload ?? {}
+    activeUsers.value = Array.isArray(body.users) ? body.users : []
+    activeUsersScope.value = body.scope === 'self' ? 'self' : 'platform'
+  } catch (e: any) {
+    console.error('[活跃用户] 加载失败:', e)
+    ElMessage.error('加载活跃用户清单失败')
+    activeUsers.value = []
+  } finally {
+    activeUsersLoading.value = false
+  }
+}
+
+function openActiveUsers() {
+  activeUsersVisible.value = true
+}
 
 // 返回上一页
 const goBack = () => {
@@ -802,6 +884,45 @@ onMounted(() => {
 .stat-label {
   font-size: 14px;
   color: var(--el-text-color-secondary);
+}
+
+/* 可点击的统计卡（活跃用户）：要有可点的视觉暗示，否则用户不知道能点开 */
+.stat-item.stat-clickable {
+  cursor: pointer;
+  transition: background-color .15s, box-shadow .15s;
+}
+.stat-item.stat-clickable:hover {
+  background: var(--el-color-primary-light-9);
+  box-shadow: 0 0 0 1px var(--el-color-primary-light-7) inset;
+}
+.stat-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-color-primary);
+  opacity: .8;
+}
+
+/* 活跃用户清单弹窗 */
+.active-users-scope {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+  background: var(--el-color-info-light-9);
+  border-radius: 6px;
+}
+.au-username { font-weight: 600; }
+.au-count { font-size: 16px; color: var(--el-color-primary); }
+.au-ok { color: var(--el-color-success); }
+.au-fail { color: var(--el-color-danger); }
+.au-sep { color: var(--el-text-color-placeholder); }
+.au-time { font-size: 13px; color: var(--el-text-color-secondary); }
+.au-empty { color: var(--el-text-color-placeholder); }
+.au-footer-hint {
+  float: left;
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+  line-height: 32px;
 }
 
 .text-gray {

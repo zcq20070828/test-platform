@@ -195,6 +195,63 @@ export async function getTodayStats(userId = null) {
   };
 }
 
+/**
+ * 活跃用户清单（2026-11-25）
+ *
+ * 首页「活跃用户」卡片原来只有一个数字。用户要求能点开看清单：
+ * 用户名、姓名、活跃次数。
+ *
+ * 「活跃」口径必须与 getTodayStats 的 `COUNT(DISTINCT user_id)` 一致——
+ * 否则卡片显示 1 人、点开却是 3 个人。所以同样以「今天创建的任务数」为准，
+ * 一次任务算一次活跃。
+ *
+ * 姓名可能为空（老数据 / SSO 用户）：COALESCE 回退到 username，避免前端空白格。
+ *
+ * @param {string|null} userId 传了只看该用户（普通用户视角）；null 看全平台（admin）
+ * @param {number} [limit=200]
+ */
+export async function getActiveUserList(userId = null, limit = 200) {
+  const today = new Date().toISOString().slice(0, 10);
+  const max = Math.max(1, Math.min(500, Number(limit) || 200));
+
+  const params = [today];
+  let userFilter = '';
+  if (userId) {
+    userFilter = ' AND t.user_id = ?';
+    params.push(userId);
+  }
+  params.push(max);
+
+  const sql = `
+    SELECT
+      t.user_id                                                AS userId,
+      u.username                                               AS username,
+      COALESCE(NULLIF(u.name, ''), u.username)                 AS displayName,
+      u.role                                                   AS role,
+      COUNT(*)                                                 AS activeCount,
+      SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END)   AS completedCount,
+      SUM(CASE WHEN t.status = 'failed'    THEN 1 ELSE 0 END)   AS failedCount,
+      MAX(t.created_at)                                        AS lastActiveAt
+    FROM tasks t
+    LEFT JOIN users u ON u.id = t.user_id COLLATE utf8mb4_unicode_ci
+    WHERE DATE(t.created_at) = ?${userFilter}
+    GROUP BY t.user_id, u.username, u.name, u.role
+    ORDER BY activeCount DESC, lastActiveAt DESC
+    LIMIT ?
+  `;
+  const rows = await query(sql, params);
+  return (rows || []).map((r) => ({
+    userId: r.userId,
+    username: r.username || '(未知用户)',
+    displayName: r.displayName || r.username || '(未知用户)',
+    role: r.role || 'user',
+    activeCount: Number(r.activeCount) || 0,
+    completedCount: Number(r.completedCount) || 0,
+    failedCount: Number(r.failedCount) || 0,
+    lastActiveAt: r.lastActiveAt || null,
+  }));
+}
+
 // ==================== 趋势统计 ====================
 
 /**
@@ -422,6 +479,7 @@ export default {
   getOverallStats,
   updateOverallStat,
   getTodayStats,
+  getActiveUserList,
   getRecentTrend,
   getAgentRanking,
   getEfficiencyStats,
