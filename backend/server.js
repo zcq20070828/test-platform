@@ -36,6 +36,7 @@ import {
   decideReviewVerdictByDensity,
   compositeScoreFromDimensions,
 } from './lib/review-verdict.js';
+import { detectScaleDrift, assessDivergence } from './lib/review-scale-drift.js';
 import {
   checkWithRules as checkByAgentRules,
   getRulesFor as getAgentQualityRules,
@@ -3983,6 +3984,75 @@ app.get('/api/quality/review-note-stats', authenticate, async (req, res) => {
     const stats = await caseFeedbackDAO.getReviewNoteStats({ days, agentId });
     res.json({ success: true, ...stats });
   } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * GET /api/quality/review-scale-drift?days=30&agentId=
+ *
+ * 审核尺度漂移监测（2026-11-25 · 自我进化第三条）
+ *
+ * 回答的问题：「门禁说 98% 可用，审核却只给 78 分」这种矛盾，
+ * 有多少是**审核尺度偏严**造成的、哪些是真质量问题。
+ *
+ * 判据见 lib/review-scale-drift.js：可用率高 + major 集中在
+ * 「需求未定义/合理补充」类 + 硬伤很少 → 倾向尺度偏严。
+ * 反过来「可用率低 + major 多」是门禁与审核一致，属真质量问题，不报漂移。
+ *
+ * 只读统计，不改任何判定。管理员据此决定要不要调审核标准。
+ */
+app.get('/api/quality/review-scale-drift', authenticate, async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(180, Number(req.query.days) || 30));
+    const agentFilter = req.query.agentId ? String(req.query.agentId) : null;
+    const params = [days];
+    let agentSql = '';
+    if (agentFilter) {
+      agentSql = ' AND t.agent_id = ?';
+      params.push(agentFilter);
+    }
+    const rows = await query(
+      `SELECT t.id, t.agent_id, t.review_notes, q.usability_gate, q.total_cases
+         FROM tasks t
+         LEFT JOIN task_quality_metrics q ON q.task_id = t.id
+        WHERE t.review_notes IS NOT NULL
+          AND t.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)${agentSql}
+        ORDER BY t.created_at DESC
+        LIMIT 50`,
+      params,
+    );
+
+    const records = [];
+    for (const r of rows) {
+      let notes = r.review_notes;
+      if (typeof notes === 'string') {
+        try { notes = JSON.parse(notes); } catch { continue; }
+      }
+      if (!Array.isArray(notes)) continue;
+      const rate = r.usability_gate === null || r.usability_gate === undefined ? null : Number(r.usability_gate);
+      const total = Number(r.total_cases) || 0;
+      // 没有门禁数据就无从比较「审核 vs 门禁」，跳过而不是猜
+      if (rate === null || !total) continue;
+      records.push({
+        agentId: r.agent_id,
+        taskId: r.id,
+        usabilityRate: rate,
+        notes,
+        totalCases: total,
+      });
+    }
+
+    const result = detectScaleDrift(records, { minTasks: 2, windowSize: 50 });
+    res.json({
+      success: true,
+      days,
+      checkedTasks: records.length,
+      skippedTasks: rows.length - records.length,
+      ...result,
+    });
+  } catch (e) {
+    console.error(`[ScaleDrift] 计算失败: ${e.message}`);
     res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -13422,8 +13492,21 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
       if (pool.length) {
         const index = buildExperienceIndex(pool.map((e) => ({ id: e.id, text: e.searchText, ref: e })));
         const query = buildExperienceQuery(taskInput, { agentId });
+        // 注入条数上限（2026-11-25 从 8 提到 18）
+        //
+        // 原来是 8。但升级到 L2 的条件是「同期对照显示问题率确实下降」，
+        // 而**只有被注入的经验才会进入 treatment 组产生样本**。
+        // 库里已有 25 条经验、每次只注入 8 条 → 剩下 17 条永远拿不到试验样本，
+        // 只能停在 L1 等待，而 L1 的措辞（"要求：…"）对模型的约束力最弱。
+        // 实测 test-case-generator 25 条经验里 level>=2 的有 0 条，
+        // 整个自我进化闭环卡死在最弱一级 —— 这就是那个死循环。
+        //
+        // 提到 18：一次任务里大部分相关经验都能进入注入或对照，
+        // 几轮之后就能攒够升级样本。同时不至于把提示词撑爆
+        // （单条约 60~120 字，18 条约 1.5~2k 字，相比十几万的交付物可忽略）。
+        const INJECT_LIMIT = Number(process.env.EXPERIENCE_INJECT_LIMIT) || 18;
         const hits = searchExperiences(index, query, {
-          limit: 8,
+          limit: INJECT_LIMIT,
           // 先验加权：命中次数多的经验略占优（同样相关时更该优先注入）
           prior: (d) => 1 + Math.min(0.5, Math.log10((d.ref.occurrencesTotal || 1) + 1) * 0.3),
         });
@@ -13437,6 +13520,27 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             .sort((a, b) => (b.level - a.level) || (b.occurrencesTotal - a.occurrencesTotal))
             .slice(0, 4 - picked.length);
           picked.push(...fallback);
+        }
+
+        // 补足「等待样本」的经验（2026-11-25）
+        //
+        // 只靠 BM25 检索会让「与本次任务字面不太像、但反复发生」的经验
+        // 长期拿不到试验样本。这类恰恰是最该被验证的（比如「预期结果含不确定
+        // 表述」在哪个任务里都可能出现，但字面未必和当前输入匹配）。
+        //
+        // 策略：把「已注入但样本不足、且仍 active」的经验优先补进来，
+        // 上限仍是 INJECT_LIMIT，不额外增加提示词体积。
+        if (picked.length < INJECT_LIMIT) {
+          const pickedIds = new Set(picked.map((e) => e.id));
+          const starved = pool
+            .filter((e) => !pickedIds.has(e.id) && (Number(e.tasksAfter) || 0) < 3)
+            .sort((a, b) => ((Number(a.tasksAfter) || 0) - (Number(b.tasksAfter) || 0))
+              || (b.occurrencesTotal - a.occurrencesTotal))
+            .slice(0, INJECT_LIMIT - picked.length);
+          if (starved.length) {
+            picked.push(...starved);
+            console.log(`[Experience] 补入 ${starved.length} 条等待样本的经验，帮助其攒够升级数据`);
+          }
         }
 
         // 同期对照（RCT）：把召回到的经验分成「注入组」与「留出组」。
@@ -15510,9 +15614,14 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
   try {
     // experienceOverride：调用方（spawnAgentSession）已经把经验取好并记录了注入，
     // 避免这里再查一次库、也避免「查到的」和「记录到的」不是同一批
+    //
+    // 兜底路径的条数同步提到 18（2026-11-25）：与主路径一致，
+    // 否则走了兜底的任务只能看到 8 条，攒不够升级样本。
     const exps = Array.isArray(experienceOverride)
       ? experienceOverride
-      : await experienceDAO.getInjectableExperiences(agentId, { limit: 8 });
+      : await experienceDAO.getInjectableExperiences(agentId, {
+        limit: Number(process.env.EXPERIENCE_INJECT_LIMIT) || 18,
+      });
     if (exps.length) {
       // 注入即开始观测：第一次注入时打时间戳，之后才能算「注入后命中率」
       injectedExperienceIds = exps.map((e) => e.id);
@@ -17803,6 +17912,50 @@ ${reviewContext.caseQuality.summary ? `- 结论：${reviewContext.caseQuality.su
     };
     const denominatorHint = DENOMINATOR_HINT[reviewContext.agentId] || '';
 
+    // 审核尺度自进化（2026-11-25）
+    //
+    // 以前自我进化只喂**生成端**（经验注入在 spawnAgentSession 的 systemPrompt）。
+    // 审核员用的是 buildReviewerSystemPrompt，完全不读经验库——意味着
+    // 「审核判断尺度」这件事永远不会因为历史审核意见而改进。
+    //
+    // 后果实测：同一类问题（如「需求没写长度约束，用例补了 1/64 位」）
+    // 被反复判成 major，压得综合分上不去，而交付物其实可用率 98%。
+    // 这类是**尺度问题不是质量问题**，只有审核端自己能看到。
+    //
+    // 做法：把该被审智能体的高频经验当作「历史反复出现的问题类型」
+    // 提供给审核员参考——不是让它放宽标准，而是让它知道
+    // 「这类问题在本平台已反复出现，如果是同一类，判定口径要一致」。
+    let reviewExperienceSection = '';
+    try {
+      const targetAgent = reviewContext.agentId || '';
+      if (targetAgent) {
+        const pool = await experienceDAO.getExperiencePool(targetAgent, { limit: 200 });
+        // 只取反复出现的（≥2 次），一次性的偶发问题不该影响尺度
+        const recurring = pool
+          .filter((e) => (Number(e.occurrencesTotal) || 0) >= 2)
+          .sort((a, b) => (b.occurrencesTotal - a.occurrencesTotal))
+          .slice(0, 10);
+        if (recurring.length) {
+          const lines = recurring.map((e, i) =>
+            `${i + 1}. [${e.category || 'other'}·出现 ${e.occurrencesTotal} 次] ${e.title}`);
+          reviewExperienceSection = `
+
+【该交付物类型的历史高频问题（供尺度参考，不是要求你逐条找）】
+${lines.join('\n')}
+
+使用方式（重要）：
+- 上面这些是该智能体交付物在本平台**反复出现**的问题类型。
+  如果你在本轮也发现同类问题，判定口径应与历史保持一致，不要同类问题这次判 minor、下次判 major。
+- 反过来：**历史高频不等于本轮一定存在**。没有发现就不要硬凑，
+  更不要因为"历史上有"就给不相关的条目扣分。
+- 若你判断某条历史问题在本轮**已被修复**，请在 reason 里说明「历史问题已解决」，
+  这有助于把已失效的经验从库里淘汰。`;
+        }
+      }
+    } catch (e) {
+      console.warn(`[Review] 注入审核经验失败（不影响审核）: ${e.message}`);
+    }
+
     const reviewInput = `请对以下测试产出物进行质量审核评估:
 
 ${originalSection}${previousSection}${gateSection}【产出物来源】${agentName}
@@ -17817,7 +17970,7 @@ ${focusText}
 
 【评分分母取法（关系到你的分数是否可信，必须照此计算）】
 ${denominatorHint || '分母用该交付物的主体条目数；若难以确定，以「检查项通过数 ÷ 检查项总数」估算并在 reason 里写明取法。'}
-
+${reviewExperienceSection}
 【跨环节一致性检查（提供了「上一环节产出」时必须执行；三名审核员都要做）】
 5. 上一环节已明确的需求编号/接口/规则/数值（如「5 次锁定」「30 分钟」「JWT 2 小时」），在当前环节是否被完整承接：有无遗漏、有无被改成不一致的数值、有无被曲解
 6. 当前环节是否新增了上一环节未提及、也不在原始需求中的内容（凭空扩展范围）
