@@ -206,7 +206,7 @@ export interface ReviewerStatus {
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
-  type?: 'user' | 'agent' | 'system' | 'progress' | 'interaction' | 'result' | 'error' | 'user_decision'
+  type?: 'user' | 'agent' | 'system' | 'progress' | 'interaction' | 'result' | 'error' | 'user_decision' | 'change_plan'
   content: string
   timestamp: string
   agentName?: string
@@ -233,6 +233,22 @@ export interface ChatMessage {
   intentNote?: string
   // 所属阶段名称（性能/安全等工作流事件消息）
   stage?: string
+  // 变更计划（2026-11-25 · 对话改造第一步）：
+  // type='change_plan' 时携带，用户勾选确认后才真正执行
+  plan?: {
+    summary: string
+    mode: 'surgical' | 'append' | 'refine'
+    scale: 'small' | 'medium' | 'large'
+    items: Array<{
+      type: 'modify' | 'add' | 'remove' | 'global'
+      caseIds?: string[]
+      count?: number | null
+      reason?: string
+    }>
+  }
+  planId?: string
+  /** 计划对应的原始用户指令（确认执行时要一起带给后端） */
+  message?: string
 }
 
 // API 响应
