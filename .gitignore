@@ -73,3 +73,6 @@ deploy/deploy/
 *~
 qclaw-agents/*/*/test-results/
 qclaw-agents/*/calculator-ui-tests/test-results/
+
+# 部署包构建产物（每次构建生成，不入库）
+dist-deploy/
