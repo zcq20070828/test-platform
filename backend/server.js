@@ -20141,8 +20141,20 @@ app.post('/api/user-actions/log', async (req, res) => {
     let userId = null;
     let username = null;
     try {
+      // 身份来源支持三种，优先级：Authorization 头 > 查询参数 token > 无
+      //
+      // 为什么必须支持 ?token=：实测生产 4713 条 anonymous 里 4709 条是 page_leave，
+      // 前端用 navigator.sendBeacon 上报页面停留时长——**sendBeacon 无法设置
+      // Authorization 头**，于是这些记录全部丢了身份，行为明细里显示成「访客」。
+      // sendBeacon 可以把 token 放进 URL，而 authenticate 中间件本来就支持
+      // req.query.token，所以这里对齐同一口径。
+      //
+      // 安全性不变：身份仍然来自可验证的 JWT（签名+iss+aud 全查），
+      // 不是 body 里用户可随意伪造的 userId。
       const authHeader = req.headers['authorization'] || '';
-      const tokenStr = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const headerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const queryToken = typeof req.query?.token === 'string' ? req.query.token : '';
+      const tokenStr = headerToken || queryToken;
       if (tokenStr) {
         const decoded = jwt.verify(tokenStr, ssoConfig.jwtSecret, {
           algorithms: ['HS256'],

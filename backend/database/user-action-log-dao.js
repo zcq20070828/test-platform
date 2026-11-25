@@ -51,7 +51,12 @@ export async function listActions(filters = {}) {
   const dataSql = `
     SELECT ual.*,
       CASE
-        WHEN ual.user_id = 'anonymous' THEN '访客'
+        -- 匿名记录（2026-11-25 之前大量存在）：
+        -- 早期前端用 navigator.sendBeacon 上报 page_leave，而 sendBeacon
+        -- 无法设置 Authorization 头，这些记录全部丢了身份。
+        -- 历史数据已无法追溯，所以如实标注「未记录身份」，
+        -- 而不是显示成「访客」——那会让人以为真有个访客用户在活动。
+        WHEN ual.user_id = 'anonymous' THEN '匿名（未记录身份）'
         WHEN NULLIF(ual.username, '') IS NOT NULL THEN ual.username
         WHEN u.name IS NOT NULL AND NULLIF(u.name, '') IS NOT NULL THEN u.name
         ELSE ual.user_id
@@ -100,7 +105,8 @@ export async function getActionStats(filters = {}) {
   const byUserSql = `
     SELECT ual.user_id,
       CASE
-        WHEN ual.user_id = 'anonymous' THEN '访客'
+        -- 与 listActions 保持同一口径（见那里的说明）
+        WHEN ual.user_id = 'anonymous' THEN '匿名（未记录身份）'
         WHEN u.name IS NOT NULL AND NULLIF(u.name, '') IS NOT NULL THEN u.name
         ELSE ual.user_id
       END AS display_name,
