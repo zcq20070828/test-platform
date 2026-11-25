@@ -250,15 +250,47 @@ function hasCostInfo(task: Task): boolean {
 }
 
 // 获取输出物类型标签
-function getArtifactTypeLabel(type: string): string {
+/**
+ * 输出物的展示类型（2026-11-25）
+ *
+ * 后端产出的 artifacts 一律标 type:'file'，界面上三份文件（md/docx/xlsx）
+ * 都显示成「文件」+ 同一个文件夹图标，看不出哪份是报告、哪份是表格。
+ * 这里按扩展名细化：报告类给报告图标，表格给表格图标，其余才是文件。
+ */
+function artifactKind(artifact: any): 'report' | 'sheet' | 'doc' | 'image' | 'code' | 'file' {
+  const name = String(artifact?.name || '').toLowerCase()
+  if (/\.(xlsx?|csv)$/.test(name)) return 'sheet'
+  if (/\.(md|docx?|pdf)$/.test(name)) return 'report'
+  if (/\.(png|jpe?g|gif|webp|svg)$/.test(name)) return 'image'
+  if (/\.(py|js|ts|java|sh|go|rb|php|json|ya?ml|xml)$/.test(name)) return 'code'
+  return 'file'
+}
+
+function getArtifactTypeLabel(type: string, artifact?: any): string {
+  const kind = artifact ? artifactKind(artifact) : type
   const labelMap: Record<string, string> = {
     'text': '文本',
     'code': '代码',
     'report': '报告',
+    'sheet': '表格',
+    'doc': '文档',
     'image': '图片',
     'file': '文件'
   }
-  return labelMap[type] || '未知'
+  return labelMap[kind] || labelMap[type] || '文件'
+}
+
+/** 图标与类型标签保持同一判据，避免「显示报告字样却用文件夹图标」 */
+function artifactIcon(kind: string): string {
+  const iconMap: Record<string, string> = {
+    report: 'analytics',
+    sheet: 'table_chart',
+    doc: 'description',
+    image: 'image',
+    code: 'edit',
+    text: 'description',
+  }
+  return iconMap[kind] || 'folder_open'
 }
 
 // 格式化文件大小
@@ -311,6 +343,66 @@ async function previewArtifact(artifact: Artifact) {
 // HTML 转义：统一使用 safe-html 工具，避免三处重复实现
 function escapeHtml(text: string): string {
   return escapeHtmlUtil(text)
+}
+
+/**
+ * 能否预览该输出物（2026-11-25）
+ *
+ * 二进制格式（docx/xlsx/pdf）不能按文本预览——直接 fetch 再 text() 会得到乱码。
+ * 这类走「下载」而不是「预览」。
+ */
+function canPreviewArtifact(artifact: Artifact): boolean {
+  if (!artifact) return false
+  if (!artifact.content && !artifact.downloadUrl) return false
+  const binExts = ['.docx', '.xlsx', '.pdf', '.zip', '.doc', '.xls', '.ppt', '.pptx']
+  const fname = String(artifact.name || '').toLowerCase()
+  return !binExts.some((ext) => fname.endsWith(ext))
+}
+
+/** 复制输出物内容（2026-11-25 新增，与对话面板保持一致） */
+async function copyArtifactContent(artifact: Artifact) {
+  const binExts = ['.docx', '.xlsx', '.pdf', '.zip', '.doc', '.xls', '.ppt', '.pptx']
+  const fname = String(artifact.name || '').toLowerCase()
+  if (binExts.some((ext) => fname.endsWith(ext))) {
+    ElMessage.info('Word/Excel 文件不支持复制内容，请下载后打开查看')
+    return
+  }
+  try {
+    let content = artifact.content || ''
+    if (!content && artifact.downloadUrl) {
+      const res = await fetch(artifact.downloadUrl, { headers: getAuthHeaders() })
+      if (!res.ok) throw new Error('加载失败')
+      content = await res.text()
+    }
+    if (!content) {
+      ElMessage.warning('该输出物没有可复制的内容')
+      return
+    }
+    await navigator.clipboard.writeText(content)
+    ElMessage.success('已复制到剪贴板')
+  } catch (e: any) {
+    ElMessage.error('复制失败：' + (e?.message || e))
+  }
+}
+
+/** 把输出物内容填入提交框，作为下一环节的输入（2026-11-25 新增） */
+async function useArtifactAsInput(artifact: Artifact) {
+  try {
+    let content = artifact.content || ''
+    if (!content && artifact.downloadUrl) {
+      const res = await fetch(artifact.downloadUrl, { headers: getAuthHeaders() })
+      if (!res.ok) throw new Error('加载失败')
+      content = await res.text()
+    }
+    if (!content) {
+      ElMessage.warning('该输出物没有可用的内容')
+      return
+    }
+    router.push({ path: '/', query: { seed: content.slice(0, 20000) } })
+    ElMessage.success('已带入提交框，可继续下一步')
+  } catch (e: any) {
+    ElMessage.error('带入输入框失败：' + (e?.message || e))
+  }
 }
 
 // 下载输出物
@@ -1138,32 +1230,50 @@ onMounted(() => {
           <div class="artifacts-list">
             <div v-for="artifact in selectedTask.artifacts" :key="artifact.id" class="artifact-card">
               <div class="artifact-icon">
-                <MsIcon v-if="artifact.type === 'text'" name="description" />
-                <MsIcon v-else-if="artifact.type === 'code'" name="edit" />
-                <MsIcon v-else-if="artifact.type === 'report'" name="analytics" />
-                <MsIcon v-else-if="artifact.type === 'image'" name="image" />
-                <MsIcon v-else name="folder_open" />
+                <MsIcon :name="artifactIcon(artifactKind(artifact))" />
               </div>
               <div class="artifact-info">
                 <div class="artifact-name">{{ artifact.name }}</div>
                 <div class="artifact-meta">
-                  <span class="artifact-type">{{ getArtifactTypeLabel(artifact.type) }}</span>
+                  <span class="artifact-type">{{ getArtifactTypeLabel(artifact.type, artifact) }}</span>
                   <span v-if="artifact.size" class="artifact-size">{{ formatFileSize(artifact.size) }}</span>
                   <span class="artifact-time">{{ formatTime(artifact.createdAt) }}</span>
                 </div>
               </div>
               <div class="artifact-actions">
-                <el-button 
-                  v-if="artifact.content" 
-                  text 
-                  size="small" 
+                <!-- 预览 / 用作输入 原来都卡在 v-if="artifact.content" 上（2026-11-25 修）
+                     后端产出的 artifacts 只有 downloadUrl、没有 content，
+                     于是这两个按钮从来没出现过，用户只看到「下载」一个按钮。
+                     previewArtifact / useArtifactAsInput 本身都支持走 downloadUrl 取内容，
+                     条件放宽到「有 content 或有 downloadUrl」即可。 -->
+                <el-button
+                  v-if="canPreviewArtifact(artifact)"
+                  text
+                  size="small"
                   @click="previewArtifact(artifact)"
                 >
                   <MsIcon name="visibility" /> 预览
                 </el-button>
-                <el-button 
-                  text 
-                  size="small" 
+                <el-button
+                  text
+                  size="small"
+                  type="info"
+                  @click="copyArtifactContent(artifact)"
+                >
+                  <MsIcon name="content_copy" /> 复制
+                </el-button>
+                <el-button
+                  v-if="artifact.content || artifact.downloadUrl"
+                  text
+                  size="small"
+                  type="success"
+                  @click="useArtifactAsInput(artifact)"
+                >
+                  <MsIcon name="arrow_forward" /> 用作输入
+                </el-button>
+                <el-button
+                  text
+                  size="small"
                   type="primary"
                   @click="downloadArtifact(artifact)"
                 >

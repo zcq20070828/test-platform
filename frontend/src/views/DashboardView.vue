@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useMainStore } from '@/stores/main'
 import { ElMessage, ElMessageBox } from 'element-plus'
 // 【平台瘦身 2026-10-14】StatCard 随顶部统计卡片移除（组件文件保留，当前无其他引用方）
@@ -14,6 +14,7 @@ import { toAttachmentPayloads, describeAttachments, type AttachmentPayload } fro
 
 const store = useMainStore()
 const router = useRouter()
+const route = useRoute()
 // ===== 智能体下拉列表配置 =====
 // 排除:test-master(主控)、ai-quality-reviewer-1/2/3(审核智能体)、ai-evaluation-agent(AI评估,改由「智能评估」菜单承载)、test-script-generator(改由自动化测试tab承载)、compatibility-coordinator(改由兼容性测试菜单承载)
 const EXCLUDED_AGENTS = ['test-master', 'ai-quality-reviewer-1', 'ai-quality-reviewer-2', 'ai-quality-reviewer-3', 'security-sentinel', 'performance-tester', 'test-script-generator', 'compatibility-coordinator', 'ai-evaluation-agent']
@@ -757,6 +758,16 @@ function onIntentCancelled() {
 // 加载数据
 onMounted(async () => {
   // SSE 连接已移至 App.vue 全局管理
+
+  // 「用作输入」跳转带过来的内容（2026-11-25）
+  // 任务列表的输出物卡片上点「用作输入」会带 query.seed 过来，
+  // 填进提交框让用户接着做下一环节。用完立刻清掉 query，
+  // 否则刷新页面会重复填入。
+  const seed = route.query.seed
+  if (typeof seed === 'string' && seed.trim()) {
+    taskInput.value = seed
+    try { router.replace({ path: route.path, query: {} }) } catch (_) {}
+  }
 
   // 启动定期检查(每 3 秒检查一次,防止 SSE 事件丢失导致状态不一致)
   taskCheckInterval = setInterval(checkRunningTask, 3000)
