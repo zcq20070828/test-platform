@@ -147,7 +147,16 @@ export async function getUserUsageSummary(filters = {}) {
 
   const sql = `
     SELECT ual.user_id,
-      COALESCE(NULLIF(u.name,''), ual.user_id) AS display_name,
+      CASE
+        -- 与 listActions / getActionStats 保持同一口径（2026-11-25）。
+        -- 这里原来直接 COALESCE(NULLIF(u.name,''), ual.user_id)，
+        -- 没处理 'anonymous' 这个特殊值，于是「使用时长 TOP10」里
+        -- 原样显示出英文 anonymous —— 上一次修漏了这个函数。
+        WHEN ual.user_id = 'anonymous' THEN '匿名（未记录身份）'
+        WHEN NULLIF(ual.username, '') IS NOT NULL THEN ual.username
+        WHEN u.name IS NOT NULL AND NULLIF(u.name, '') IS NOT NULL THEN u.name
+        ELSE ual.user_id
+      END AS display_name,
       COUNT(*) as action_count,
       MIN(ual.created_at) as first_action,
       MAX(ual.created_at) as last_action,
@@ -155,7 +164,7 @@ export async function getUserUsageSummary(filters = {}) {
     FROM user_action_logs ual
     LEFT JOIN users u ON ual.user_id = u.id${JOIN_SUFFIX}
     WHERE ${whereStr} AND ual.user_id IS NOT NULL
-    GROUP BY ual.user_id
+    GROUP BY ual.user_id, u.name, ual.username
     ORDER BY action_count DESC`;
   return await query(sql, params);
 }
