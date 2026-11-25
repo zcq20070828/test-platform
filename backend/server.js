@@ -3660,14 +3660,26 @@ async function artifactsFromRegistry(taskId) {
     const rows = await taskDAO.getTaskOutputFiles(taskId);
     if (!rows.length) return [];
     const ordered = rows.slice().sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-    return ordered.map((f, i) => ({
-      id: `artifact-${i}`,
-      name: path.basename(f.filePath),
-      type: 'file',
-      path: f.filePath,
-      downloadUrl: `/api/tasks/${taskId}/artifacts/artifact-${i}/download`,
-      createdAt: f.createdAt,
-    }));
+    return ordered.map((f, i) => {
+      // size 必须补上（2026-11-25）：注册表里没有这个字段，
+      // 前端 artifact-meta 收到 undefined 就显示成「-」，
+      // 用户看到的就是「文件  -  14:38:09」这种缺一块的信息。
+      let size;
+      try {
+        if (f.filePath && fsSync.existsSync(f.filePath)) {
+          size = fsSync.statSync(f.filePath).size;
+        }
+      } catch (_) { /* 取不到就留空，不影响下载 */ }
+      return {
+        id: `artifact-${i}`,
+        name: path.basename(f.filePath),
+        type: 'file',
+        path: f.filePath,
+        size,
+        downloadUrl: `/api/tasks/${taskId}/artifacts/artifact-${i}/download`,
+        createdAt: f.createdAt,
+      };
+    });
   } catch (e) {
     console.error(`[ResolveArtifact] 注册表重建失败: ${e.message}`);
     return [];
@@ -3701,18 +3713,40 @@ function findArtifactCompat(task, artifactId) {
  * 这里同时兼容「已是对象/数组」「字符串」「null/空」三种情况。
  */
 function normalizeArtifactsField(v) {
-  if (v == null) return [];
-  if (Array.isArray(v)) return v;
-  if (typeof v === 'object') return [v];
-  if (typeof v === 'string') {
-    const s = v.trim();
-    if (!s) return [];
+  const list = (() => {
+    if (v == null) return [];
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'object') return [v];
+    if (typeof v === 'string') {
+      const s = v.trim();
+      if (!s) return [];
+      try {
+        const p = JSON.parse(s);
+        return Array.isArray(p) ? p : [p];
+      } catch (_) { return []; }
+    }
+    return [];
+  })();
+
+  // 补 size（2026-11-25）
+  //
+  // 落库的 artifacts 只有 id/name/type/path/downloadUrl/createdAt，
+  // 没有 size —— 前端 artifact-meta 收到 undefined 就显示成「-」，
+  // 用户看到「文件  -  14:38:09」这种缺一块的信息。
+  //
+  // 在这里统一补而不是改写入侧：历史任务已经存过一批没 size 的记录，
+  // 改写入侧只能管新的，读时补能同时覆盖历史数据。
+  // 文件不存在时留空，不影响下载。
+  return list.map((a) => {
+    if (!a || typeof a !== 'object') return a;
+    if (a.size != null) return a;
     try {
-      const p = JSON.parse(s);
-      return Array.isArray(p) ? p : [p];
-    } catch (_) { return []; }
-  }
-  return [];
+      if (a.path && fsSync.existsSync(a.path)) {
+        return { ...a, size: fsSync.statSync(a.path).size };
+      }
+    } catch (_) { /* 取不到就保持 undefined */ }
+    return a;
+  });
 }
 
 // 获取单个任务（支持 DB 回退：历史任务重启后可能不在内存 Map 中，需从 MySQL 读取）
@@ -4267,8 +4301,47 @@ app.get('/api/tasks/:taskId/artifacts/:artifactId/download', authenticate, async
 
   // 设置响应头
   const filename = artifact.name || path.basename(artifact.path);
-  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
-  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  // Content-Type 必须按真实扩展名给（2026-11-25 修）
+  //
+  // 原来写死成 'text/markdown'，导致下载 xlsx 时浏览器拿到 26KB 二进制
+  // 却按 markdown 解析——Excel 打开报「文件格式与扩展名不符」，
+  // docx 同理。前端用 res.blob() 下载时类型也错，某些浏览器会当成文本截断。
+  //
+  // Content-Disposition 用 filename*（RFC 5987）传 UTF-8 文件名：
+  // 原来只给了 encodeURIComponent 后的 filename="..."，中文名在部分浏览器
+  // 会变成一串 %E6%89%98... 或直接丢弃文件名。
+  const ext2mime = {
+    md: 'text/markdown; charset=utf-8',
+    txt: 'text/plain; charset=utf-8',
+    json: 'application/json; charset=utf-8',
+    html: 'text/html; charset=utf-8',
+    csv: 'text/csv; charset=utf-8',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    pdf: 'application/pdf',
+    zip: 'application/zip',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    svg: 'image/svg+xml',
+    py: 'text/x-python; charset=utf-8',
+    js: 'text/javascript; charset=utf-8',
+    ts: 'text/plain; charset=utf-8',
+    java: 'text/plain; charset=utf-8',
+    sh: 'text/x-sh; charset=utf-8',
+    yaml: 'text/plain; charset=utf-8',
+    yml: 'text/plain; charset=utf-8',
+    xml: 'application/xml; charset=utf-8',
+  };
+  const ext = (String(filename).split('.').pop() || '').toLowerCase();
+  const mime = ext2mime[ext] || 'application/octet-stream';
+  res.setHeader('Content-Type', mime);
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+  );
 
   // 发送文件
   const fileStream = fsSync.createReadStream(artifact.path);
