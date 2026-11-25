@@ -46,7 +46,12 @@ function loadNamer() {
     throw new Error(`${name} 解析失败`);
   };
   const code = [grab('extractReportProjectName'), grab('extractProjectInfo'), grab('buildDeliverableBaseName')].join('\n');
-  const factory = new Function(`${code}; return { extractReportProjectName, extractProjectInfo, buildDeliverableBaseName };`);
+  // UNKNOWN_PROJECT_NAME 是模块级常量（2026-11-25 引入），
+  // 沙箱里必须补上，否则 buildDeliverableBaseName 引用不到。
+  const factory = new Function(
+    `const UNKNOWN_PROJECT_NAME = ${JSON.stringify('不知名项目')};\n${code}; `
+    + 'return { extractReportProjectName, extractProjectInfo, buildDeliverableBaseName };',
+  );
   return factory();
 }
 
@@ -123,10 +128,12 @@ t('★★ 整句说明不能被当成项目名', () => {
   }
 });
 
-t('真正没有项目信息时退回纯类型名（合理降级）', () => {
+t('真正没有项目信息时用「不知名项目」兜底', () => {
   const n = loadNamer();
   const base = n.buildDeliverableBaseName('这是一段没有任何项目信息的内容', '测试用例');
-  assert.strictEqual(base, '测试用例', `应降级为纯类型名，实际：${base}`);
+  // 2026-11-25 用户明确要求：取不到项目名时用「不知名项目」，
+  // 而不是丢掉项目名栏位只留类型名——交付物归档时没有项目名就分不清是哪份。
+  assert.strictEqual(base, '不知名项目测试用例', `应兜底为「不知名项目」，实际：${base}`);
 });
 
 t('★ 表格表头 | 项目 | 内容 | 不能被当成项目名', () => {
