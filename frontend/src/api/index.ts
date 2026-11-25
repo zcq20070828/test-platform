@@ -339,14 +339,24 @@ export const taskApi = {
   },
 
   // 多轮对话续写（任意状态的任务都可继续对话/修改交付物）
+  //
+  // options.planId + options.confirmedPlan（2026-11-25 · 对话改造第一步）：
+  // 模糊的整体指令会先返回一份变更计划而非直接执行；用户勾选确认后
+  // 带上 planId 与裁剪过的 plan 重新调用，后端校验归属后再真正执行。
   async sendChat(
     taskId: string,
     message: string,
-    attachments?: { name: string; content?: string; base64?: string }[]
+    attachments?: { name: string; content?: string; base64?: string }[],
+    options?: { planId?: string; confirmedPlan?: any }
   ): Promise<any> {
     const res = await request(`/api/tasks/${taskId}/chat`, {
       method: 'POST',
-      body: JSON.stringify({ message, attachments: attachments || [] }),
+      body: JSON.stringify({
+        message,
+        attachments: attachments || [],
+        ...(options?.planId ? { planId: options.planId } : {}),
+        ...(options?.confirmedPlan ? { confirmedPlan: options.confirmedPlan } : {}),
+      }),
     })
     return res
   },

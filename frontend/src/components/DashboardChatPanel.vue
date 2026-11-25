@@ -9,6 +9,8 @@ import 'highlight.js/styles/github-dark.css'
 import { Marked } from 'marked'
 import { sanitizeHtml, renderMarkdownSafe, escapeHtml } from '@/utils/safe-html'
 import MsIcon from '@/components/MsIcon.vue'
+import ChangePlanCard from '@/components/ChangePlanCard.vue'
+import type { ChangePlan } from '@/components/ChangePlanCard.vue'
 import { formatClock } from '@/utils/time'
 import { getAgentIcon } from '@/utils/agentIcons'
 import { MAX_ATTACHMENT_SIZE, BASE64_INFLATE_RATIO, checkTotalAttachmentSize } from '@/utils/attachment'
@@ -32,7 +34,41 @@ const emit = defineEmits<{
   decision: [data: { workflowId: string, decision: string }]
   startChat: [task: any]
   exitChat: []
+  /** 变更计划已确认（2026-11-25）：交给外层发请求，因为 taskId 与发送逻辑在视图层 */
+  planConfirm: [payload: { planId: string; plan: ChangePlan; message: string }]
 }>()
+
+// 变更计划卡片的本地状态：哪些已处理、哪些正在提交
+// 用 planId 做 key，同一任务里可能先后出现多份计划
+const planResolved = ref<Record<string, boolean>>({})
+const planLoading = ref<Record<string, boolean>>({})
+
+function onPlanConfirm(payload: { planId: string; plan: ChangePlan }) {
+  if (planResolved.value[payload.planId]) return
+  planLoading.value = { ...planLoading.value, [payload.planId]: true }
+  // 原指令从消息本身取（后端广播时带在 msg.message 上），
+  // 不依赖额外状态，避免刷新后丢失
+  const src = (props.messages || []).find(
+    (m: any) => m.planId === payload.planId && m.type === 'change_plan',
+  ) as any
+  emit('planConfirm', {
+    planId: payload.planId,
+    plan: payload.plan,
+    message: src?.message || '',
+  })
+}
+
+function onPlanCancel(planId: string) {
+  planResolved.value = { ...planResolved.value, [planId]: true }
+}
+
+/** 外层执行完（无论成败）调用，解除 loading 并锁定卡片 */
+function markPlanDone(planId: string) {
+  planLoading.value = { ...planLoading.value, [planId]: false }
+  planResolved.value = { ...planResolved.value, [planId]: true }
+}
+
+defineExpose({ markPlanDone })
 
 const store = useMainStore()
 const isChatMode = computed(() => !!props.chatMode)
@@ -706,7 +742,19 @@ onMounted(() => { scrollToBottom() })
 
         <!-- 系统消息 -->
         <div v-else-if="msg.role === 'system'" class="message-content system-content">
-          <div class="message-bubble system-bubble">
+          <!-- 变更计划确认卡（2026-11-25 · 对话改造第一步）
+               模糊的整体指令不再直接重写全文，而是先给出「打算改哪些」，
+               用户勾选后确认才执行。取消勾选的项不会被执行。 -->
+          <ChangePlanCard
+            v-if="msg.type === 'change_plan' && msg.plan && msg.planId"
+            :plan="msg.plan"
+            :plan-id="msg.planId"
+            :resolved="planResolved[msg.planId] === true"
+            :loading="planLoading[msg.planId] === true"
+            @confirm="onPlanConfirm"
+            @cancel="onPlanCancel"
+          />
+          <div class="message-bubble system-bubble" v-else>
             <div class="message-text">{{ msg.content }}</div>
             <div class="message-time">{{ formatTime(msg.timestamp) }}</div>
           </div>

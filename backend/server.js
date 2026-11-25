@@ -55,6 +55,14 @@ import {
   appendRows as appendChatRows,
   summarizeDeliverableForQuestion,
 } from './lib/chat-intent.js';
+import {
+  shouldPlanBeforeExecute,
+  buildDeliverableSummary,
+  buildPlanPrompt,
+  parseChangePlan,
+  planToIntent,
+  normalizeConfirmedPlan,
+} from './lib/change-plan.js';
 import { analyzeTaskIntent } from './lib/task-intent.js';
 import { verifyRuntimeResources, assertModulePathExist } from './lib/boot-check.js';
 import { diagnoseFailure } from './lib/failure-diagnosis.js';
@@ -4807,6 +4815,17 @@ app.get('/api/stats', authenticate, async (req, res) => {
 // 同一任务多轮对话 FIFO 串行（chatLocks），并与创建任务共用用户串行锁（checkUserTaskLock）
 const chatLocks = new Map();
 
+// 待确认的变更计划（2026-11-25 · 对话改造第一步）
+// 生成计划时不执行，把计划暂存在这里；用户确认后前端回传 planId + 勾选结果，
+// 再用暂存的原文校验「确认的是不是我给的那份计划」。进程重启会丢，
+// 那时用户的确认会走「计划已过期」提示、退回按原指令直接执行，不会卡死。
+const chatPlans = new Map();
+
+// 计划生成的成本单独计数（2026-11-25）
+// 计划只是一次轻量调用（maxTokens 2000），但也是真实计费，
+// 不累加的话成本会像之前修过的 legacy 问题一样被低估。
+const planUsageAcc = { prompt_tokens: 0, completion_tokens: 0, calls: 0 };
+
 function safeParseChatHistory(raw) {
   if (!raw) return [];
   try { const v = JSON.parse(raw); return Array.isArray(v) ? v : []; }
@@ -4885,6 +4904,20 @@ function buildChatContinuationInput(task, message, userFileContents, chatHistory
   };
 
   parts.push(MODE_INSTRUCTIONS[mode] || MODE_INSTRUCTIONS.refine);
+
+  // 用户已确认的变更计划（2026-11-25）：把勾选项带进 prompt。
+  //
+  // 这一步不能省。用户勾选意味着「只改这些」，如果 prompt 里不写，
+  // 模型仍会按自己的理解顺手多改——用户确认过的范围就白确认了。
+  // 尤其 refine 模式下模型倾向整体重写，更需要明确边界。
+  if (intent.fromPlan && Array.isArray(intent.itemBrief) && intent.itemBrief.length) {
+    parts.push(
+      '# 已确认的变更范围（用户逐项勾选过，只能动这些）\n'
+      + intent.itemBrief.map((x, i) => `${i + 1}. ${x}`).join('\n')
+      + '\n\n**未在上面的条目一律保持原样，不要顺手修改。**',
+    );
+  }
+
   parts.push(`## 原始任务需求\n${task.input || task.original_input || '(见历史对话)'}`);
 
   if (chatHistory && chatHistory.length) {
@@ -4934,7 +4967,84 @@ async function loadCurrentDeliverable(task) {
   return typeof raw === 'string' ? raw : '';
 }
 
-async function executeChatRound(task, message, userFiles) {
+/**
+ * 生成变更计划（2026-11-25 · 对话改造第一步）
+ *
+ * 只给模型看交付物的**结构摘要**（表头 + 编号 + 用例名），不给全文：
+ * 一份 14 万字的用例文档光读一遍就要几十秒、几万 token，
+ * 而「打算改哪几条」只需要知道有哪些条目。实测摘要能压到 2~4k 字符。
+ *
+ * 失败不是致命错误：返回 ok:false，调用方退回直接执行。
+ * 宁可少一次确认，也不能让用户的话石沉大海。
+ */
+async function generateChangePlan({ task, message, intent, deliverable, userId }) {
+  try {
+    const summary = buildDeliverableSummary(deliverable, { maxRows: 120, nameWidth: 40 });
+    if (!summary.rows.length) {
+      return { ok: false, error: '交付物里没有可点名的编号条目' };
+    }
+    const prompt = buildPlanPrompt({ message, summary, intentMode: intent.mode });
+    const out = await callDeepSeekRewrite(
+      [
+        {
+          role: 'system',
+          content: '你是测试用例评审专家。你只输出一个 JSON 对象，不输出任何解释文字，不用 Markdown 代码块包裹。',
+        },
+        { role: 'user', content: prompt },
+      ],
+      { timeoutMs: 90000, maxTokens: 2000, userId },
+    );
+    if (out && out.usage) {
+      planUsageAcc.prompt_tokens += Number(out.usage.prompt_tokens || 0) || 0;
+      planUsageAcc.completion_tokens += Number(out.usage.completion_tokens || 0) || 0;
+      planUsageAcc.calls += 1;
+    }
+    const parsed = parseChangePlan(out?.content || '', { maxItems: 8 });
+    if (!parsed.ok) {
+      console.warn(`[ChatPlan] 计划解析失败: ${parsed.error}，原始返回前 300 字: ${String(out?.content || '').slice(0, 300)}`);
+      return { ok: false, error: parsed.error };
+    }
+    // 计划里引用的编号必须在交付物里真实存在，否则执行阶段会整批落空
+    const known = new Set(summary.rows.map((r) => String(r.id).toUpperCase()));
+    const unknown = [];
+    for (const it of parsed.plan.items) {
+      for (const id of (it.caseIds || [])) {
+        if (!known.has(id)) unknown.push(id);
+      }
+    }
+    if (unknown.length) {
+      parsed.plan.items = parsed.plan.items
+        .map((it) => ({ ...it, caseIds: (it.caseIds || []).filter((id) => known.has(id)) }))
+        .filter((it) => (it.type === 'add' || it.type === 'global') || (it.caseIds || []).length > 0);
+      if (!parsed.plan.items.length) {
+        return { ok: false, error: `计划里提到的编号在交付物中都不存在（${unknown.slice(0, 5).join(',')}）` };
+      }
+      parsed.plan.summary += `（已剔除 ${unknown.length} 个不存在的编号）`;
+    }
+
+    const planId = `plan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // 暂存计划原文，确认时用于校验「用户勾选的是不是我给的那份」
+    chatPlans.set(planId, {
+      taskId: task.id,
+      userId: userId || null,
+      plan: parsed.plan,
+      message,
+      createdAt: Date.now(),
+    });
+    // 只留最近 200 份，避免长跑进程里无限堆积
+    if (chatPlans.size > 200) {
+      const oldest = [...chatPlans.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
+      if (oldest) chatPlans.delete(oldest[0]);
+    }
+    console.log(`[ChatPlan] ${task.id} 生成计划 ${planId}：${parsed.plan.summary}（${parsed.plan.items.length} 项，scale=${parsed.plan.scale}）`);
+    return { ok: true, planId, plan: parsed.plan };
+  } catch (e) {
+    console.warn(`[ChatPlan] 生成计划异常: ${e.message}`);
+    return { ok: false, error: e.message };
+  }
+}
+
+async function executeChatRound(task, message, userFiles, options = {}) {
   chatLocks.set(task.id, true);
   try {
     const chatHistory = safeParseChatHistory(task.chat_history);
@@ -4990,13 +5100,95 @@ async function executeChatRound(task, message, userFiles) {
     // 「把最差 3 条改具体」只需替换 3 行，不该重写整份。
     // 原实现写死全量重写，三种指令被同样对待。
     const currentDeliverable = await loadCurrentDeliverable(task);
-    const intent = classifyChatIntent(message, { hasDeliverable: !!currentDeliverable });
+    let intent = classifyChatIntent(message, { hasDeliverable: !!currentDeliverable });
     console.log(
       `[Chat] ${task.id} 意图=${intent.mode}（${intent.reason}）` +
       `${intent.caseIds.length ? ` 编号=${intent.caseIds.join(',')}` : ''}` +
       `${intent.count ? ` 条数=${intent.count}` : ''}` +
       ` 现有交付物 ${currentDeliverable.length} 字符`,
     );
+
+    // ── 变更计划确认（2026-11-25 · 对话改造第一步）──
+    //
+    // 用户要求把「改哪里」显式化：模糊的整体指令（「整体感觉不够严格」）
+    // 原来直接归到 refine，把 14 万字整个重写一遍——慢、贵、还可能改坏别处，
+    // 用户全程看不到中间态。
+    //
+    // 现在这类指令先让模型只输出一份变更计划，前端渲染成可勾选清单，
+    // 用户确认后再真正执行。明确的指令（点名编号 / 追加 / 重新生成）
+    // 不走向导，避免为了改一条用例还要点一次确认。
+    //
+    // 走哪条路由由 confirmedPlan 决定：
+    //   - 本次请求带 confirmedPlan → 用户在确认框点了「执行」，按计划执行
+    //   - 本次请求不带，但判定需要规划 → 只生成计划并返回，等用户确认
+    if (options.confirmedPlan) {
+      const norm = normalizeConfirmedPlan(options.confirmedPlan);
+      if (norm.ok) {
+        intent = planToIntent(norm.plan, intent);
+        console.log(`[ChatPlan] ${task.id} 按已确认计划执行：${intent.mode}，${intent.caseIds.length} 条编号，${intent.count || 0} 条新增`);
+      } else {
+        console.warn(`[ChatPlan] ${task.id} 确认的计划无效（${norm.error}），退回按原意图执行`);
+      }
+    } else if (options.planOnly !== false) {
+      const gate = shouldPlanBeforeExecute(intent, {
+        hasDeliverable: !!currentDeliverable,
+        deliverableChars: currentDeliverable.length,
+      });
+      if (gate.needed) {
+        const planned = await generateChangePlan({
+          task, message, intent, deliverable: currentDeliverable, userId: task.userId || null,
+        });
+        if (planned.ok) {
+          // 只返回计划，不动交付物。用户确认后前端会带 confirmedPlan 重新调用。
+          broadcast({
+            type: 'chat_change_plan',
+            taskId: task.id,
+            userId: task.userId || null,
+            data: {
+              planId: planned.planId,
+              plan: planned.plan,
+              message: message || '',
+              agentId: task.agent,
+              timestamp: new Date().toISOString(),
+            },
+          });
+          broadcast({
+            type: 'chat_message',
+            taskId: task.id,
+            userId: task.userId || null,
+            data: {
+              role: 'system',
+              type: 'change_plan',
+              content: `📋 变更计划：${planned.plan.summary}`,
+              plan: planned.plan,
+              planId: planned.planId,
+              taskId: task.id,
+              agentId: task.agent,
+              timestamp: new Date().toISOString(),
+            },
+          });
+          return;
+        }
+        // 计划生成失败不该卡住对话：退回直接执行，并告知用户
+        console.warn(`[ChatPlan] ${task.id} 计划生成失败（${planned.error}），退回直接执行`);
+        broadcast({
+          type: 'chat_message',
+          taskId: task.id,
+          userId: task.userId || null,
+          data: {
+            role: 'system',
+            type: 'system',
+            content: `⚠️ 无法生成变更计划（${planned.error}），已直接按「${intent.label}」执行`,
+            taskId: task.id,
+            agentId: task.agent,
+            timestamp: new Date().toISOString(),
+          },
+        });
+      } else {
+        console.log(`[ChatPlan] ${task.id} 不需要规划：${gate.reason}`);
+      }
+    }
+
     const chatInput = buildChatContinuationInput(task, message, userFileContents, chatHistory, intent, currentDeliverable);
 
     // ── 过程事件（2026-11-19）──
@@ -5481,9 +5673,29 @@ app.post('/api/tasks/:id/chat', authenticate, async (req, res) => {
   if (req.user.role !== 'admin' && task.user_id && task.user_id !== req.user.id) {
     return res.status(403).json({ error: '无权操作该任务' });
   }
-  const { message, attachments } = req.body || {};
+  const { message, attachments, planId, confirmedPlan } = req.body || {};
   if (!message && (!attachments || attachments.length === 0)) {
     return res.status(400).json({ error: '消息内容或附件不能为空' });
+  }
+
+  // 用户确认了变更计划 → 校验计划归属后再执行（2026-11-25）
+  //
+  // 必须校验：planId 是客户端回传的，不能直接信。
+  // 只允许「同一任务、同一用户」确认自己那份计划。
+  let resolvedPlan = null;
+  if (planId) {
+    const stored = chatPlans.get(String(planId));
+    if (!stored) {
+      return res.status(410).json({
+        error: '变更计划已过期（服务可能重启过），请重新发送指令',
+        code: 'PLAN_EXPIRED',
+      });
+    }
+    if (stored.taskId !== taskId || (stored.userId && stored.userId !== req.user.id && req.user.role !== 'admin')) {
+      return res.status(403).json({ error: '无权执行该变更计划' });
+    }
+    resolvedPlan = confirmedPlan || stored.plan;
+    chatPlans.delete(String(planId));   // 一次性使用，防止重复执行
   }
   // 用户串行锁（与创建任务一致）
   const lock = await checkUserTaskLock(req.user.id);
@@ -5517,8 +5729,15 @@ app.post('/api/tasks/:id/chat', authenticate, async (req, res) => {
     },
   });
   // 后台异步执行，立即返回
-  executeChatRound(task, message, attachments || []).catch(e => console.error('[Chat] 外层失败', e));
-  res.json({ success: true, taskId });
+  //
+  // 注意：接口返回时还不知道会不会只出计划——那要等 intent 分类和门禁判定，
+  // 都在异步里。所以这里不返回「是否只出计划」，前端靠 SSE 的
+  // chat_change_plan / chat_message(type=change_plan) 得知。
+  executeChatRound(task, message, attachments || [], {
+    confirmedPlan: resolvedPlan,
+    planOnly: !resolvedPlan,
+  }).catch(e => console.error('[Chat] 外层失败', e));
+  res.json({ success: true, taskId, planConfirmed: !!resolvedPlan });
 });
 
 // 任务消息 API(用户向运行中的任务发送消息)
@@ -14028,6 +14247,18 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
         result.usage.total_tokens = result.usage.prompt_tokens + result.usage.completion_tokens;
         result.usage.calls += repairUsageAcc.calls;
         result.usage.subCalls = repairUsageAcc.calls;
+      }
+      // 变更计划生成的成本（2026-11-25）：轻量调用也是真实计费
+      if (planUsageAcc.calls > 0) {
+        result.usage = result.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0 };
+        result.usage.prompt_tokens += planUsageAcc.prompt_tokens;
+        result.usage.completion_tokens += planUsageAcc.completion_tokens;
+        result.usage.total_tokens = result.usage.prompt_tokens + result.usage.completion_tokens;
+        result.usage.calls += planUsageAcc.calls;
+        result.usage.planCalls = planUsageAcc.calls;
+        planUsageAcc.prompt_tokens = 0;
+        planUsageAcc.completion_tokens = 0;
+        planUsageAcc.calls = 0;
       }
       // 带上本次实际使用的模型：成本计算不能假设是 DeepSeek 单价（2026-11-20）
       try {

@@ -182,6 +182,9 @@ const currentRunningTaskId = ref<string | null>(null)
 // 多轮对话续写模式：{ taskId, taskName } | null
 const chatMode = ref<{ taskId: string; taskName: string } | null>(null)
 
+// 聊天面板引用：变更计划确认后需要回调 markPlanDone 解除 loading（2026-11-25）
+const chatPanelRef = ref<any>(null)
+
 // 进入多轮对话续写模式（点选历史任务卡片触发）
 // enterChatMode: 进入指定任务的对话续写模式（手动点历史任务卡片触发，@start-chat 调用）
 // autoEnter 保留为兼容参数：true 表示不清空已有消息（保留任务输出），默认 false
@@ -415,6 +418,44 @@ async function enterChatModeAndSend(task: any, message: string) {
 // 发送任务(发送给当前选中的智能体)
 // files: 附件列表（可选）
 // inputOverride: 来自子组件的当前输入值（用于解决 v-model 与 emit 的时序问题）
+/**
+ * 执行已确认的变更计划（2026-11-25 · 对话改造第一步）
+ *
+ * 用户勾选清单后走这里：把 planId + 裁剪过的 plan + 原指令一起发给后端。
+ * 后端校验 planId 归属，然后把勾选项转成执行意图，仍然调用同一个智能体
+ * （spawnAgentSession）干活——这里只是多了一次「确认」，不改变执行者。
+ */
+async function handlePlanConfirm(payload: { planId: string; plan: any; message: string }) {
+  const chatPanel = chatPanelRef.value as any
+  const taskId = chatMode.value?.taskId
+  if (!taskId) {
+    ElMessage.warning('当前不在对话模式，无法执行变更计划')
+    chatPanel?.markPlanDone?.(payload.planId)
+    return
+  }
+  try {
+    const res = await taskApi.sendChat(taskId, payload.message, [], {
+      planId: payload.planId,
+      confirmedPlan: payload.plan,
+    })
+    if (!res.success) {
+      const err = String(res.error || '')
+      // 计划过期（服务重启）时明确告诉用户重发，不要让他反复点
+      if (err.includes('计划已过期') || (res as any).code === 'PLAN_EXPIRED') {
+        ElMessage.warning('变更计划已过期，请重新发送指令')
+      } else {
+        ElMessage.error(err || '执行变更计划失败')
+      }
+    } else {
+      ElMessage.success(`已按 ${payload.plan?.items?.length || 0} 项变更开始执行`)
+    }
+  } catch (e: any) {
+    ElMessage.error('执行变更计划失败：' + (e?.message || e))
+  } finally {
+    chatPanel?.markPlanDone?.(payload.planId)
+  }
+}
+
 async function handleSendTask(files?: AttachmentFile[], inputOverride?: string) {
   // 使用 inputOverride（如果提供），否则使用 taskInput（兼容旧调用方式）
   const taskInputValue = inputOverride ?? taskInput.value
@@ -442,6 +483,10 @@ async function handleSendTask(files?: AttachmentFile[], inputOverride?: string) 
     try {
       const res = await taskApi.sendChat(taskId, taskInputValue, chatFiles)
       if (!res.success) ElMessage.error(res.error || '对话发送失败')
+      // 后端可能只返回变更计划而不执行——那种情况下会通过 SSE 推来
+      // chat_message(type=change_plan) 卡片，用户确认后才真正执行。
+      // 接口本身无法预知（要不要规划在异步里判定），所以这里不做提示，
+      // 由卡片自己表达「打算改这些、请确认」。
     } catch (e: any) { ElMessage.error('对话发送失败：' + (e?.message || e)) }
     return
   }
@@ -846,6 +891,7 @@ onUnmounted(() => {
       </div>
 
       <DashboardChatPanel
+        ref="chatPanelRef"
         v-model="taskInput"
         :current-agent="selectedAgent"
         :messages="store.messages"
@@ -855,6 +901,7 @@ onUnmounted(() => {
         @clear="store.clearMessages()"
         @start-chat="enterChatMode"
         @exit-chat="exitChatMode"
+        @plan-confirm="handlePlanConfirm"
       />
 
       <!-- 意图不明确时让用户三选一，而不是替用户猜一个智能体跑十几分钟 -->
