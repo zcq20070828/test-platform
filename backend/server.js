@@ -3187,16 +3187,25 @@ app.post('/api/tasks', authenticate, async (req, res) => {
     // 带具体内容的长指令也当成"沿用上一个任务"。
     if (t.length <= 12 && (CONTINUE_RE.test(t) || CONTINUE_LOOSE_RE.test(t))) {
       try {
-        const recent = await taskDAO.getTasks({
-          userId,
-          status: 'completed',
-          limit: 5,
-        });
+        // 上下文就在库里，查一次就知道最近任务是哪个智能体
+        //
+        // 不筛 status（2026-11-25 修）：原来只查 completed。
+        // 实测该用户最近第 3 个任务是 test-case-generator 的 failed，
+        // 用户说「继续」时心里的对象很可能就是它（想重跑或接着改），
+        // 但筛掉 failed 后会跳到更早的那个，指错对象。
+        //
+        // 也不筛 agentId：原来 enrichInputWithRecentContext 按当前 agent 限定查找，
+        // 用户说「继续优化」时若当前被判成需求分析，就只会在需求分析历史里找，
+        // 找不到就退化成全新需求重跑——与「继续」的语义完全相反。
+        //
+        // 排序用 created_at DESC + id DESC：同秒创建时 created_at 相同，
+        // 只按它排序结果不确定。
+        const recent = await taskDAO.getTasks({ userId, limit: 8 });
         const prev = (recent || []).find((x) => x && x.id !== taskId && x.agentId);
         if (prev) {
-          continueHint = { agentId: prev.agentId, taskId: prev.id, input: prev.input };
+          continueHint = { agentId: prev.agentId, taskId: prev.id, input: prev.input, status: prev.status };
           targetAgent = prev.agentId;
-          console.log(`[AutoDispatch] 「${t}」→ 沿用最近任务 ${prev.id.slice(0, 8)} 的智能体 ${prev.agentId}`);
+          console.log(`[AutoDispatch] 「${t}」→ 沿用最近任务 ${prev.id.slice(0, 8)} 的智能体 ${prev.agentId}（状态 ${prev.status}）`);
         }
       } catch (e) {
         console.warn(`[AutoDispatch] 查找最近任务失败（回退常规识别）: ${e.message}`);
@@ -12750,16 +12759,36 @@ async function enrichInputWithRecentContext(agentId, taskInput, userId, currentT
     console.warn(`[RecentContext] 查询最近任务失败: ${e.message}`);
     return null;
   }
-  // 挑选「有真实需求原文」的上一份任务：
-  //   - 必须有 result 且不是说明文档（长度 > 200）
-  //   - 更关键：input 必须够长（≥100 字），否则它本身也是「重新生成刚才那份」这类
-  //     短指令任务，把它的 input 当需求注入等于什么都没注入。
-  // 实测库里最新一条 completed 就是那种 13 字的空任务，不排除会连环失误。
+  // 挑选「上一份」任务
+  //
+  // 判据（2026-11-25 修正）：
+  //   - 必须有 result 且不是说明文档（长度 > 200）—— 没交付物就无从续做
+  //   - input **不能本身就是另一条续做指令** —— 那说明它也是个空壳任务，
+  //     把它的 input 当需求注入等于什么都没注入，甚至会把「继续」这句话
+  //     当成需求传下去（连环失误）
+  //
+  // 原来用的是「input ≥ 100 字」，实测误伤明显：
+  //   分步测试里「基于上一步的需求分析结果生成测试用例」只有 18 字，
+  //   「经过3轮都还没达到审核通过标准，那就针对性修改吧」只有 24 字——
+  //   这些都是**真实且有交付物**的任务，却因为输入短被排除，
+  //   导致「继续」找不到上一份、退化成全新重跑。
+  //
+  // 改判「是不是续做指令」而不是「够不够长」：短输入本身不是问题，
+  // 短且是空壳指令才是问题。
+  const isSkeletonInput = (v) => {
+    const s = String(v || '').trim();
+    if (!s) return true;
+    // 极短（<8 字）几乎不可能是有效需求描述
+    if (s.length < 8) return true;
+    // 本身就是续做/重做指令 → 空壳
+    if (REVISE_REF_RE.test(s) && s.length <= 60) return true;
+    return false;
+  };
   const prev = (recent || []).find((t) =>
     t
     && t.id !== currentTaskId
     && t.result && String(t.result).length > 200
-    && t.input && String(t.input).length >= 100,
+    && !isSkeletonInput(t.input),
   );
   if (!prev) return null;
 
