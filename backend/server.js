@@ -20246,6 +20246,22 @@ app.get('/api/stats/today', authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+// 活跃用户清单（2026-11-25）：首页「活跃用户」卡片点开的明细
+//
+// 口径与 /api/stats/today 的 active_users 完全一致（今天创建的任务数去重用户），
+// 否则卡片显示 1、点开 3 个人会自相矛盾。
+// admin 看全平台；普通用户只看自己（与他能看到的今日统计范围一致）。
+app.get('/api/stats/active-users', authenticate, async (req, res) => {
+  try {
+    const isAdmin = (req.user?.role || 'user') === 'admin';
+    const list = await statsDAO.getActiveUserList(isAdmin ? null : req.user?.id, req.query.limit);
+    res.json({ success: true, data: { users: list, scope: isAdmin ? 'platform' : 'self' } });
+  } catch (error) {
+    console.error('[Stats] 获取活跃用户清单失败:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // 获取趋势数据（从 task_daily_stats 聚合表读，无 user 维度，admin-only）
 app.get('/api/stats/trend', authenticate, requireAdmin, async (req, res) => {
   try {
