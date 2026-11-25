@@ -543,8 +543,23 @@ export function inspectCase(c, ctx = {}) {
   // 「关联需求」列写成 `FR-011 [R1]`（方括号是设计方法/规则的追踪标记），
   // 按空白切词后 `[R1]` 也被当成需求编号去比对，必然找不到 → 整条判不可用。
   // 这里改为先抽出形如 FR-/NFR-/API- 的编号再比对，追踪标记一概忽略。
+  //
+  // ★ 2026-11-25 二次修复：输入**没有任何需求编号体系**时不做孤儿判定。
+  //
+  //   实测任务（11-24 15:34）：424 条用例里 228 条被判「关联需求不存在」，
+  //   可用率 45.5%，任务直接 failed。查下来任务输入里 `FR-` 出现 **0 次**——
+  //   用户直接丢了一份 docx 正文，没有需求编号表格。模型只能自己编 FR-001…
+  //   于是每一条都成了孤儿。
+  //
+  //   这类「输入无编号体系」的场景在分步测试里很常见（不经过需求分析环节、
+  //   直接拿原始文档生成用例）。此时编号是模型自己造的，判孤儿毫无意义，
+  //   只会系统性误杀整份交付物。
+  //
+  //   判据放在 ctx.inputHasRequirementIds 上：只有当输入里确实出现过需求编号
+  //   （说明用户/上游有编号体系），孤儿判定才有意义。
   const req = String(c.requirement || '').trim();
-  if (ctx.requirementIds && ctx.requirementIds.size > 0 && req) {
+  // 输入没有需求编号体系时，孤儿判定无意义（编号是模型自造的）
+  if (ctx.inputHasRequirementIds !== false && ctx.requirementIds && ctx.requirementIds.size > 0 && req) {
     const ids = (req.match(/\b(?:FR|NFR|API)-\d{1,4}\b/gi) || []).map((x) => x.toUpperCase());
     const orphan = [...new Set(ids.filter((x) => !ctx.requirementIds.has(x)))];
     // 一格都没抽出编号（如只写了「见需求文档」）不算断链，由 missingField 之外的规则处理；
@@ -615,6 +630,14 @@ export function checkDeliverable(text, options = {}) {
     requirementIds.add(m[1].toUpperCase());
   }
 
+  // 输入是否自带「需求编号体系」（2026-11-25）
+  //
+  // 没有编号体系时不做孤儿判定：编号是模型自己造的，判它「不存在」毫无意义。
+  // 实测 424 条用例被判 228 条孤儿、可用率掉到 45.5% 就是这么来的。
+  // 判据：原文里至少出现 2 个不同的需求编号——只出现 1 个可能是偶然提及
+  // （如文中举例写了 FR-001），不足以说明用户维护着编号体系。
+  const inputHasRequirementIds = requirementIds.size >= 2;
+
   const { cases, headerFound, skippedIds } = parseCaseTable(text);
 
   if (!cases.length) {
@@ -636,7 +659,9 @@ export function checkDeliverable(text, options = {}) {
   }
 
   const seenKeys = new Map();
-  const ctx = { requirementIds, seenKeys, requireDimension, targetKind };
+  // inputHasRequirementIds：输入没有编号体系时，inspectCase 里跳过孤儿判定
+  // （编号是模型自造的，判「不存在」只会系统性误杀整份交付物）
+  const ctx = { requirementIds, seenKeys, requireDimension, targetKind, inputHasRequirementIds };
   const results = cases.map((c) => ({ ...inspectCase(c, ctx), caseRef: c }));
 
   const usable = results.filter((r) => r.usable).length;

@@ -1607,14 +1607,28 @@ async function authenticate(req, res, next) {
     return res.status(401).json({ error: '无效的令牌类型' });
   }
 
-  // 优先从内存 Map 读取（服务器正常运行时有）
-  let user = users.get(decoded.sub);
-  // 内存 Map 未命中时回退到数据库（服务器重启后 Map 丢失的恢复场景）
-  if (!user) {
-    user = await userDAO.getUserById(decoded.sub);
-    if (user) {
-      users.set(user.id, user);  // 回填到内存 Map，下次直接命中
+  // 签名合法但缺少 sub（第三方签发的同密钥令牌/旧格式令牌）：
+  // 直接用 undefined 查库会让 mysql2 抛错，而 Express 4 不接 async 中间件
+  // 的 rejection —— 请求会永久挂起，客户端只看到超时。必须在这里挡住。
+  if (!decoded.sub) {
+    return res.status(401).json({ error: '无效的认证令牌（缺少用户标识）' });
+  }
+
+  // 优先从内存 Map 读取（服务器正常运行时有），未命中再回退数据库
+  // （服务器重启后 Map 丢失的恢复场景）
+  let user;
+  try {
+    user = users.get(decoded.sub);
+    if (!user) {
+      user = await userDAO.getUserById(decoded.sub);
+      if (user) {
+        users.set(user.id, user);  // 回填到内存 Map，下次直接命中
+      }
     }
+  } catch (e) {
+    // 查库失败（DB 抖动等）不能把请求挂死，明确回 500 让客户端可重试
+    console.error(`[Auth] 读取用户失败 sub=${decoded.sub}: ${e.message}`);
+    return res.status(500).json({ error: '认证服务暂时不可用，请稍后重试' });
   }
   if (!user) {
     return res.status(401).json({ error: '用户不存在' });
@@ -3821,6 +3835,25 @@ app.get('/api/quality/trend', authenticate, async (req, res) => {
     res.json({ success: true, days, trend });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * GET /api/quality/review-note-stats?days=30&agentId=
+ * 审核意见分类统计（2026-11-25）
+ *
+ * 用途：看出「哪类问题反复出现」。生产近 30 天 591 条意见里 fact（幻觉/编造）
+ * 109 条高居第一 —— 这类最该被门禁拦住，是最值得优先改提示词的方向。
+ * 只读统计，不含任何交付物内容，普通登录用户即可查看。
+ */
+app.get('/api/quality/review-note-stats', authenticate, async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(180, Number(req.query.days) || 30));
+    const agentId = req.query.agentId ? String(req.query.agentId) : null;
+    const stats = await caseFeedbackDAO.getReviewNoteStats({ days, agentId });
+    res.json({ success: true, ...stats });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
@@ -11872,6 +11905,168 @@ const TASK_REFERENCE_AGENTS = new Set([
  *
  * @returns {Promise<string|null>} 增强后的输入；不适用时返回 null
  */
+/**
+ * 项目名归一化（2026-11-25）
+ *
+ * 实测同一个项目在不同来源里写法不同，直接比对永远失败：
+ *   报告里： 中国移动云盘“算力大作战”活动（活动ID：NationalTokenPK / ...）
+ *   输入里： 中国移动云盘”算力大作战”活动(活动ID: NationalTokenPK / ...)
+ * 差异有三类，全部要抹平：
+ *   1) 引号： "" '' “” ”” 混用（docx 解析后常见半角/全角混杂）
+ *   2) 括号：（）与 () 混用
+ *   3) 分隔符：：与 : 、/ 与 ／、空格
+ * 归一后只保留中英文数字，做包含比对。
+ */
+function normalizeProjectName(raw) {
+  return String(raw || '')
+    // 各种引号：半角双/单引号 + 全角弯引号 + 直角引号
+    .replace(/[\u0022\u0027\u2018\u2019\u201c\u201d\u300c\u300d]/g, '')
+    // 各种括号：半角/全角圆括号 + 方头括号 + 方括号
+    .replace(/[\u0028\u0029\uff08\uff09\u3010\u3011\u005b\u005d]/g, '')
+    // 分隔符：冒号 顿号 逗号 句号 斜杠 连字符 破折号 下划线 竖线（全角+半角）
+    .replace(/[\u003a\uff1a\u3001\uff0c\u002c\u3002\u002e\uff0f\u002f\u002d\u2014\u2013\u005f\u007c\uff5c]/g, '')
+    .replace(/\s+/g, '')
+    .toLowerCase();
+}
+
+/**
+ * 取项目名的「主干」：圆括号之前的部分
+ *
+ * 实测：需求分析报告会自己给项目名加注说明，而原始文档里没有：
+ *   报告： 托管系统（中移数字凭证 H5 凭证授权托管系统）
+ *   输入： 托管系统技术方案
+ * 归一化后报告是「托管系统中移数字凭证h5凭证授权托管系统」，输入是「托管系统技术方案」，
+ * 互相不包含 → 匹配失败。但两者显然是同一个项目，主名都是「托管系统」。
+ *
+ * 所以匹配时同时比较「主干」：括号前的主名。主干太短（<3 字）就不用，
+ * 避免「系统」「平台」这类泛词把不相干的项目撮合到一起。
+ */
+function projectNameCore(raw) {
+  const text = String(raw || '');
+  const cut = text.split(/[\uff08\u0028]/)[0];   // 全角/半角左圆括号
+  const core = normalizeProjectName(cut);
+  return core.length >= 3 ? core : '';
+}
+
+/**
+ * 用例生成时自动挂上「上一环节的需求分析报告」（2026-11-25）
+ *
+ * 背景（生产实测）：
+ *   最近 8 次用例生成任务的输入全是「原始文档」，**没有一次用到需求分析产出**。
+ *   代码里 EXECUTOR_ORDER_REQUIRED 把两个环节排在一起、也有 previousArtifacts 参数，
+ *   但那条链路只在「自动工作流」里走；日常的「分步测试」是各跑各的。
+ *
+ *   代价很直接：需求分析辛辛苦苦产出的 76 个 FR 编号、验收标准、风险清单，
+ *   下游完全接不住。用例的「关联需求」列只能自己编号（FR-001…），
+ *   而这个编号在上游不存在 → 门禁判孤儿 → 整份交付物被判废。
+ *
+ * 做法：
+ *   当 test-case-generator 收到的是**原始文档**（不是需求分析报告）时，
+ *   查该用户最近一份已完成的需求分析报告；**项目名对得上**才注入。
+ *
+ * 为什么必须做项目匹配：
+ *   该用户可能刚跑过别的项目的需求分析。盲目挂上去会让模型拿 A 项目的
+ *   需求编号去套 B 项目的功能，产出比不注入更糟。
+ *
+ * @returns {Promise<{text:string, taskId:string, project:string}|null>}
+ */
+async function enrichInputWithUpstreamRequirement(agentId, taskInput, userId, currentTaskId) {
+  if (agentId !== 'test-case-generator' || !userId) return null;
+  const input = String(taskInput || '');
+  if (!input.trim()) return null;
+
+  // 已经是需求分析报告 → 说明用户自己贴了，不要重复注入
+  if (/#\s*需求分析报告/.test(input.slice(0, 3000))
+    || (/功能需求清单/.test(input.slice(0, 3000)) && /FR-\d{3}/.test(input))) {
+    return null;
+  }
+  // 输入自己就带编号体系 → 用户已经整理过需求，不需要上游报告
+  const ownIds = new Set((input.match(/\b(?:FR|NFR|API)-\d{1,4}\b/gi) || []).map((x) => x.toUpperCase()));
+  if (ownIds.size >= 2) return null;
+
+  let recent = [];
+  try {
+    recent = await taskDAO.getTasks({
+      userId,
+      agentId: 'test-requirement-analyzer',
+      status: 'completed',
+      limit: 5,
+    });
+  } catch (e) {
+    console.warn(`[UpstreamReq] 查询需求分析任务失败: ${e.message}`);
+    return null;
+  }
+
+  const inputProjectRaw = (() => {
+    try { return extractReportProjectName(input) || ''; } catch { return ''; }
+  })();
+  const inputProject = normalizeProjectName(inputProjectRaw);
+  const inputCore = projectNameCore(inputProjectRaw);
+  const inputNorm = normalizeProjectName(input);
+  // 太短的项目名（如从「----------V1版本接口--------」这类标题里提的）
+  // 没有区分度，用它匹配容易挂错项目。
+  const inputProjectUsable = inputProject.length >= 4;
+
+  const candidate = (recent || []).find((t) => {
+    if (!t || t.id === currentTaskId) return false;
+    const result = String(t.result || '');
+    if (result.length < 500) return false;            // 太短，不是完整报告
+    if (!/功能需求清单|需求编号/.test(result)) return false;
+
+    const taskProjectRaw = (() => {
+      try { return extractReportProjectName(result) || ''; } catch { return ''; }
+    })();
+    const taskProject = normalizeProjectName(taskProjectRaw);
+    const taskCore = projectNameCore(taskProjectRaw);
+
+    // 1) 两边项目名都可用且互相包含 → 同一项目
+    if (inputProjectUsable && taskProject.length >= 4
+      && (inputProject.includes(taskProject) || taskProject.includes(inputProject))) {
+      return true;
+    }
+
+    // 2) 主名（括号前）匹配：报告常自己加注说明，输入里没有那段说明。
+    //    如报告「托管系统（中移数字凭证 H5 …）」vs 输入「托管系统技术方案」，
+    //    主名都是「托管系统」。要求主名 ≥3 字（projectNameCore 已保证）。
+    if (taskCore && inputCore && (inputCore.includes(taskCore) || taskCore.includes(inputCore))) {
+      return true;
+    }
+
+    // 3) 退路：输入正文里直接出现报告的项目名/主名。
+    //    docx 解析后项目名常写在正文里（如「项目名称 | xxx」），比标题可靠。
+    if (taskProject.length >= 4 && inputNorm.includes(taskProject)) return true;
+    if (taskCore && inputNorm.includes(taskCore)) return true;
+
+    return false;
+  });
+
+  if (!candidate) return null;
+
+  const report = String(candidate.result || '');
+  const budget = 60000;
+  const body = report.length > budget
+    ? `${report.slice(0, budget)}\n\n…（报告共 ${report.length} 字符，已截断）`
+    : report;
+
+  const text = [
+    '【上游产出物（系统自动注入）：该项目的需求分析报告】',
+    `本任务上游已完成「需求分析」（任务 ${candidate.id}），以下是其产出。`,
+    '**请以报告里的「功能需求清单」为准**：用例的「关联需求」列必须引用报告里',
+    '真实存在的需求编号（如 FR-001），不得自行编造；报告里的「验收标准」「风险识别」',
+    '是设计异常场景与边界条件的依据。',
+    '',
+    '---',
+    '## 需求分析报告',
+    body,
+    '---',
+    '',
+    `【用户本轮的原始输入】`,
+    input,
+  ].join('\n');
+
+  return { text, taskId: candidate.id, project: inputProject };
+}
+
 async function enrichInputWithRecentContext(agentId, taskInput, userId, currentTaskId) {
   if (!userId) return null;
   const input = String(taskInput || '').trim();
@@ -12537,7 +12732,36 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     console.log(`[EvidenceBinding] ${agentId} 已注入任务 ${evidenceBinding.taskId} 的真实执行证据`);
     taskInput = evidenceBinding.enrichedInput;
   } else {
-    const referenced = await enrichInputWithTaskReferences(agentId, taskInput, evidenceUserId, taskId);
+    // 上游串联（2026-11-25）：用例生成收到原始文档时，自动挂上该项目的需求分析报告。
+    // 放在「显式引用任务」之前——用户没指定时用自动匹配，指定了就让指定优先。
+    let upstreamInjected = false;
+    try {
+      const upstream = await enrichInputWithUpstreamRequirement(agentId, taskInput, evidenceUserId, taskId);
+      if (upstream) {
+        console.log(`[UpstreamReq] ${agentId} 已注入上游需求分析报告（任务 ${upstream.taskId}，项目「${upstream.project}」）`);
+        taskInput = upstream.text;
+        upstreamInjected = true;
+        try {
+          broadcast({
+            type: 'upstream_artifact_injected',
+            agentId,
+            taskId,
+            userId: evidenceUserId || null,
+            sourceAgentId: 'test-requirement-analyzer',
+            sourceTaskId: upstream.taskId,
+            project: upstream.project,
+            message: `已自动引用该项目的需求分析报告，用例将按其真实需求编号追溯`,
+            timestamp: new Date().toISOString(),
+          });
+        } catch (_) { /* 广播失败不影响主流程 */ }
+      }
+    } catch (e) {
+      console.warn(`[UpstreamReq] 注入失败（不影响主流程）: ${e.message}`);
+    }
+
+    const referenced = upstreamInjected
+      ? null
+      : await enrichInputWithTaskReferences(agentId, taskInput, evidenceUserId, taskId);
     if (referenced) {
       console.log(`[EvidenceBinding] ${agentId} 已注入引用任务结果`);
       taskInput = referenced;
@@ -12768,6 +12992,34 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     // 漏传会让 resolveApiKey(null) 直接返回平台 Key，外层再补 userId 也绕不过这一行。
     // （它同时决定 callOpenClawAPI 用的 baseUrl / model 与记录归属，2026-11-20）
     const resultFromAPI = await callOpenClawAPI(agentId, taskInput, unifiedStreamCallback, initialMessages, userId, false, injectedExperiences);
+
+    // ── Token 用量累计（2026-11-25）──
+    //
+    // 原来只取**最后一次** API 调用的 usage：`result.usage = resultFromAPI.usage`。
+    // 但一次任务里往往有多轮调用——工具循环（9dem_planner/9dem_executor）、
+    // 门禁定向修复、planner 补调……前面那些 token 全部丢弃。
+    //
+    // 实测证据：交付物 253802 字（≈8.5 万 output token），
+    // 但表里只记录 output_tokens = 1159，差了 70 倍，成本显示 0.015 元。
+    // 这个数字没法用来做投产评估——等于「成本」这一列都是假的。
+    //
+    // 现在累计所有调用的 usage（主调用 + 工具循环 + 修复批次 + 补调）。
+    const usageAcc = { prompt_tokens: 0, completion_tokens: 0, calls: 0 };
+    // 门禁定向修复批次 / planner 补调走的是 callDeepSeekRewrite（非流式），
+    // 它们产生的 token 单独累计，最后合并进 result.usage（2026-11-25）
+    const repairUsageAcc = { prompt_tokens: 0, completion_tokens: 0, calls: 0 };
+    const accumulateUsage = (u) => {
+      if (!u || typeof u !== 'object') return;
+      const p = Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0;
+      const c = Number(u.completion_tokens ?? u.output_tokens ?? 0) || 0;
+      if (p || c) {
+        usageAcc.prompt_tokens += p;
+        usageAcc.completion_tokens += c;
+        usageAcc.calls += 1;
+      }
+    };
+    accumulateUsage(resultFromAPI?.usage);
+
     if (resultFromAPI) {
       let text = typeof resultFromAPI === 'string' ? resultFromAPI : resultFromAPI.content;
       let toolCalls = typeof resultFromAPI === 'string' ? [] : (resultFromAPI.toolCalls || []);
@@ -12925,6 +13177,8 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             messages.push({ role: 'tool', tool_call_id: callId, content: String(toolResult) });
           }
           const next = await callOpenClawAPI(agentId, taskInput, unifiedStreamCallback, messages, userId, forceToolCall, injectedExperiences);
+          // 工具循环每一轮都是一次真实计费调用，必须累计（原来只留最后一次）
+          accumulateUsage(next?.usage);
           text = (next && next.content) || '';
           toolCalls = (next && next.toolCalls) || [];
         }
@@ -13282,6 +13536,12 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                   { role: 'system', content: '你是测试用例评审专家，只输出要求格式的 Markdown 表格，不输出任何解释文字。' },
                   { role: 'user', content: `${prompt}\n\n【原始需求（改写预期结果时以此为准）】\n${requestContext}` },
                 ], { timeoutMs: REPAIR_TIMEOUT_MS, maxTokens: 16000, userId });
+                // 修复批次是真实计费调用，必须计入任务成本（2026-11-25）
+                if (out && out.usage) {
+                  repairUsageAcc.prompt_tokens += Number(out.usage.prompt_tokens || 0) || 0;
+                  repairUsageAcc.completion_tokens += Number(out.usage.completion_tokens || 0) || 0;
+                  repairUsageAcc.calls += 1;
+                }
                 console.log(`[CaseGate] 批次${bi + 1}/${batches.length} 返回 ${(out.content || '').length} 字`);
                 reportBatchProgress(bi, true);
                 return out.content || '';
@@ -13464,19 +13724,24 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
 
           if (!ruleReport.pass) {
             const issueText = ruleReport.summary.issues.join('；');
-            if (RULE_GATE_ENFORCE) {
-              console.error(`[RuleGate] ${agentId} 规则检查未通过（${(ruleReport.usabilityRate * 100).toFixed(1)}%），拒绝交付`);
+            // 分级阻断（2026-11-25）：
+            //   有 blocker 级失败 → 拒绝交付（这类缺陷是硬伤，标注了也没法用）
+            //   只有 major/minor → 标注后交付（避免单条规则过严导致整批任务失败）
+            const blockerCount = ruleReport.bySeverity?.blocker || 0;
+            const shouldBlock = RULE_GATE_MODE === 'block' && blockerCount > 0;
+            if (shouldBlock) {
+              console.error(`[RuleGate] ${agentId} 规则检查未通过（${(ruleReport.usabilityRate * 100).toFixed(1)}%，blocker ${blockerCount} 项），拒绝交付`);
               return {
                 success: false,
-                error: `交付物未通过确定性检查（得分 ${(ruleReport.usabilityRate * 100).toFixed(1)}%，要求 ${(RULE_GATE_MIN_RATE * 100).toFixed(0)}%）：${issueText}`,
+                error: `交付物未通过确定性检查（得分 ${(ruleReport.usabilityRate * 100).toFixed(1)}%，要求 ${(RULE_GATE_MIN_RATE * 100).toFixed(0)}%，其中 ${blockerCount} 项硬伤）：${issueText}`,
                 ruleQuality: ruleReport,
                 skillExecutions,
               };
             }
-            // 灰度模式：只标注不阻断
-            const banner = `> ⚠️ **质量提示**：本交付物未通过确定性检查（得分 **${(ruleReport.usabilityRate * 100).toFixed(1)}%**，要求 ${(RULE_GATE_MIN_RATE * 100).toFixed(0)}%）。问题：${issueText}。\n\n`;
+            // 只有 major/minor（或 mode=annotate）：标注后交付
+            const banner = `> ⚠️ **质量提示**：本交付物未通过确定性检查（得分 **${(ruleReport.usabilityRate * 100).toFixed(1)}%**，要求 ${(RULE_GATE_MIN_RATE * 100).toFixed(0)}%${blockerCount ? `，含 ${blockerCount} 项硬伤` : ''}）。问题：${issueText}。\n\n`;
             text = banner + text;
-            console.warn(`[RuleGate] ${agentId} 未通过但处于灰度模式（RULE_GATE_ENFORCE=0），已标注后交付`);
+            console.warn(`[RuleGate] ${agentId} 未通过（blocker ${blockerCount} 项），mode=${RULE_GATE_MODE}，已标注后交付`);
           }
         }
       }
@@ -13538,8 +13803,27 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
       // spawnAgentSession 中不再自动调用审核智能体,避免重复
       // 返回 usage 用于成本计算
       const result = { success: true, text, skillExecutions };
-      if (resultFromAPI && resultFromAPI.usage) {
-        result.usage = resultFromAPI.usage;
+      // 用累计值（主调用 + 工具循环 + 门禁修复 + planner 补调），
+      // 而不是只取最后一次调用——否则交付物 25 万字只记 1159 output token。
+      if (usageAcc.calls > 0) {
+        result.usage = {
+          prompt_tokens: usageAcc.prompt_tokens,
+          completion_tokens: usageAcc.completion_tokens,
+          total_tokens: usageAcc.prompt_tokens + usageAcc.completion_tokens,
+          calls: usageAcc.calls,
+        };
+        console.log(`[Usage] ${agentId} 本任务共 ${usageAcc.calls} 次模型调用：`
+          + `输入 ${usageAcc.prompt_tokens} tok / 输出 ${usageAcc.completion_tokens} tok`);
+      }
+      // 修复批次与 planner 补调走的是 callDeepSeekRewrite / 直调，
+      // 它们的 usage 记在 usageAcc 之外的地方，这里补上（若已记录）
+      if (repairUsageAcc.calls > 0) {
+        result.usage = result.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0 };
+        result.usage.prompt_tokens += repairUsageAcc.prompt_tokens;
+        result.usage.completion_tokens += repairUsageAcc.completion_tokens;
+        result.usage.total_tokens = result.usage.prompt_tokens + result.usage.completion_tokens;
+        result.usage.calls += repairUsageAcc.calls;
+        result.usage.subCalls = repairUsageAcc.calls;
       }
       // 带上本次实际使用的模型：成本计算不能假设是 DeepSeek 单价（2026-11-20）
       try {
@@ -14946,9 +15230,21 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
 // 审核通过阈值(与全自动模式保持一致,使用已定义的 MAX_RETRIES)
 const REVIEW_PASS_THRESHOLD = 80;
 // 门禁已客观达标时，审核中位数的下限（低于它说明内容确实有问题，仍需重做）。
-// 80 是设计时拍定的、从未校准；近 7 天 20 个有效轮次的中位数均分 74.8，
-// 阈值 80 只能过 45%。门禁已经把「能不能用」客观判掉，这里只兜「内容是否胡说」。
-const REVIEW_SOFT_THRESHOLD = Number(process.env.REVIEW_SOFT_THRESHOLD) || 70;
+//
+// 2026-11-25 从 70 提到 75。原因：
+//   生产实测近 30 天用例交付物的审核中位数常年落在 73~79 区间，
+//   而达标线是 70 —— 意味着**审核意见一条都没能拦住交付**（全部 passed_with_notes）。
+//   同期审核意见里 fact 类（幻觉/编造）57 条高居第一，这恰恰是最该拦的一类。
+//   70 分相当于「只要门禁过了，内容层面怎么评都放行」，三审退化成打标签。
+//
+// 为什么不直接提到 80：
+//   门禁已经把「能不能用」客观判掉了（可用率/维度/必测点），
+//   主观分 80 在历史数据上只能过 45%，会把大量合格交付物退回重做。
+//   75 是个折中：落在历史分布的下缘，能拦住明显偏差的（如 72 分那几批），
+//   又不会误伤正常交付。
+//
+// 仍可用 REVIEW_SOFT_THRESHOLD 环境变量覆盖。
+const REVIEW_SOFT_THRESHOLD = Number(process.env.REVIEW_SOFT_THRESHOLD) || 75;
 // major 级问题占用例数的比例上限（密度制判定，2026-11-17）。
 // 不用「绝对条数」是因为 13 条 major 在 205 条用例里是 6.3%、在 324 条里是 4%——
 // 同样的绝对条数在不同规模下含义完全不同，旧口径导致大交付物永远过不了。
@@ -15008,10 +15304,30 @@ const RULE_GATE_AGENTS = new Set([
 ]);
 // 规则门禁通过阈值（按权重）
 const RULE_GATE_MIN_RATE = Number(process.env.RULE_GATE_MIN_RATE) || 0.8;
-// 规则门禁是否阻断：默认**只标注不阻断**（灰度）。
-// 新规则集未经真实语料校准，直接阻断会让大量任务失败；观察两周后再用
-// RULE_GATE_ENFORCE=1 开启阻断。
-const RULE_GATE_ENFORCE = process.env.RULE_GATE_ENFORCE === '1';
+// 规则门禁阻断策略（2026-11-25 从「灰度只标注」改为「按严重度分级阻断」）
+//
+// 原来是布尔开关 RULE_GATE_ENFORCE，默认 0 = 只标注不阻断。
+// 这是 2026-11-06 新规则集上线时的保守选择（未经语料校准，怕大批任务失败）。
+// 但生产跑了一个多月，需求分析环节的 4 个任务全部 100% 通过 —— 说明这套规则
+// 实际上从未拦过任何东西，三审成了唯一把关，而三审是 LLM 打分（可被讨好）。
+//
+// 现在改为三档策略，默认 block：
+//   block    ：有 blocker 级规则失败 → 拒绝交付（如需求编号占位、功能清单空描述）
+//   annotate ：只有 major/minor 失败 → 标注后交付（保留现有行为）
+//   off      ：完全不检查（仅排障用）
+// 这样既让真正致命的缺陷拦住，又不会因为某条 major 规则过严而整批任务失败。
+const RULE_GATE_MODE = (() => {
+  const raw = String(process.env.RULE_GATE_MODE || '').trim().toLowerCase();
+  if (['block', 'annotate', 'off'].includes(raw)) return raw;
+  // 兼容旧开关：RULE_GATE_ENFORCE=1 → block；=0 → annotate
+  const legacy = process.env.RULE_GATE_ENFORCE;
+  if (legacy === '1') return 'block';
+  if (legacy === '0') return 'annotate';
+  return 'block';
+})();
+// 是否阻断（blocker 级才阻断）。
+// 保留 RULE_GATE_ENFORCE 变量名供既有代码/测试引用。
+const RULE_GATE_ENFORCE = RULE_GATE_MODE === 'block';
 // 门禁结果暂存，供任务详情/审核环节读取
 const taskCaseQualityReports = new Map();
 // 反例库缓存（1 小时刷新一次）

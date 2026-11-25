@@ -58,7 +58,10 @@ t('存在 enrichInputWithRecentContext（无 UUID 时的续做通道）', () => 
 });
 
 t('UUID 通道未命中时会回落到续做通道', () => {
-  assert.ok(/const referenced = await enrichInputWithTaskReferences[\s\S]{0,400}else \{[\s\S]{0,200}enrichInputWithRecentContext/.test(SERVER),
+  // 2026-11-25 起这段外面包了三元（上游注入命中就跳过显式引用），
+  // 所以匹配的是「referenced 判空 → else 里调续做通道」这个语义，
+  // 不再要求 referenced 那一行必须是 const 声明。
+  assert.ok(/enrichInputWithTaskReferences[\s\S]{0,400}?\n(\s*)if \(referenced\)[\s\S]{0,300}?\1\} else \{[\s\S]{0,300}?enrichInputWithRecentContext/.test(SERVER),
     '未接上回落逻辑');
 });
 
