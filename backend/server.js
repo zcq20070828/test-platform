@@ -16398,8 +16398,61 @@ async function executeTaskWithReview(task, userId = null) {
               }
             }
           } else {
-            // 门禁未达标：确实需要重做主体内容，保持原有全量重生成
-            const improvementGuide = `\n\n---\n【本轮需要修正的问题（第${retryCount}次，共 ${feedbackIssues.length || failing.length} 条）】\n${feedbackLines}${gateGuide}\n\n【修改范围约束】\n1. 只改上面列出的问题，未列入的内容保持不变\n2. 不要重写整份交付物，不要调整章节结构\n3. 不要把「评分」当作目标去凑，按问题清单逐条修正即可`;
+            // 门禁未达标：需要重做主体内容，但**仍要带上上一版**
+            //
+            // 2026-11-25 修：原来这里只用「原始需求 + 问题清单」重新跑，
+            // 模型看不到自己上一版写了什么，等于从零开始重写一遍。
+            // 结果是两类浪费：
+            //   1. 上一版做对的部分（如已覆盖的维度、已写好的步骤）被重写，
+            //      有可能重写出新的问题，甚至越改越差；
+            //   2. 问题清单是针对上一版说的（「TC-122 断言矛盾」），
+            //      模型没有那一版就只能猜 TC-122 长什么样。
+            //
+            // 对比：门禁达标走局部改写时，prompt 里明确带了
+            // 【现有交付物】\n${task.result}，那才是真正的"在上一轮基础上改"。
+            //
+            // 但带上完整旧版有风险：模型可能照抄（问题没修）或推倒重来。
+            // 所以附加三条硬约束，并给出上一版的门禁结论作为参照。
+            const prevResult = String(task.result || '');
+            const prevGate = taskCaseQualityReports.get(task.id);
+            const prevStat = prevGate && prevGate.applicable
+              ? `上一版：${prevGate.usable}/${prevGate.total} 条可用（${(prevGate.usabilityRate * 100).toFixed(1)}%），`
+                + `问题分布：${Object.entries(prevGate.byReason || {}).map(([k, v]) => `${k}×${v}`).join('、') || '无'}`
+              : '上一版无可用的门禁统计';
+
+            // 体积保护：旧版超过这个长度就只给结构摘要 + 待修条目的原文，
+            // 避免「原始需求 + 旧版全文 + 问题清单」把上下文撑爆
+            const PREV_FULL_LIMIT = Number(process.env.RETRY_PREV_DELIVERABLE_LIMIT) || 60000;
+            let prevSection = '';
+            if (prevResult.trim()) {
+              if (prevResult.length <= PREV_FULL_LIMIT) {
+                prevSection = `\n\n---\n【上一版交付物（${prevStat}）】\n`
+                  + `以下是上一版的完整内容。请在**它的基础上修正问题清单**，不要从头重写。\n\n${prevResult}`;
+              } else {
+                // 太长：只给待修条目的原文，其余靠问题清单描述
+                const failedIds = new Set((taskCaseQualityReports.get(task.id)?.cases || []).map((c) => c.id));
+                const lines = prevResult.split(/\r?\n/);
+                const excerpts = lines.filter((line) => {
+                  if (!/^\s*\|/.test(line)) return false;
+                  for (const id of failedIds) {
+                    if (line.includes(id)) return true;
+                  }
+                  return false;
+                }).slice(0, 120).join('\n');
+                prevSection = `\n\n---\n【上一版交付物摘要（${prevStat}）】\n`
+                  + `上一版共 ${prevResult.length} 字符，超出单次上下文预算，这里只给「待修正条目」的原文（共 ${failedIds.size} 条）。\n`
+                  + `其余内容请按问题清单描述处理，无需逐字还原。\n\n${excerpts || '(未能提取到待修条目原文)'}`;
+              }
+            }
+
+            const improvementGuide = `\n\n---\n【本轮需要修正的问题（第${retryCount}次，共 ${feedbackIssues.length || failing.length} 条）】\n${feedbackLines}${gateGuide}`
+              + `${prevSection}`
+              + `\n\n【硬性约束（必须遵守）】\n`
+              + `1. 在上一版基础上修正，**不要推倒重写**：上一版已通过的结构、已写好的章节与用例保持原样；\n`
+              + `2. 只改问题清单指出的地方，未列入的内容一字不改；\n`
+              + `3. 问题清单点名了用例编号时，按编号定位到上一版对应行再改，不要重新编号；\n`
+              + `4. 不要把「评分」当作目标去凑，按问题清单逐条修正即可；\n`
+              + `5. 无论如何都必须输出完整的交付物（不是差异片段、不是修改说明）。`;
             task.input = task.originalInput + improvementGuide;
             task._retryCount = retryCount;
             await executeTaskAsync(task);
