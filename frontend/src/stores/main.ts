@@ -1048,11 +1048,20 @@ export const useMainStore = defineStore('main', () => {
     agentId: string,
     input: string,
     files?: { kbType?: string; filename?: string; name?: string; content?: string; base64?: string }[],
-    options?: { source?: 'step' | 'workflow'; type?: string; intentDriven?: boolean }
+    options?: {
+      source?: 'step' | 'workflow'
+      type?: string
+      intentDriven?: boolean
+      /** 自动新建会话（2026-11-25 · 对话改造第三步）。默认开启 */
+      newSession?: boolean
+    }
   ) {
     console.log('[Store] createTask called:', { agentId, intentDriven: !!options?.intentDriven, input: input.substring(0, 50), filesCount: files?.length || 0 })
     try {
-      const res = await taskApi.create(agentId, input, files, options)
+      // 默认每个新任务开一个会话：用户无感，但产物从此有地方沉淀，
+      // 「任务列表 → 按会话看」才有内容可看。传 newSession:false 可关闭。
+      const withSession = { ...options, newSession: options?.newSession !== false }
+      const res = await taskApi.create(agentId, input, files, withSession)
       console.log('[Store] createTask result:', res)
       if (res.success && res.task) {
         tasks.value.unshift(res.task)

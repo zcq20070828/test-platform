@@ -87,6 +87,15 @@ export interface Task {
   failure?: TaskFailure | null
   userId?: string
   agentId?: string
+  /**
+   * 会话归属（2026-11-25 · 对话改造第三步）
+   *
+   * null 表示未归属会话（改造前的老任务都是 null）。
+   * 会话只做分组，不改变任务的执行方式。
+   */
+  sessionId?: string | null
+  /** 会话内序号（1 起，用于确定产物先后） */
+  sessionSeq?: number | null
   createdAt?: string
   updatedAt?: string
   completedAt?: string

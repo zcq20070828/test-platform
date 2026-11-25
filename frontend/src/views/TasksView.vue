@@ -8,6 +8,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { escapeHtml as escapeHtmlUtil } from '@/utils/safe-html'
 import MsIcon from '@/components/MsIcon.vue'
 import QualityCard from '@/components/QualityCard.vue'
+import SessionView from '@/components/SessionView.vue'
 import { formatDateTime } from '@/utils/time'
 import { formatFailure, failureLabel } from '@/utils/failure-message'
 import { renderMarkdownSafe } from '@/utils/safe-html'
@@ -96,6 +97,8 @@ const agentOptions = computed(() => {
 })
 
 // 过滤后的任务
+const viewMode = ref<'task' | 'session'>('task')
+
 const filteredTasks = computed(() => {
   let list = [...store.tasks]
 
@@ -676,6 +679,16 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- 视图切换（2026-11-25 · 对话改造第三步）
+         按任务看：一条任务一行（原有行为）
+         按会话看：把同一会话的多个产物折叠在一起，看「这个项目做到了哪一步」 -->
+    <div class="view-switch">
+      <el-radio-group v-model="viewMode" size="small">
+        <el-radio-button value="task">按任务看</el-radio-button>
+        <el-radio-button value="session">按会话看</el-radio-button>
+      </el-radio-group>
+    </div>
+
     <!-- 工具栏 -->
     <div class="toolbar">
       <div class="filter-group">
@@ -719,8 +732,16 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- 会话视图：把同一会话的产物折叠在一起 -->
+    <SessionView
+      v-if="viewMode === 'session'"
+      :tasks="filteredTasks"
+      @open="viewDetail"
+    />
+
     <!-- 任务表格 -->
     <el-table
+      v-else
       :data="pagedTasks"
       stripe
       v-loading="store.isLoading"
@@ -1228,6 +1249,12 @@ onMounted(() => {
 }
 
 /* 工具栏 */
+.view-switch {
+  display: flex;
+  justify-content: flex-end;
+  margin: 4px 0 -4px;
+}
+
 .toolbar {
   display: flex;
   justify-content: space-between;
