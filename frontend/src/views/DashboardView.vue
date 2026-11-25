@@ -5,7 +5,6 @@ import { useMainStore } from '@/stores/main'
 import { ElMessage, ElMessageBox } from 'element-plus'
 // 【平台瘦身 2026-10-14】StatCard 随顶部统计卡片移除（组件文件保留，当前无其他引用方）
 import DashboardChatPanel from '@/components/DashboardChatPanel.vue'
-import SessionRail from '@/components/SessionRail.vue'
 import IntentConfirmDialog from '@/components/IntentConfirmDialog.vue'
 import type { AttachmentFile, ChatMessage } from '@/types'
 import { getAuthHeaders, request, taskApi } from '@/api'
@@ -186,22 +185,6 @@ const chatMode = ref<{ taskId: string; taskName: string } | null>(null)
 // 聊天面板引用：变更计划确认后需要回调 markPlanDone 解除 loading（2026-11-25）
 const chatPanelRef = ref<any>(null)
 
-// 当前会话（2026-11-25 · 对话改造第三步）
-// 有值时才显示产物侧栏；老任务为 null，行为与改造前一致
-const activeSessionId = ref<string | null>(null)
-const sessionRailRef = ref<any>(null)
-
-/** 从侧栏点开某个产物：切到那个任务的对话，并刷新侧栏高亮 */
-async function openSessionTask(taskId: string) {
-  try {
-    const t = await taskApi.getById(taskId)
-    if (t) await enterChatMode(t, true)
-    else ElMessage.warning('找不到该产物对应的任务')
-  } catch (e: any) {
-    ElMessage.error('打开产物失败：' + (e?.message || e))
-  }
-}
-
 // 进入多轮对话续写模式（点选历史任务卡片触发）
 // enterChatMode: 进入指定任务的对话续写模式（手动点历史任务卡片触发，@start-chat 调用）
 // autoEnter 保留为兼容参数：true 表示不清空已有消息（保留任务输出），默认 false
@@ -210,9 +193,6 @@ async function enterChatMode(task: any, autoEnter = false) {
   const agentId = task.agent || task.agentId
   const taskName = task.type || task.agent || task.agentId || task.taskName || '历史任务'
   chatMode.value = { taskId, taskName }
-  // 会话归属（2026-11-25 · 对话改造第三步）：有会话才显示产物侧栏。
-  // 老任务没有 sessionId，侧栏不出现，行为与改造前完全一致。
-  activeSessionId.value = task.sessionId || task.session_id || null
   // 同步智能体下拉锁定到该历史任务的 agent（对话模式不可切换智能体）
   selectedAgentId.value = agentId
   try { localStorage.setItem('selectedAgentId', agentId || '') } catch (_) {}
@@ -910,29 +890,19 @@ onUnmounted(() => {
         </el-alert>
       </div>
 
-      <div class="chat-with-rail">
-        <DashboardChatPanel
-          ref="chatPanelRef"
-          v-model="taskInput"
-          :current-agent="selectedAgent"
-          :messages="store.messages"
-          :is-loading="store.isLoading"
-          :chat-mode="chatMode"
-          @send="handleSendTask"
-          @clear="store.clearMessages()"
-          @start-chat="enterChatMode"
-          @exit-chat="exitChatMode"
-          @plan-confirm="handlePlanConfirm"
-        />
-        <!-- 会话产物侧栏（2026-11-25 · 对话改造第三步）
-             只做导航，不改变执行方式。老任务没有 sessionId 时不出现。 -->
-        <SessionRail
-          ref="sessionRailRef"
-          :session-id="activeSessionId"
-          :active-task-id="chatMode?.taskId || null"
-          @open="openSessionTask"
-        />
-      </div>
+      <DashboardChatPanel
+        ref="chatPanelRef"
+        v-model="taskInput"
+        :current-agent="selectedAgent"
+        :messages="store.messages"
+        :is-loading="store.isLoading"
+        :chat-mode="chatMode"
+        @send="handleSendTask"
+        @clear="store.clearMessages()"
+        @start-chat="enterChatMode"
+        @exit-chat="exitChatMode"
+        @plan-confirm="handlePlanConfirm"
+      />
 
       <!-- 意图不明确时让用户三选一，而不是替用户猜一个智能体跑十几分钟 -->
       <IntentConfirmDialog
@@ -948,20 +918,6 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 聊天区 + 会话产物侧栏（2026-11-25 · 对话改造第三步）
-   侧栏只在有会话时渲染，没有会话时这层 div 相当于透明容器，
-   原来的布局行为不变。 */
-.chat-with-rail {
-  display: flex;
-  align-items: stretch;
-  gap: 0;
-  min-height: 0;
-}
-.chat-with-rail > :first-child {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
 .dashboard {
   display: flex;
   flex-direction: column;

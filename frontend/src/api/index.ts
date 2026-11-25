@@ -271,6 +271,16 @@ export const taskApi = {
        * 之前前端每次都把下拉框的值当「指定智能体」传，导致输入框内容从不参与决策。
        */
       intentDriven?: boolean
+      /**
+       * 会话归属（2026-11-25 · 对话改造第三步）
+       *
+       * newSession=true  → 后端自动新建一个会话并把任务挂进去
+       * sessionId=xxx    → 挂到已有会话（在同一会话里继续做下一个环节）
+       *
+       * 不传则任务不归属任何会话，行为与改造前完全一致。
+       */
+      newSession?: boolean
+      sessionId?: string
     }
   ): Promise<{ task?: Task } & ApiResponse<any>> {
     const body: Record<string, any> = {
@@ -286,6 +296,9 @@ export const taskApi = {
     } else {
       body.agent = agentId
     }
+    // 会话归属（2026-11-25）：不传则不入会话，行为与改造前一致
+    if (options?.newSession) body.newSession = true
+    else if (options?.sessionId) body.sessionId = options.sessionId
     console.log('[taskApi.create] Request body:', JSON.stringify({ ...body, input: `${input.slice(0, 50)}…` }))
     const res = await request<Task>('/api/tasks', {
       method: 'POST',
