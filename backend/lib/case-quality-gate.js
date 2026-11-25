@@ -769,6 +769,57 @@ export function extractHardIdentifiers(text) {
 }
 
 /**
+ * 判断一个标识符是否是「测试数据」而非「编造的接口/字段」（2026-11-25）
+ *
+ * 为什么必须区分：
+ *   用例天生需要异常输入——非法参数、重复提交、不存在的用户 ID、
+ *   超长/特殊字符值。这些**必然不在需求文档里**，因为需求只描述合法值。
+ *   把它们判成"编造"等于惩罚正确的测试设计。
+ *
+ * 判据（只收确凿特征，宁漏不误杀）：
+ *   1. 含明确的测试/异常语义词：test / invalid / unreg / not_exist /
+ *      duplicate / dummy / fake / mock / sample / example
+ *   2. 全大写常量式的错误码/枚举：INVALID_PARAM / DUPLICATE_SUBMIT
+ *   3. 含明显占位数字：10086 / 0000 / 1234 / 9999
+ *   4. 形如 xxx_001 / xxx_0001（序号式测试标识）
+ *
+ * 反例（不能判为测试数据，它们是真标识符）：
+ *   token_status / access_token / claw_uid / bind_status —— 这些是字段名，
+ *   若原文没有就该判编造。所以不能笼统地"带下划线都放过"。
+ *
+ * @param {string} id
+ * @returns {boolean}
+ */
+function isTestDataIdentifier(id) {
+  const v = String(id || '');
+  if (!v) return false;
+
+  // 1. 明确的测试/异常语义词（大小写不敏感）
+  if (/(?:^|[_\-])(?:test|tests|testing|invalid|unreg|unregistered|nonexist|not_?exist|duplicate|dummy|fake|mock|sample|example|demo|temp|tmp)(?:$|[_\-0-9])/i.test(v)) {
+    return true;
+  }
+  // 2. 顺序词/边界词：first/second/last、empty、null、blank、missing
+  if (/(?:^|[_\-])(?:empty|null|blank|missing|absent|none|illegal|error|fail|failed)(?:$|[_\-0-9])/i.test(v)) {
+    return true;
+  }
+  // 3. 全大写常量式错误码（含至少两个下划线分隔段，或以 ERROR/INVALID/DUPLICATE 开头）
+  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+){1,}$/.test(v)) {
+    // 形如 ACCESS_TOKEN 这种也可能是真字段——但真字段通常是**小写**蛇形。
+    // 全大写下划线式在需求文档里少见，在用例里多是构造的常量值。
+    // 为降低误判，要求出现下列语义词之一：
+    if (/(?:INVALID|ERROR|DUP|NOT|UNREG|EMPTY|NULL|BLANK|FAIL|TEST|MOCK|FAKE|DUMMY|OVER|UNDER|LIMIT|EXCEED)/.test(v)) {
+      return true;
+    }
+  }
+  // 4. 明显占位数字
+  if (/(?:10086|1234|9999|0000|_0{2,}$)/.test(v)) return true;
+  // 5. 序号式测试标识：xxx_001 / xxx_0001（末段为纯数字且长度 ≥3）
+  if (/_0{0,3}\d{1,4}$/.test(v) && /(?:^|_)cid|test|dev|tmp/i.test(v)) return true;
+
+  return false;
+}
+
+/**
  * 检查交付物是否引用了原文中不存在的硬标识符。
  *
  * @param {string} delivered - 交付物文本
@@ -811,6 +862,18 @@ export function checkInventedIdentifiers(delivered, original, opts = {}) {
     if (srcLower.includes(low)) continue;
     if (srcLower.includes(low.replace(/_/g, '-'))) continue;
     if (srcLower.includes(low.replace(/_/g, ''))) continue;
+    // 测试数据不是编造（2026-11-25 修）
+    //
+    // 实测任务 b9bd13ec：可用率 99.6%（241/242 条可执行），
+    // 却被判「疑似编造 11 个（39%）」——那 11 个是：
+    //   NOT_EXIST_20260101, C_UNREG_001, AC_NOT_EXIST_001, INVALID_PARAM,
+    //   DUPLICATE_SUBMIT, cid_test_001, claw_10086, dev_001, invalid_token_123...
+    // 全是**用例里故意构造的异常输入/非法值**，本来就不该出现在需求文档里。
+    //
+    // 用例要用异常数据：重复提交、非法参数、不存在的 ID —— 这些必然不在
+    // 需求里（需求只写合法值）。把「异常测试数据」和「编造接口/字段」
+    // 混为一谈，等于罚对了行为。
+    if (isTestDataIdentifier(id)) continue;
     invented.push(id);
   }
 

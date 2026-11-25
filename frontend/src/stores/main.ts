@@ -1476,8 +1476,24 @@ export const useMainStore = defineStore('main', () => {
 
       case 'case_quality_gate':
         // 用例确定性门禁结果（2026-11-06 阶段二）：让分步测试页能实时看到可用率
-        message = `用例质量检查：${data.usable}/${data.total} 条可用（${(Number(data.usabilityRate || 0) * 100).toFixed(1)}%）${data.pass ? '达标' : '未达标'}`
-        status = data.pass ? 'success' : 'warning'
+        //
+        // 「未达标」必须说清是哪一项没过（2026-11-25）：
+        // 实测任务 b9bd13ec 界面上显示「241/242 条可用（99.6%）未达标」，
+        // 用户看到的是自相矛盾——可用率 99.6% 远高于 87% 阈值却说未达标。
+        // 真实原因是另一项（反编造检查）没过，但界面只显示了可用率。
+        // 这里把具体未过项拼进文案，避免同样的困惑。
+        {
+          const failedParts = []
+          if (data.usabilityPass === false) failedParts.push('可用率')
+          if (data.dimensionPass === false) failedParts.push('维度覆盖')
+          if (data.quantityPass === false) failedParts.push('数量自相矛盾')
+          if (data.inventionPass === false) failedParts.push('疑似编造标识符')
+          const reason = !data.pass && failedParts.length
+            ? `（未过项：${failedParts.join('、')}）`
+            : ''
+          message = `用例质量检查：${data.usable}/${data.total} 条可用（${(Number(data.usabilityRate || 0) * 100).toFixed(1)}%）${data.pass ? '达标' : `未达标${reason}`}`
+          status = data.pass ? 'success' : 'warning'
+        }
         writeMsg({
           id: eventMsgId('case-gate', data.round || 1),
           role: 'assistant',
