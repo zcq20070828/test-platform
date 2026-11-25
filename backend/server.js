@@ -10869,6 +10869,18 @@ const CIRCUIT_BREAKER = {
   agents: {}            // { agentId: { failures: 0, openedAt: null, lastError: '' } }
 };
 
+// 运行时不支持 tool_choice 的模型集合（2026-11-25）
+//
+// 为什么需要这张表：模型是否处于思考模式，不能靠模型名关键词判断。
+// 生产配的 `deepseek-flash` 名字里没有 reasoner/v4-pro/thinking，
+// 但服务端默认就是思考模式，带 tool_choice 直接 400。
+// 服务商随时改默认行为、随时上新模型名，关键词名单必然漏。
+//
+// 做法：请求被 400 拒绝「不支持 tool_choice」时记进这里，
+// 之后同一进程内不再给这个模型带 tool_choice，省掉一次失败往返。
+// 进程重启后表会清空，届时第一次请求的自适应重发会把它重新学会。
+const MODELS_WITHOUT_TOOL_CHOICE = new Set();
+
 // Gateway 健康状态缓存(避免频繁探测)
 const GATEWAY_HEALTH = {
   lastCheck: 0,
@@ -11005,6 +11017,110 @@ function recordAgentFailure(agentId, error) {
     state.openedAt = Date.now();
     console.warn(`[CircuitBreaker] Agent "${agentId}" OPENED after ${state.failures} failures. Cooling down for ${CIRCUIT_BREAKER.coolDownMs}ms`);
   }
+}
+
+/**
+ * 统一错误归因（2026-11-25）
+ *
+ * 为什么必须做：同一个根因（平台 API Key 失效）在生产被包装成四种不同故障——
+ * 「Gateway 401」「Agent 调用失败：deepseek 返回 401」「circuit breaker open」
+ * 「All agent call strategies failed」。运维看到「熔断器打开」会去查熔断配置，
+ * 看到「策略全失败」会去查重试逻辑，全都找不到病根。
+ *
+ * 实测近 30 天 34 次失败里 20 次是 Key 失效，其中只有一半的文案提到了 401；
+ * 另有 5 次是熔断器把同一个 401 二次转述成「circuit breaker open」，
+ * 于是一个根因扩散成 25 条看起来毫无关联的失败。
+ *
+ * 本函数做两件事：
+ *   1) 从任意深度的错误文本里识别根因类别；
+ *   2) 给出一句「是什么 + 谁来修 + 怎么修」，让一线不用再猜。
+ * 所有对用户可见的错误出口都应经过它，不要再各自拼文案。
+ */
+function classifyAgentError(rawMessage) {
+  const msg = String(rawMessage || '');
+
+  // API Key 失效：各服务商文案不同，但都是同一个病
+  if (/Authentication Fails|api key: \*+\w+ is invalid|invalid_api_key|Incorrect API key|无效的.*(?:API.?Key|密钥)/i.test(msg)
+      || /(?:^|\D)401(?:\D|$)/.test(msg)) {
+    return {
+      kind: 'invalid_key',
+      title: 'API Key 无效或已失效',
+      advice: '请在「API KEY 配置」里更新自己的 Key；如果用的是平台统一提供的 Key，请联系管理员更换。',
+    };
+  }
+
+  if (/余额不足|Insufficient Balance|insufficient_quota/i.test(msg)) {
+    return {
+      kind: 'balance',
+      title: '模型账户余额不足',
+      advice: '请为当前使用的 API Key 账户充值后再试。',
+    };
+  }
+
+  if (/Thinking mode does not support|does not support this tool_choice/i.test(msg)) {
+    return {
+      kind: 'tool_choice',
+      title: '模型思考模式与工具调用参数冲突',
+      advice: '这是系统内部参数问题，重试通常即可；若持续出现请反馈给管理员。',
+    };
+  }
+
+  if (/circuit breaker open/i.test(msg)) {
+    return {
+      kind: 'circuit_breaker',
+      title: '该智能体连续失败后已被暂停',
+      advice: '熔断是连续失败的**结果**不是原因。请先看同一时间段内更早的失败原因（多为 Key 无效或余额不足），解决后等待约 1 分钟冷却自动恢复。',
+    };
+  }
+
+  if (/429|too many requests|rate.?limit/i.test(msg)) {
+    return {
+      kind: 'rate_limit',
+      title: '请求过于频繁或被限流',
+      advice: '稍等片刻重试；持续出现说明并发超出账户额度。',
+    };
+  }
+
+  if (/maximum context length|上下文超限|context_length_exceeded/i.test(msg)) {
+    return {
+      kind: 'context_overflow',
+      title: '输入超出模型上下文窗口',
+      advice: '请把输入文档拆分成更小的批次提交，或改用上下文窗口更大的模型。',
+    };
+  }
+
+  if (/AbortError|timeout|timed out/i.test(msg)) {
+    return {
+      kind: 'timeout',
+      title: '模型调用超时',
+      advice: '大文档分析耗时较长，可稍后重试；若反复超时请拆分输入。',
+    };
+  }
+
+  return { kind: 'unknown', title: '智能体调用失败', advice: '' };
+}
+
+/**
+ * 把任意错误文本转成给用户看的一句话。
+ * 已归因过的文案再包一层时不会重复叠加（幂等）。
+ */
+function formatAgentError(rawMessage, opts = {}) {
+  const cls = classifyAgentError(rawMessage);
+  const raw = String(rawMessage || '').trim();
+  // 已经是格式化过的归因文案，不再重复包
+  if (raw.startsWith('【')) return raw;
+
+  const label = opts.agentId ? `智能体「${opts.agentId}」` : '任务';
+  // 根因摘要只留关键部分：把整段 JSON 响应体截掉，避免界面上全是花括号
+  let detail = raw;
+  const jsonAt = detail.indexOf('{"');
+  if (jsonAt > 0) detail = detail.slice(0, jsonAt) + '…';
+  if (detail.length > 220) detail = detail.slice(0, 220) + '…';
+
+  let out = `【${cls.title}】${label}执行失败`;
+  if (detail) out += `：${detail}`;
+  if (cls.advice) out += `\n处理建议：${cls.advice}`;
+  return out;
 }
 
 function recordAgentSuccess(agentId) {
@@ -12780,8 +12896,16 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     const state = CIRCUIT_BREAKER.agents[agentId];
     const remaining = Math.max(0, CIRCUIT_BREAKER.coolDownMs - (Date.now() - state.openedAt));
     console.warn(`[CircuitBreaker] Agent "${agentId}" is open, skipping (cool down ${Math.ceil(remaining / 1000)}s remaining). Last error: ${state.lastError}`);
-    // 熔断器打开,直接返回失败(QClaw 已剥离,无 CLI 回退)
-    return { success: false, error: `Agent "${agentId}" circuit breaker open: ${state.lastError}` };
+    // 熔断是「连续失败的后果」，不是独立病因。直接把根因（如 Key 无效）
+    // 说清楚，并给出冷却剩余时间；否则用户只看到「熔断」会以为系统坏了。
+    const cls = classifyAgentError(state.lastError);
+    return {
+      success: false,
+      error: formatAgentError(state.lastError, { agentId })
+        + `\n该智能体已暂停，约 ${Math.ceil(remaining / 1000)} 秒后自动恢复。`,
+      errorKind: cls.kind,
+      rootCause: state.lastError,
+    };
   }
 
   // ========== Deepseek 可用性健康检查（仅告警，不阻断任务） ==========
@@ -13432,6 +13556,86 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             && gateReport.usabilityRate < CASE_QUALITY_POLISH_TARGET
             && (gateReport.cases || []).length > 0;
 
+          // 事实性不通过（数量矛盾 / 编造标识符）走**全文重写**修复（2026-11-25）
+          //
+          // 为什么不能走外科式修复：那套只让模型回「待修用例的预期结果/执行步骤」，
+          // 再按用例编号替换回原文。而这两类问题不在用例行里——
+          // 「称 13 个返回码但实际列了 14 个」可能写在文档正文的说明段，
+          // 「引用了不存在的 /api/v1/order/refund」散布在多条用例的步骤中。
+          // 用外科式修复会出现两种空转：
+          //   1) gateReport.cases 为空（用例本身都可用，只是内容有编造），
+          //      修复循环拿不到任何待修项，直接 break，然后按「不通过」判死；
+          //   2) 强行拼进补丁格式，模型回的表对不上这些文件级问题。
+          // 所以这类问题单独走一次全文重写：输出整份修正后的文档。
+          const hasFabricationIssue = gateReport.applicable && !gateReport.pass
+            && gateReport.fabrication
+            && (gateReport.fabrication.quantityPass === false || gateReport.fabrication.inventionPass === false);
+
+          if (hasFabricationIssue && CASE_QUALITY_AUTO_REPAIR && repairRound < CASE_QUALITY_MAX_REPAIR_ROUNDS) {
+            repairRound += 1;
+            textBeforeRepair = text;
+            console.log(`[CaseGate] ${agentId} 事实性不通过（数量矛盾/编造标识符），发起第 ${repairRound} 轮全文重写修复`);
+            broadcast({
+              type: 'case_quality_repair',
+              agentId,
+              userId: userId || null,
+              taskId,
+              round: repairRound,
+              polish: false,
+              fabrication: true,
+              issues: 1,
+              message: `🔧 检出事实性问题（${gateReport.fabrication.quantityPass === false ? '数量自相矛盾' : ''}${gateReport.fabrication.quantityPass === false && gateReport.fabrication.inventionPass === false ? '、' : ''}${gateReport.fabrication.inventionPass === false ? '疑似编造' : ''}），正在全文重写…`,
+              timestamp: new Date().toISOString(),
+            });
+            try {
+              const fabPrompt = buildCaseRepairPrompt(gateReport, { maxListPerReason: 20 });
+              const out = await callDeepSeekRewrite([
+                {
+                  role: 'system',
+                  content: '你是测试用例评审专家。你必须输出**完整修正后的测试用例文档**（Markdown），'
+                    + '保持原有的章节结构与表格格式，只修正指出的问题。不要输出解释、不要只输出差异。',
+                },
+                {
+                  role: 'user',
+                  content: `${fabPrompt}\n\n【原始需求（判断事实真伪的唯一依据）】\n${truncateForReview(taskInput, 12000)}\n\n`
+                    + `【待修正的完整文档】\n${truncateForReview(text, 60000)}`,
+                },
+              ], { timeoutMs: 300000, maxTokens: 32000, userId });
+              if (out && out.usage) {
+                repairUsageAcc.prompt_tokens += Number(out.usage.prompt_tokens || 0) || 0;
+                repairUsageAcc.completion_tokens += Number(out.usage.completion_tokens || 0) || 0;
+                repairUsageAcc.calls += 1;
+              }
+              const rewritten = String(out?.content || '').trim();
+              // 只有重写结果仍能解析出用例表时才采纳，否则保留原文（宁可不修，不能改坏）
+              if (rewritten.length > 200) {
+                const recheck = checkCaseQuality(rewritten, {
+                  originalInput: taskInput,
+                  minUsabilityRate: CASE_QUALITY_MIN_RATE,
+                  requireDimension: true,
+                  minProbeCoverage: CASE_QUALITY_MIN_PROBE_COVERAGE,
+                  targetKind: gateTargetKind,
+                });
+                const fabAfter = recheck.fabrication || {};
+                const better = recheck.applicable
+                  && recheck.usabilityRate >= gateReport.usabilityRate - 0.02
+                  && (fabAfter.quantityPass !== false || gateReport.fabrication.quantityPass !== false)
+                  && (fabAfter.inventionPass !== false || gateReport.fabrication.inventionPass !== false);
+                if (better) {
+                  text = rewritten;
+                  console.log(`[CaseGate] 全文重写已采纳（可用率 ${(gateReport.usabilityRate * 100).toFixed(1)}% → ${(recheck.usabilityRate * 100).toFixed(1)}%）`);
+                } else {
+                  console.warn(`[CaseGate] 全文重写未改善（可用率 ${(recheck.usabilityRate * 100).toFixed(1)}%，事实性仍不过），保留原输出`);
+                }
+              } else {
+                console.warn('[CaseGate] 全文重写返回内容过短，保留原输出');
+              }
+            } catch (e) {
+              console.warn(`[CaseGate] 全文重写修复失败: ${e.message}`);
+            }
+            continue;   // 重写后重新走一遍门禁，用新文本判定
+          }
+
           let isPolishRound = false;
           if (gateReport.pass) {
             if (!canPolish) break;
@@ -13840,10 +14044,18 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     // 让 executeTaskAsync 正确标记 task 为 failed,避免任务永远卡在 running
     if (err.message && err.message.includes('maximum context length')) {
       console.warn(`[Agent] Context overflow for ${agentId} (${err.message.substring(0, 120)}), returning failure immediately`);
-      return { success: false, error: `上下文超限：${err.message.substring(0, 200)}` };
+      return { success: false, error: `上下文超限：${err.message.substring(0, 200)}`, errorKind: 'context_overflow' };
     }
-    // 已完全剥离 QClaw,agent 仅直连 Deepseek 一条调用路径,失败即透出
-    return { success: false, error: `Agent 调用失败：${err.message}`, balance: !!err.balance };
+    // 已完全剥离 QClaw,agent 仅直连 Deepseek 一条调用路径,失败即透出。
+    // 统一归因：让「Key 无效」无论从哪层冒出来都长同一句话（2026-11-25）
+    const cls = classifyAgentError(err.message);
+    return {
+      success: false,
+      error: formatAgentError(err.message, { agentId }),
+      errorKind: cls.kind,
+      rootCause: err.message,
+      balance: cls.kind === 'balance' || !!err.balance,
+    };
   }
 }
 
@@ -14965,30 +15177,68 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
       console.log(`[GatewayAPI]   System prompt length: ${(messagesOverride?.find(m => m.role === 'system')?.content?.length) || systemPrompt.length} chars`);
       console.log(`[GatewayAPI]   User message length: ${taskInput?.length || 0} chars`);
 
-      // 推理模型(deepseek-v4-pro 等)不支持 tool_choice,只对普通模型设置
-      const isReasoningModel = deepseekModel.includes('reasoner') || deepseekModel.includes('v4-pro') || deepseekModel.includes('thinking');
-      const toolChoiceConfig = tools.length && !isReasoningModel
-        ? { tools, tool_choice: effectiveForceToolCall ? 'required' : 'auto' }
-        : (tools.length ? { tools } : {});
+      // 推理/思考模式的模型不接受 tool_choice（DeepSeek 直接 400
+      // "Thinking mode does not support this tool_choice"）。
+      //
+      // 这里绝不能靠模型名关键词猜能力：早先是
+      //   isReasoningModel = name.includes('reasoner') || includes('v4-pro') || includes('thinking')
+      // 但生产实际配的是 `deepseek-flash` —— 三个关键词一个都不匹配，
+      // 于是被当作普通模型加上 tool_choice，服务端在思考模式下直接 400。
+      // 实测 2026-11-25 08:52 连续 3 个任务（api-executor /
+      // test-requirement-analyzer）整条失败。
+      //
+      // 更根本的问题是**关键词名单永远维护不住**：服务商随时改默认行为、
+      // 随时上新模型名，靠字符串匹配必然漏。所以改成纯运行时自适应：
+      //   1) 第一次按“能带 tool_choice”发（强制工具调用对执行类智能体是必要的，
+      //      不能因为怕报错就先自我阉割掉）；
+      //   2) 被 400 拒绝后，就地去掉 tool_choice 重发一次，用户无感；
+      //   3) 把模型记进 MODELS_WITHOUT_TOOL_CHOICE，之后同一进程内不再带。
+      // 这样任何模型（包括以后新上的）都能自己学会，不依赖谁去维护名单。
+      const modelBlocksToolChoice = MODELS_WITHOUT_TOOL_CHOICE.has(deepseekModel);
+      let allowToolChoice = !modelBlocksToolChoice;
+      // 参数名刻意不叫 allowToolChoice：与外层变量同名会被 TDZ 扫描器
+      // 误判成「先用后声明」（no-tdz.test.mjs 会红）。语义等价，改名无害。
+      const buildToolChoicePayload = (withToolChoice) => {
+        if (!tools.length) return {};
+        if (!withToolChoice) return { tools };
+        return { tools, tool_choice: effectiveForceToolCall ? 'required' : 'auto' };
+      };
 
-      const response = await fetch(`${deepseekBase}/chat/completions`, {
+      const requestPayload = () => JSON.stringify({
+        model: deepseekModel,
+        // 上下文预算护栏:下发前裁剪,避免触发模型 "maximum context length" 400
+        messages: enforceContextBudget(messagesOverride || [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: taskInput }
+        ], resolvedKey.contextChars),
+        ...buildToolChoicePayload(allowToolChoice),
+        // 用例生成对同一条需求应尽量稳定，降低不同轮次条目数量/粒度漂移
+        ...(agentId === 'test-case-generator' ? { temperature: 0 } : {}),
+        stream: true,  // 启用流式输出
+        stream_options: { include_usage: true }  // 流式响应末尾返回 usage(token 统计)
+      });
+
+      const sendRequest = () => fetch(`${deepseekBase}/chat/completions`, {
         method: 'POST',
         headers: deepseekHeaders,
-        body: JSON.stringify({
-          model: deepseekModel,
-          // 上下文预算护栏:下发前裁剪,避免触发模型 "maximum context length" 400
-          messages: enforceContextBudget(messagesOverride || [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: taskInput }
-          ], resolvedKey.contextChars),
-          ...toolChoiceConfig,
-          // 用例生成对同一条需求应尽量稳定，降低不同轮次条目数量/粒度漂移
-          ...(agentId === 'test-case-generator' ? { temperature: 0 } : {}),
-          stream: true,  // 启用流式输出
-          stream_options: { include_usage: true }  // 流式响应末尾返回 usage(token 统计)
-        }),
+        body: requestPayload(),
         signal: controller.signal
       });
+
+      let response = await sendRequest();
+
+      // 思考模式拒绝 tool_choice：去掉 tool_choice 就地重发一次。
+      // 这一步不消耗重试次数——它不是“服务抖动”，是本机对模型能力判断错了。
+      if (!response.ok && allowToolChoice && tools.length) {
+        const probe = await response.clone().text().catch(() => '');
+        const rejectsToolChoice = /Thinking mode does not support|does not support this tool_choice|tool_choice is not supported/i.test(probe);
+        if (rejectsToolChoice) {
+          MODELS_WITHOUT_TOOL_CHOICE.add(deepseekModel);
+          allowToolChoice = false;
+          console.warn(`[GatewayAPI] 模型 ${deepseekModel} 不支持 tool_choice（思考模式），去掉后重发并记入缓存`);
+          response = await sendRequest();
+        }
+      }
 
       clearTimeout(timeout);
 
