@@ -90,40 +90,40 @@ t('任务上记录 continuedFrom 并可带出状态', () => {
 });
 
 // ---------------- 空壳判定（替代长度门槛）----------------
-
-/** 取 isSkeletonInput 并实测 */
-function loadSkeleton() {
-  const start = SERVER.indexOf('const isSkeletonInput');
-  assert.ok(start > 0, '找不到 isSkeletonInput');
-  const end = SERVER.indexOf('};', start) + 2;
-  const fnSrc = SERVER.slice(start, end);
-  // REVISE_REF_RE 定义在 isSkeletonInput 之前，要从函数所在函数的开头找
-  const fnStart = SERVER.lastIndexOf('async function enrichInputWithRecentContext', start);
-  const refMatch = SERVER.slice(fnStart, start).match(/const REVISE_REF_RE = (\/.+\/);/);
-  assert.ok(refMatch, '找不到 REVISE_REF_RE');
-  return new Function(`${refMatch[0]}\n${fnSrc}\nreturn isSkeletonInput;`)();
-}
-
-t('真实的短输入任务不被判为空壳（这是实测误伤的修复）', () => {
-  const sk = loadSkeleton();
-  // 这两条都是库里真实存在的任务，都有完整交付物
-  assert.strictEqual(sk('经过3轮都还没达到审核通过标准，那就针对性修改吧'), false,
-    '24 字真实改稿指令被判空壳');
-  assert.strictEqual(sk('基于上一步的需求分析结果生成测试用例'), false,
-    '18 字真实任务被判空壳');
+t('短输入的真实任务不被判为空壳（语义判定）', async () => {
+  const { isPureContinuation } = await import('../lib/instruction-semantics.js');
+  assert.strictEqual(isPureContinuation('经过3轮都还没达到审核通过标准，那就针对性修改吧'), false,
+    '有具体对象（审核通过标准），不该判空壳');
+  assert.strictEqual(isPureContinuation('基于上一步的需求分析结果生成测试用例'), false,
+    '有具体对象（需求分析结果），不该判空壳');
 });
 
-t('空壳指令被正确排除', () => {
-  const sk = loadSkeleton();
-  for (const v of ['继续', '继续优化', '重新生成刚才那份', '你好']) {
-    assert.strictEqual(sk(v), true, `「${v}」应判为空壳`);
+t('纯指代/纯动作整句判为空壳', async () => {
+  const { isPureContinuation } = await import('../lib/instruction-semantics.js');
+  for (const v of ['继续', '继续优化', '接着做', '重新生成', '优化一下', '再来一次', '重做', '继续吧']) {
+    assert.strictEqual(isPureContinuation(v), true, `「${v}」应判为空壳`);
   }
 });
 
-t('长上传内容不被判空壳', () => {
-  const sk = loadSkeleton();
-  assert.strictEqual(sk('【用户上传的文档内容】\n\n=== 附件: 需求文档.docx ===\n\n大量正文...'), false);
+t('带具体对象的「继续 xxx」不算空壳', async () => {
+  const { isPureContinuation } = await import('../lib/instruction-semantics.js');
+  for (const v of [
+    '继续优化登录模块的用例',
+    '继续把登录模块的边界值用例补到 20 条',
+    '把 TC-001 的预期结果改成 HTTP 400',
+    '再补充 5 条边界用例',
+  ]) {
+    assert.strictEqual(isPureContinuation(v), false, `「${v}」有具体对象，不该判空壳`);
+  }
 });
+
+t('判定完全不依赖长度（用户明确要求）', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'backend', 'lib', 'instruction-semantics.js'), 'utf8');
+  const code = src.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  assert.ok(!/\.length\s*[<>]=?\s*\d+/.test(code),
+    '判定里仍有长度阈值——用户要求按内容语义判断，不看长度');
+});
+
 
 t('旧的「input ≥ 100 字」门槛已移除', () => {
   const start = SERVER.indexOf('async function enrichInputWithRecentContext');

@@ -66,6 +66,7 @@ import {
   normalizeConfirmedPlan,
 } from './lib/change-plan.js';
 import { analyzeTaskIntent } from './lib/task-intent.js';
+import { assessSelfContained, isPureContinuation, detectContinuationKind } from './lib/instruction-semantics.js';
 import { verifyRuntimeResources, assertModulePathExist } from './lib/boot-check.js';
 import { diagnoseFailure } from './lib/failure-diagnosis.js';
 import {
@@ -3180,12 +3181,22 @@ app.post('/api/tasks', authenticate, async (req, res) => {
   // 前端下拉框可能还停在上次选的类型，以「最近任务」为准。
   let continueHint = null;
   if (!targetAgent && !confirmedAgent && enrichedInput) {
-    const CONTINUE_RE = /^(?:请)?\s*(?:继续|接着|接着做|接着来|往下|继续做|继续吧|再来|再来一次|再来一遍)\s*$/;
-    const CONTINUE_LOOSE_RE = /^(?:请)?\s*(?:继续|接着)/;
     const t = String(enrichedInput).trim();
-    // 短指令（≤12 字）且以继续开头才算——避免把「继续优化登录模块的用例」这类
-    // 带具体内容的长指令也当成"沿用上一个任务"。
-    if (t.length <= 12 && (CONTINUE_RE.test(t) || CONTINUE_LOOSE_RE.test(t))) {
+    // 按内容语义判断，不看长度（2026-11-25）
+    //
+    // 用户明确要求：「不能根据输入的长度来判断，要根据输入的内容来判断，
+    // 对输入内容进行语义理解来判断」。
+    //
+    // 长度确实和语义无关：
+    //   「继续」（2 字）→ 纯指代，要靠上文
+    //   「继续优化登录模块的用例」（12 字）→ 有具体对象，是新的具体指令
+    //   「经过3轮还没达到审核通过标准，那就针对性修改吧」（24 字）→ 有对象，是真实任务
+    // 原来用 `t.length <= 12` 切分，把第三类当成"沿用上一个任务"是错的。
+    //
+    // 现在的判据：整句是否只是纯指代/纯动作（BARE_INSTRUCTION_RE），
+    // 只要出现具体对象（编号/数量/领域名词）就当作独立指令。
+    const selfContained = assessSelfContained(t);
+    if (!selfContained.selfContained) {
       try {
         // 上下文就在库里，查一次就知道最近任务是哪个智能体
         //
@@ -3205,11 +3216,13 @@ app.post('/api/tasks', authenticate, async (req, res) => {
         if (prev) {
           continueHint = { agentId: prev.agentId, taskId: prev.id, input: prev.input, status: prev.status };
           targetAgent = prev.agentId;
-          console.log(`[AutoDispatch] 「${t}」→ 沿用最近任务 ${prev.id.slice(0, 8)} 的智能体 ${prev.agentId}（状态 ${prev.status}）`);
+          console.log(`[AutoDispatch] 「${t}」是纯续做指令（${selfContained.reason}）→ 沿用最近任务 ${prev.id.slice(0, 8)} 的智能体 ${prev.agentId}（状态 ${prev.status}）`);
         }
       } catch (e) {
         console.warn(`[AutoDispatch] 查找最近任务失败（回退常规识别）: ${e.message}`);
       }
+    } else {
+      console.log(`[AutoDispatch] 「${t.slice(0, 40)}」自带具体对象（${selfContained.reason}），按独立指令识别`);
     }
   }
 
@@ -12761,34 +12774,23 @@ async function enrichInputWithRecentContext(agentId, taskInput, userId, currentT
   }
   // 挑选「上一份」任务
   //
-  // 判据（2026-11-25 修正）：
+  // 判据（2026-11-25 改为按内容语义）：
   //   - 必须有 result 且不是说明文档（长度 > 200）—— 没交付物就无从续做
-  //   - input **不能本身就是另一条续做指令** —— 那说明它也是个空壳任务，
+  //   - input **本身不能是纯续做指令** —— 那说明它也是个空壳任务，
   //     把它的 input 当需求注入等于什么都没注入，甚至会把「继续」这句话
   //     当成需求传下去（连环失误）
   //
-  // 原来用的是「input ≥ 100 字」，实测误伤明显：
-  //   分步测试里「基于上一步的需求分析结果生成测试用例」只有 18 字，
-  //   「经过3轮都还没达到审核通过标准，那就针对性修改吧」只有 24 字——
-  //   这些都是**真实且有交付物**的任务，却因为输入短被排除，
-  //   导致「继续」找不到上一份、退化成全新重跑。
-  //
-  // 改判「是不是续做指令」而不是「够不够长」：短输入本身不是问题，
-  // 短且是空壳指令才是问题。
-  const isSkeletonInput = (v) => {
-    const s = String(v || '').trim();
-    if (!s) return true;
-    // 极短（<8 字）几乎不可能是有效需求描述
-    if (s.length < 8) return true;
-    // 本身就是续做/重做指令 → 空壳
-    if (REVISE_REF_RE.test(s) && s.length <= 60) return true;
-    return false;
-  };
+  // 为什么不再用长度：
+  //   用户明确要求「不能根据输入的长度来判断，要根据输入的内容来判断」。
+  //   实测原来的门槛（input ≥ 100 字）把三个**都有完整交付物**的任务全排除了：
+  //     「经过3轮都还没达到审核通过标准，那就针对性修改吧」  → 被误判为空壳
+  //     「基于上一步的需求分析结果生成测试用例」              → 被误判为空壳
+  //   这两种都是真实任务，输入短不等于没有信息。
   const prev = (recent || []).find((t) =>
     t
     && t.id !== currentTaskId
     && t.result && String(t.result).length > 200
-    && !isSkeletonInput(t.input),
+    && !isPureContinuation(t.input),
   );
   if (!prev) return null;
 
@@ -12799,10 +12801,15 @@ async function enrichInputWithRecentContext(agentId, taskInput, userId, currentT
   //      给需求原文会诱使模型从零重写，把本来满意的部分改坏（实测就是这个问题：
   //      用户看到审核五维评分后说「继续优化」，结果从需求重跑了一遍）。
   //      这类要给：完整交付物（不是摘要）+ 审核意见（改哪里）+ 明确「保留其余部分」。
-  // 优化改稿 vs 重新生成：用改稿动词判断（与前端同一套模式）
-  // 「继续优化」「优化完」「完善一下」都属优化；「重新生成」「重做」属重新生成。
-  const isRefine = REVISE_VERB_RE.test(input)
-    && !/重新生成|重做|重跑|重新做|再来一次|再生成一?份/.test(input);
+  // 优化改稿 vs 重新生成（2026-11-25 改用统一的语义判定）
+  //
+  // 原来是在本地拼正则，与上方的指令语义判定各写一份，容易漂移。
+  // 现在统一走 detectContinuationKind：
+  //   refine     → 「继续优化/改进/完善」：在现有交付物上改
+  //   regenerate → 「重新生成/重做/再来一次」：按需求重新产出
+  //   null       → 都不像，退回 refine（保守：改比重做安全）
+  const contKind = detectContinuationKind(input);
+  const isRefine = contKind !== 'regenerate';
   const prevRequirement = String(prev.input || '').slice(0, 20000);
 
   if (isRefine) {
