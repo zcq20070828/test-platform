@@ -146,6 +146,34 @@ function columnValues(text, columnName) {
 const RULES = {
   'test-requirement-analyzer': [
     {
+      id: 'noToolLeak',
+      category: 'format',
+      severity: 'major',
+      weight: 15,
+      desc: '交付物正文泄露工具内部信息（工具名/返回字段/调试字段）',
+      // 2026-11-25 实测：任务 20a2b068（输入「你好」）正文第一段写着
+      //   「解析说明:requirement_parser 对输入文本(sourceLength = 45 字符)的解析结果为
+      //    modules / functionalPoints / acceptanceCriteria / priority / edgeCases 全部为空」
+      // 这是工具内部返回值，普通用户看不懂也不需要看。
+      //
+      // 判据只收**确凿的内部标识**：
+      //   - 工具名 requirement_parser / requirement-parser
+      //   - 调试字段 sourceLength= / tool= / success=true
+      //   - 返回字段的**组合**（单个 "priority" 是正常业务词，
+      //     同时出现 functionalPoints 与 acceptanceCriteria 才算泄漏）
+      // 宁漏不误杀：这些词在正常报告里不会成对出现。
+      check: (t) => {
+        const text = String(t || '');
+        if (/requirement[_-]parser/i.test(text)) return false;
+        if (/\b(?:sourceLength|tool)\s*=/.test(text)) return false;
+        if (/\bsuccess\s*=\s*(?:true|false)/i.test(text)) return false;
+        const fieldHits = ['functionalPoints', 'acceptanceCriteria', 'edgeCases', 'modules']
+          .filter((k) => new RegExp(`\\b${k}\\b`).test(text));
+        if (fieldHits.length >= 2) return false;
+        return true;
+      },
+    },
+    {
       id: 'hasFunctionalList',
       category: 'structure',
       severity: 'blocker',
