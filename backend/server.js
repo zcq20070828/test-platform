@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import { pool, query, getConnection, close, testConnection } from './database/db.js';
 import * as taskDAO from './database/task-dao.js';
+import * as sessionDAO from './database/session-dao.js';
 import * as userDAO from './database/user-dao.js';
 import * as workflowDAO from './database/workflow-dao.js';     // V2 进库
 import * as convDAO    from './database/conversation-dao.js'; // V2 进库
@@ -3262,6 +3263,35 @@ app.post('/api/tasks', authenticate, async (req, res) => {
     return res.status(500).json({ error: '任务创建失败(数据库写入错误)', detail: err.message });
   }
 
+  // 挂进会话（2026-11-25 · 对话改造第三步）
+  //
+  // 会话只是分组，不影响执行：任务仍是唯一执行单元。
+  // 失败不影响任务创建——一个会话归属写不进去不该让整个任务失败。
+  if (req.body.sessionId || req.body.newSession) {
+    try {
+      let sid = req.body.sessionId ? String(req.body.sessionId) : '';
+      if (sid) {
+        // 校验会话归属，避免挂到别人的会话里
+        const owner = await sessionDAO.getSessionOwner(sid);
+        if (owner && owner !== req.user.id && req.user.role !== 'admin') {
+          console.warn(`[Session] 拒绝挂载：会话 ${sid} 属于其他用户`);
+          sid = '';
+        }
+      }
+      if (!sid) {
+        const created = await sessionDAO.createSession({ userId: req.user.id });
+        sid = created.id;
+      }
+      const seq = await sessionDAO.attachTask(taskId, sid);
+      task.sessionId = sid;
+      task.sessionSeq = seq;
+      await sessionDAO.backfillTitle(sid, String(task.input || '').slice(0, 60));
+      console.log(`[Session] 任务 ${taskId} 已挂入会话 ${sid}（序号 ${seq}）`);
+    } catch (e) {
+      console.warn(`[Session] 挂载会话失败（不影响任务执行）: ${e.message}`);
+    }
+  }
+
   // V3:移除 setUserTaskLock,任务锁状态由 tasks 表 status 字段自动维护
 
   // 广播任务创建
@@ -3343,6 +3373,60 @@ function workflowToTaskRow(wf, wfId) {
     isWorkflow: true
   };
 }
+
+// ========== 会话 API（2026-11-25 · 对话改造第三步）==========
+//
+// 会话是任务的分组容器，不参与执行。
+// 目的：让「需求分析 → 用例生成 → 测试方案」这串产物在同一个上下文里沉淀，
+// 而不是让用户自己退出、新建任务、把上一份产出再传一遍。
+//
+// 注意：这里只做分组与查询，**不改变任务的执行方式**——
+// 任务仍是唯一执行单元（spawnAgentSession + 智能体 + skill）。
+
+/** 会话列表 */
+app.get('/api/sessions', authenticate, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 50));
+    const list = await sessionDAO.listSessions(req.user.id, limit);
+    res.json({ success: true, data: { sessions: list } });
+  } catch (e) {
+    console.error(`[Session] 列表查询失败: ${e.message}`);
+    res.status(500).json({ success: false, error: '查询会话列表失败' });
+  }
+});
+
+/** 新建会话（也可在创建任务时用 newSession=true 自动建） */
+app.post('/api/sessions', authenticate, async (req, res) => {
+  try {
+    const { title, projectKey } = req.body || {};
+    const s = await sessionDAO.createSession({
+      userId: req.user.id,
+      title: title || null,
+      projectKey: projectKey || null,
+    });
+    res.json({ success: true, data: { id: s.id } });
+  } catch (e) {
+    console.error(`[Session] 创建失败: ${e.message}`);
+    res.status(500).json({ success: false, error: '创建会话失败' });
+  }
+});
+
+/** 会话内的产物列表（按序号升序，就是「这一串产物」） */
+app.get('/api/sessions/:id/tasks', authenticate, async (req, res) => {
+  try {
+    const sid = String(req.params.id);
+    const owner = await sessionDAO.getSessionOwner(sid);
+    if (!owner) return res.status(404).json({ success: false, error: '会话不存在' });
+    if (owner !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, error: '无权查看该会话' });
+    }
+    const list = await sessionDAO.listSessionTasks(sid);
+    res.json({ success: true, data: { sessionId: sid, tasks: list } });
+  } catch (e) {
+    console.error(`[Session] 产物列表查询失败: ${e.message}`);
+    res.status(500).json({ success: false, error: '查询会话产物失败' });
+  }
+});
 
 // 获取任务列表(合并"分步测试"任务与"测试流水线"运行记录)
 app.get('/api/tasks', authenticate, async (req, res) => {
@@ -12318,6 +12402,38 @@ async function enrichInputWithUpstreamRequirement(agentId, taskInput, userId, cu
   // 输入自己就带编号体系 → 用户已经整理过需求，不需要上游报告
   const ownIds = new Set((input.match(/\b(?:FR|NFR|API)-\d{1,4}\b/gi) || []).map((x) => x.toUpperCase()));
   if (ownIds.size >= 2) return null;
+
+  // ── 优先用会话关系（2026-11-25 · 对话改造第三步）──
+  //
+  // 同一会话内的先后顺序是**确定的**，不需要像跨任务那样猜项目名。
+  // 用户在一个会话里先做需求分析、再做用例生成时，这里必然能命中。
+  // 命中不到再退回按项目名匹配的老路径，保持向后兼容。
+  if (currentTaskId) {
+    try {
+      const cur = await taskDAO.getTaskById(currentTaskId);
+      if (cur && cur.sessionId) {
+        const up = await sessionDAO.findUpstreamArtifact({
+          sessionId: cur.sessionId,
+          beforeSeq: cur.sessionSeq || Number.MAX_SAFE_INTEGER,
+          agentId: 'test-requirement-analyzer',
+        });
+        if (up && up.result && up.result.length > 500) {
+          const proj = (() => { try { return extractReportProjectName(up.result) || ''; } catch { return ''; } })();
+          console.log(`[UpstreamReq] 会话内命中上游需求分析（任务 ${up.taskId}，序号 ${up.seq}）`);
+          return {
+            taskId: up.taskId,
+            project: proj || '(同会话)',
+            source: 'session',
+            text: `${input}\n\n---\n【同会话上游产出：需求分析报告】（任务 ${up.taskId}）\n`
+              + `下面的需求编号是本项目真实存在的编号。生成用例的「关联需求」列**必须**使用这里的编号，不要自造。\n\n`
+              + up.result,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn(`[UpstreamReq] 会话内查找失败（退回项目名匹配）: ${e.message}`);
+    }
+  }
 
   let recent = [];
   try {

@@ -355,6 +355,10 @@ function formatTask(row) {
     reviewStats: row.review_stats || null,
     workflowId: row.workflow_id,
     workflowStep: row.workflow_step,
+    // 会话归属（2026-11-25 · 对话改造第三步）：
+    // NULL 表示未归属会话，行为与改造前完全一致
+    sessionId: row.session_id || null,
+    sessionSeq: row.session_seq == null ? null : Number(row.session_seq),
     source: row.source || 'step',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
