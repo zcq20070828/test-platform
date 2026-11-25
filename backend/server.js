@@ -5513,7 +5513,14 @@ async function executeChatRound(task, message, userFiles, options = {}) {
     // 若不恢复，任务详情页显示的可用率会随每次改稿漂移，看起来像初次生成质量在变。
     // chat 轮自己的检查结果由本函数单独广播（见下方 case_quality_gate）。
     const prevQualitySnapshot = taskCaseQualityReports.get(task.id);
-    const result = await spawnAgentSession(task.agent, chatInput, task.id, null, true, [], task.userId || null);
+    // mode: 'chat'（2026-11-25）：告诉 spawnAgentSession 这是对话轮的调用。
+    //
+    // 对话轮的上下文是确定的——就是当前这个 task.id，chatInput 里已经带了
+    // 它的完整交付物与历史对话。所以不能再走「上一份任务」注入
+    // （那条逻辑按「当前任务之外最近的一个任务」找，会在任务 A 的对话里
+    //  把任务 B 的需求原文注进来）。用户提醒过这一点：
+    //  「还有一个『继续对话』，这个时候可能不是最近执行的任务」。
+    const result = await spawnAgentSession(task.agent, chatInput, task.id, null, true, [], task.userId || null, false, { mode: 'chat' });
     if (prevQualitySnapshot) taskCaseQualityReports.set(task.id, prevQualitySnapshot);
 
     // ⚠️ 失败必须播报。spawnAgentSession 失败时返回 { success:false, error }，
@@ -13457,8 +13464,21 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     if (referenced) {
       console.log(`[EvidenceBinding] ${agentId} 已注入引用任务结果`);
       taskInput = referenced;
+    } else if (options.mode === 'chat') {
+      // 对话模式不注入「上一份任务」（2026-11-25）
+      //
+      // 对话模式的上下文**已经是确定的**：用户就在某个任务里说话，
+      // buildChatContinuationInput 已经带上了该任务的完整交付物。
+      //
+      // 再调 enrichInputWithRecentContext 是错的，而且会注入错东西：
+      // 它按「当前任务之外最近的一个任务」去找（`t.id !== currentTaskId`），
+      // 于是在任务 A 的对话里说「继续」，可能把任务 B 的需求原文注入进来，
+      // 让模型拿 B 的需求去改 A 的交付物。
+      //
+      // 这正是用户提醒的：「还有一个『继续对话』，这个时候可能不是最近执行的任务」。
+      console.log(`[RecentContext] 对话模式（任务 ${taskId}）跳过「上一份任务」注入——上下文已由对话链路确定`);
     } else {
-      // 没显式引用 UUID 时，再看是不是「刚才那份」这类指代（2026-11-17）
+      // 新建任务：没显式引用 UUID 时，再看是不是「刚才那份」这类指代
       const recentContext = await enrichInputWithRecentContext(agentId, taskInput, evidenceUserId, taskId);
       if (recentContext) {
         console.log(`[RecentContext] ${agentId} 已注入上一份任务需求原文`);
