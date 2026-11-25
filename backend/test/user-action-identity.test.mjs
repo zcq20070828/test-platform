@@ -114,14 +114,54 @@ t('★ 头优先、URL 次之（浏览器普通请求不该被迫用 URL 传 tok
 // ---------------- C) 显示层 ----------------
 console.log('\n-- C. 显示层如实标注 --');
 
+t('★★★ 所有返回用户名的查询都必须处理 anonymous（漏一处就会露出英文）', () => {
+  // 上一轮修复的教训：只改了 listActions 与 getActionStats，
+  // 漏了 getUserUsageSummary，「使用时长 TOP10」里就原样显示出英文 anonymous。
+  // 这里用「凡是有 display_name 的 SELECT，都必须出现 anonymous 分支」做结构性守卫，
+  // 以后新增任何返回用户名的查询，漏处理就会失败。
+  const displayNameBlocks = DAO.split('AS display_name');
+  assert.ok(displayNameBlocks.length >= 4, `只找到 ${displayNameBlocks.length - 1} 处 display_name，预期 ≥3`);
+
+  // 取每个 display_name 之前的那段 SQL（即该 CASE 表达式）
+  let checked = 0;
+  for (let i = 0; i < displayNameBlocks.length - 1; i += 1) {
+    const before = displayNameBlocks[i];
+    const caseIdx = before.lastIndexOf('CASE');
+    assert.ok(caseIdx > 0, `第 ${i + 1} 处 display_name 前找不到 CASE 表达式`);
+    const caseExpr = before.slice(caseIdx);
+    assert.ok(/'anonymous'\s*THEN\s*'[^']*未记录身份[^']*'/.test(caseExpr),
+      `第 ${i + 1} 处 display_name 没处理 anonymous（会把英文 anonymous 显示给用户）`);
+    checked += 1;
+  }
+  assert.ok(checked >= 3, `只校验了 ${checked} 处，预期 ≥3（明细/聚合/时长排行）`);
+});
+
 t('★★ 历史匿名记录不再叫「访客」，改为说明未记录身份', () => {
-  // 两处 SQL 都要改（明细 + 按用户聚合）
   const matches = DAO.match(/'anonymous' THEN '[^']+'/g) || [];
-  assert.ok(matches.length >= 2, `只改了 ${matches.length} 处（明细与聚合都要改）`);
+  assert.ok(matches.length >= 3, `只改了 ${matches.length} 处（明细/聚合/时长排行三处都要）`);
   for (const m of matches) {
     assert.ok(!/访客/.test(m), `仍在用「访客」字样：${m}`);
     assert.ok(/未记录身份/.test(m), `没有说明「未记录身份」：${m}`);
   }
+});
+
+t('★★ 前端不能把 user_id 当名字展示（会露出英文 anonymous）', () => {
+  const VIEW = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'views', 'UserActionsView.vue'), 'utf8');
+  // 去掉注释再判断：说明文字里会引用旧写法（`row.display_name || row.user_id`），
+  // 直接 grep 会命中注释造成误报。
+  const code = VIEW
+    .split('\n')
+    .filter((l) => {
+      const t = l.trim();
+      return !t.startsWith('*') && !t.startsWith('//') && !t.startsWith('/*');
+    })
+    .join('\n');
+
+  assert.ok(!/\|\|\s*row\.user_id/.test(code),
+    '模板仍在回退到 row.user_id —— 后端一漏改就会把内部标识印到界面上');
+  assert.ok(/function userLabel/.test(code), '没有统一的用户名渲染函数');
+  assert.ok(!/label:\s*u\.display_name\s*\|\|\s*u\.user_id/.test(code),
+    '下拉选项仍在回退到 user_id');
 });
 
 t('★ 明细与聚合的匿名文案必须一致（否则两处看到不同说法）', () => {

@@ -90,7 +90,7 @@
           <el-table :data="(statsData.userUsage || []).slice(0, 10)" stripe size="small">
             <el-table-column type="index" label="#" width="45" />
             <el-table-column label="用户" min-width="110" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.display_name || row.user_id || "(匿名)" }}</template>
+              <template #default="{ row }">{{ userLabel(row) }}</template>
             </el-table-column>
             <el-table-column prop="action_count" label="行为数" width="80" sortable />
             <el-table-column label="使用时长" width="120">
@@ -112,7 +112,7 @@
         <el-table-column prop="id" label="ID" width="70" />
         <el-table-column label="用户" width="120" show-overflow-tooltip>
           <template #default="{ row }">
-            {{ row.display_name || row.user_id || '(匿名)' }}
+            {{ userLabel(row) }}
           </template>
         </el-table-column>
         <el-table-column label="行为" width="130">
@@ -203,9 +203,29 @@ const actionLabelMap: Record<string, string> = Object.fromEntries(
 )
 const actionLabel = (a: string) => actionLabelMap[a] || a || '-'
 
+/**
+ * 把后端给的 display_name 渲染成给人看的名字
+ *
+ * 为什么不再回退到 user_id（2026-11-25）：
+ *   原来写的是 `row.display_name || row.user_id || '(匿名)'`。
+ *   后端某个查询若漏算 display_name，界面就会把原始 user_id 直接印出来——
+ *   实测「使用时长 TOP10」就是这样把英文 `anonymous` 显示给用户的
+ *   （getUserUsageSummary 漏了 anonymous 分支）。
+ *
+ *   现在 user_id 不再当名字展示：真正的修复是后端统一 display_name 口径，
+ *   这里只做兜底，防止以后再有漏改时界面变难看。
+ */
+function userLabel(row: any): string {
+  const name = String(row?.display_name || '').trim()
+  if (name) return name
+  return row?.user_id ? '未知用户' : '(匿名)'
+}
+
 // 用户下拉选项（来自统计 byUser）
 const userOptions = computed<{value:string,label:string}[]>(() =>
-  (statsData.value.byUser || []).map((u: any) => ({ value: u.user_id, label: u.display_name || u.user_id })).filter((u: any) => u.value)
+  (statsData.value.byUser || [])
+    .map((u: any) => ({ value: u.user_id, label: String(u.display_name || '').trim() || '未知用户' }))
+    .filter((u: any) => u.value)
 )
 
 const maxActionCount = computed(() => {
