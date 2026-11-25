@@ -73,9 +73,51 @@ const previewVisible = ref(false)
 const previewArtifact = ref<any>(null)
 const previewRenderedContent = ref('')
 
-function openPreview(artifact: any) {
+/**
+ * 输出物是否「有内容可取」（2026-11-25）
+ *
+ * 后端产出的 artifacts 只有 downloadUrl、没有 content。
+ * 只判 content 会让预览/用作输入/复制三个按钮全部不显示。
+ */
+function hasArtifactContent(artifact: any): boolean {
+  if (!artifact) return false
+  return !!(artifact.content || artifact.downloadUrl)
+}
+
+/**
+ * 能否预览（排除二进制格式）
+ *
+ * docx/xlsx/pdf 按文本读是乱码，这类只给下载。
+ */
+function canPreviewArtifact(artifact: any): boolean {
+  if (!hasArtifactContent(artifact)) return false
+  const binExts = ['.docx', '.xlsx', '.pdf', '.zip', '.doc', '.xls', '.ppt', '.pptx']
+  const fname = String(artifact?.name || '').toLowerCase()
+  return !binExts.some((ext) => fname.endsWith(ext))
+}
+
+/** 按需取输出物文本内容（有 content 直接用，否则走 downloadUrl） */
+async function fetchArtifactText(artifact: any): Promise<string> {
+  if (artifact?.content) return String(artifact.content)
+  if (!artifact?.downloadUrl) return ''
+  const token = localStorage.getItem('token')
+  const res = await fetch(artifact.downloadUrl, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) throw new Error(`加载失败（HTTP ${res.status}）`)
+  return await res.text()
+}
+
+async function openPreview(artifact: any) {
   previewArtifact.value = artifact
-  if (artifact.content) {
+  let content = ''
+  try {
+    content = await fetchArtifactText(artifact)
+  } catch (e: any) {
+    ElMessage.error(`预览失败：${e?.message || e}`)
+    return
+  }
+  if (content) {
     const previewMarked = new Marked({ breaks: true, gfm: true })
     previewMarked.use({
       renderer: {
@@ -93,20 +135,48 @@ function openPreview(artifact: any) {
         },
       },
     })
-    previewRenderedContent.value = renderMarkdownSafe(artifact.content, previewMarked)
+    previewRenderedContent.value = renderMarkdownSafe(content, previewMarked)
   } else {
     previewRenderedContent.value = '<p style="color:#999;text-align:center;">无预览内容</p>'
   }
   previewVisible.value = true
 }
 
-function useArtifactAsInput(artifact: any) {
-  if (!artifact.content) {
+/** 复制输出物内容（2026-11-25 新增：原来只在有 content 时才有复制按钮） */
+async function copyArtifact(artifact: any) {
+  const binExts = ['.docx', '.xlsx', '.pdf', '.zip', '.doc', '.xls', '.ppt', '.pptx']
+  const fname = String(artifact?.name || '').toLowerCase()
+  if (binExts.some((ext) => fname.endsWith(ext))) {
+    ElMessage.info('Word/Excel 文件不支持复制内容，请下载后打开查看')
+    return
+  }
+  try {
+    const content = await fetchArtifactText(artifact)
+    if (!content) {
+      ElMessage.warning('该输出物没有可复制的内容')
+      return
+    }
+    await navigator.clipboard.writeText(content)
+    ElMessage.success('已复制到剪贴板')
+  } catch (e: any) {
+    ElMessage.error(`复制失败：${e?.message || e}`)
+  }
+}
+
+async function useArtifactAsInput(artifact: any) {
+  let content = ''
+  try {
+    content = await fetchArtifactText(artifact)
+  } catch (e: any) {
+    ElMessage.error(`读取输出物失败：${e?.message || e}`)
+    return
+  }
+  if (!content) {
     ElMessage.warning('该输出物没有内容可用作输入')
     return
   }
   const prefix = localInput.value ? localInput.value.trim() + '\n\n--- 以下为输出物内容 ---\n\n' : ''
-  localInput.value = prefix + artifact.content
+  localInput.value = prefix + content
   emit('update:modelValue', localInput.value)
   ElMessage.success('已添加到输入框，可发送进行下一步操作')
 }
@@ -558,15 +628,21 @@ onMounted(() => {
                     </div>
                   </div>
                   <div class="artifact-actions">
+                    <!-- 按钮可用性判断不要只用 artifact.content（2026-11-25 修）
+                         后端产出的 artifacts 只有 downloadUrl、没有 content，
+                         用 v-if="artifact.content" 会让「预览/用作输入/复制」
+                         三个按钮全部消失，用户只看到「编辑」和「下载」。
+                         统一用 canPreviewArtifact / hasArtifactContent，
+                         它们都支持走 downloadUrl 取内容。 -->
                     <el-button
-                      v-if="artifact.content"
+                      v-if="canPreviewArtifact(artifact)"
                       text size="small"
                       @click="openPreview(artifact)"
                     >
                       <MsIcon name="visibility" /> 预览
                     </el-button>
                     <el-button
-                      v-if="artifact.content"
+                      v-if="hasArtifactContent(artifact)"
                       text size="small" type="success"
                       @click="useArtifactAsInput(artifact)"
                     >
@@ -585,9 +661,9 @@ onMounted(() => {
                       <MsIcon name="download" /> 下载
                     </el-button>
                     <el-button
-                      v-if="artifact.content"
+                      v-if="hasArtifactContent(artifact)"
                       text size="small"
-                      @click="copyToClipboard(artifact.content)"
+                      @click="copyArtifact(artifact)"
                     >
                       <MsIcon name="content_copy" /> 复制
                     </el-button>

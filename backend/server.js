@@ -3168,6 +3168,42 @@ app.post('/api/tasks', authenticate, async (req, res) => {
   // 返回 409 + 3 个候选让前端弹窗确认（用户点选后带 agent 重新提交即可）。
   // 只有识别明确时才像以前那样自动派单。
   let intentInfo = null;
+
+  // 2.0 「继续上一份」优先处理（2026-11-25）
+  //
+  // 实测问题：用户说「继续」，意图识别零命中（analyzeTaskIntent 返回 agentId=null），
+  // 于是沿用下拉框偏好（常常停在 test-requirement-analyzer），
+  // 结果又跑了一遍需求分析——而用户想的是继续刚才那个用例生成任务。
+  //
+  // 「继续/接着做/再来一次」这类指令的指向是**确定的**：指用户最近完成的任务。
+  // 不需要猜智能体，直接取最近那个任务的 agent 就是最合理的解释。
+  // 前端下拉框可能还停在上次选的类型，以「最近任务」为准。
+  let continueHint = null;
+  if (!targetAgent && !confirmedAgent && enrichedInput) {
+    const CONTINUE_RE = /^(?:请)?\s*(?:继续|接着|接着做|接着来|往下|继续做|继续吧|再来|再来一次|再来一遍)\s*$/;
+    const CONTINUE_LOOSE_RE = /^(?:请)?\s*(?:继续|接着)/;
+    const t = String(enrichedInput).trim();
+    // 短指令（≤12 字）且以继续开头才算——避免把「继续优化登录模块的用例」这类
+    // 带具体内容的长指令也当成"沿用上一个任务"。
+    if (t.length <= 12 && (CONTINUE_RE.test(t) || CONTINUE_LOOSE_RE.test(t))) {
+      try {
+        const recent = await taskDAO.getTasks({
+          userId,
+          status: 'completed',
+          limit: 5,
+        });
+        const prev = (recent || []).find((x) => x && x.id !== taskId && x.agentId);
+        if (prev) {
+          continueHint = { agentId: prev.agentId, taskId: prev.id, input: prev.input };
+          targetAgent = prev.agentId;
+          console.log(`[AutoDispatch] 「${t}」→ 沿用最近任务 ${prev.id.slice(0, 8)} 的智能体 ${prev.agentId}`);
+        }
+      } catch (e) {
+        console.warn(`[AutoDispatch] 查找最近任务失败（回退常规识别）: ${e.message}`);
+      }
+    }
+  }
+
   if (!targetAgent && enrichedInput) {
     intentInfo = analyzeTaskIntent(enrichedInput, { taskType: type });
     const prefer = preferAgent ? resolveAgentId(preferAgent) : null;
@@ -3239,7 +3275,11 @@ app.post('/api/tasks', authenticate, async (req, res) => {
     error: null,
     requireReview: true,  // 所有任务都需要AI审核
     userId,  // 记录任务所属用户
-    username: req.user.name || req.user.username || null  // 记录任务所属用户显示名(与DB JOIN的username口径一致:u.name)
+    username: req.user.name || req.user.username || null,  // 记录任务所属用户显示名(与DB JOIN的username口径一致:u.name)
+    // 「继续」类指令命中的上一个任务（2026-11-25）
+    // 用于：① 让用户知道这次是接着哪个任务做的；② spawnAgentSession 里
+    // 按这个任务取上一版交付物（见 enrichInputWithRecentContext 的 previousTaskId 参数）
+    continuedFrom: continueHint ? continueHint.taskId : null,
   };
 
   tasks.set(taskId, task);
@@ -12697,7 +12737,15 @@ async function enrichInputWithRecentContext(agentId, taskInput, userId, currentT
 
   let recent = [];
   try {
-    recent = await taskDAO.getTasks({ userId, agentId, status: 'completed', limit: 5 });
+    // 不限定 agentId（2026-11-25 修）
+    //
+    // 原来查的是 `agentId`（当前任务的智能体）。后果：用户说「继续优化」时，
+    // 如果当前被判成 test-requirement-analyzer，它只会去需求分析的历史里找
+    // 上一份——而用户想继续的其实是刚才那个用例生成任务，于是找不到、
+    // 返回 null、退化成「全新需求」重跑一遍。这跟「继续」的语义完全相反。
+    //
+    // 改为全量取最近任务（跨智能体），让「上一份」按真实时间顺序确定。
+    recent = await taskDAO.getTasks({ userId, status: 'completed', limit: 8 });
   } catch (e) {
     console.warn(`[RecentContext] 查询最近任务失败: ${e.message}`);
     return null;
