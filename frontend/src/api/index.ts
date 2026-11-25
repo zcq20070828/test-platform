@@ -390,6 +390,38 @@ export const taskApi = {
   },
 }
 
+/**
+ * 会话 API（2026-11-25 · 对话改造第三步）
+ *
+ * 会话是任务的分组容器，不参与执行——任务仍是唯一执行单元。
+ * 目的：让「需求分析 → 用例生成 → 测试方案」在同一上下文里串起来。
+ */
+export const sessionApi = {
+  /** 会话列表（按最近更新排序，带任务数/完成数） */
+  async list(limit = 50): Promise<{ success: boolean; sessions?: any[]; error?: string }> {
+    const res = await request<{ sessions: any[] }>(`/api/sessions?limit=${limit}`)
+    if (res.success && res.data) return { success: true, sessions: (res.data as any).sessions || [] }
+    return { success: false, error: res.error || '查询会话失败' }
+  },
+
+  /** 新建会话 */
+  async create(payload: { title?: string; projectKey?: string } = {}): Promise<{ success: boolean; id?: string; error?: string }> {
+    const res = await request<{ id: string }>('/api/sessions', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+    if (res.success && res.data) return { success: true, id: (res.data as any).id }
+    return { success: false, error: res.error || '创建会话失败' }
+  },
+
+  /** 会话内的产物列表（按序号升序） */
+  async tasks(sessionId: string): Promise<{ success: boolean; tasks?: any[]; error?: string }> {
+    const res = await request<{ tasks: any[] }>(`/api/sessions/${sessionId}/tasks`)
+    if (res.success && res.data) return { success: true, tasks: (res.data as any).tasks || [] }
+    return { success: false, error: res.error || '查询会话产物失败' }
+  },
+}
+
 // 测试框架 API
 export const testFrameworkApi = {
   // 执行测试
