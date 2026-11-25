@@ -87,21 +87,13 @@ t('续做识别要求含指代词', () => {
 
 t('挑选上一份任务时排除「本身就是空壳指令」的任务', () => {
   const fn = SERVER.slice(SERVER.indexOf('async function enrichInputWithRecentContext'), SERVER.indexOf('async function enrichInputWithTaskReferences'));
-  // 2026-11-25 修正：原判据是「input ≥ 100 字」，实测误伤——
-  // 分步测试里「基于上一步的需求分析结果生成测试用例」只有 18 字，
-  // 「经过3轮都还没达到审核通过标准，那就针对性修改吧」只有 24 字，
-  // 这些都是真实且有交付物的任务，却因输入短被排除，
-  // 导致「继续」找不到上一份、退化成全新重跑。
-  //
-  // 新判据是「是不是空壳指令」：极短（<8 字）或本身就是续做指令才算空壳。
-  // 短输入本身不是问题，短且是空壳才是问题。
-  assert.ok(/isSkeletonInput/.test(fn), '缺少空壳判定');
-  assert.ok(/s\.length < 8/.test(fn), '未排除极短输入');
-  assert.ok(/REVISE_REF_RE\.test\(s\) && s\.length <= 60/.test(fn),
-    '未排除「本身就是续做指令」的任务——那种任务的 input 会把「继续」传下去造成连环失误');
-  // 旧的长门槛必须已经去掉，否则短输入的真实任务仍会被误伤
-  assert.ok(!/String\(t\.input\)\.length >= 100/.test(fn),
-    '旧的「input ≥ 100」判据仍在，会误伤分步测试的短输入任务');
+  // 2026-11-25 改为按内容语义判断（用户要求：不能根据长度判断，要对内容做语义理解）。
+  // 判定逻辑抽到 lib/instruction-semantics.js，这里只验接线是否正确。
+  assert.ok(/isPureContinuation/.test(fn), '未使用统一的语义判定');
+  assert.ok(/instruction-semantics\.js/.test(SERVER), '未引入语义模块');
+  // 旧的长度门槛必须彻底去掉
+  assert.ok(!/String\(t\.input\)\.length >= 100/.test(fn), '旧的「input ≥ 100」判据仍在');
+  assert.ok(!/s\.length < 8/.test(fn), '仍在用长度阈值判断空壳');
 });
 
 t('注入内容包含上一份任务的需求原文与任务号', () => {

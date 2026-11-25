@@ -41,20 +41,26 @@ console.log('=== 「继续」指向 与 输出物按钮 单元测试 ===');
 // ---------------- 「继续」的指向 ----------------
 
 t('「继续」类指令会沿用最近任务的智能体', () => {
-  assert.ok(/CONTINUE_RE/.test(SERVER), '缺少「继续」识别');
   const idx = SERVER.indexOf('let continueHint = null');
   assert.ok(idx > 0, '找不到 continueHint 逻辑');
-  const block = SERVER.slice(idx, idx + 1800);
+  const block = SERVER.slice(idx, idx + 2200);
+  assert.ok(/assessSelfContained/.test(block), '未做内容语义判定');
   assert.ok(/taskDAO\.getTasks/.test(block), '未查最近任务');
   assert.ok(/targetAgent = prev\.agentId/.test(block), '未把最近任务的智能体作为目标');
 });
 
-t('「继续」识别限定为短指令（不吞掉带具体内容的长指令）', () => {
+t('「继续」按内容语义判断，不看长度（用户明确要求）', () => {
   const idx = SERVER.indexOf('let continueHint = null');
-  const block = SERVER.slice(idx, idx + 1800);
-  assert.ok(/t\.length <= 12/.test(block),
-    '未限制长度：「继续优化登录模块的用例」这类带内容的长指令会被误当成沿用上一个任务');
-  assert.ok(/以继续开头|CONTINUE_LOOSE_RE/.test(block), '缺少宽松匹配的说明');
+  const block = SERVER.slice(idx, idx + 2200);
+  // 用户要求：「不能根据输入的长度来判断，要根据输入的内容来判断」
+  // 注释里会写「原来用 t.length <= 12」，允许；只检查生效代码
+  const codeBlock = block.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  assert.ok(!/t\.length <= \d+/.test(codeBlock), '仍在用长度阈值切分');
+  assert.ok(/assessSelfContained\(t\)/.test(block), '未按内容语义判断');
+  // 判定模块本身也不许有长度阈值
+  const SEM = fs.readFileSync(path.join(ROOT, 'backend', 'lib', 'instruction-semantics.js'), 'utf8');
+  const code = SEM.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  assert.ok(!/\.length\s*[<>]=?\s*\d+/.test(code), '语义模块里仍有长度阈值');
 });
 
 t('「继续」优先于意图识别（否则零命中会走下拉框兜底）', () => {
