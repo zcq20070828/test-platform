@@ -153,7 +153,7 @@ export async function getUserUsageSummary(filters = {}) {
         -- 没处理 'anonymous' 这个特殊值，于是「使用时长 TOP10」里
         -- 原样显示出英文 anonymous —— 上一次修漏了这个函数。
         WHEN ual.user_id = 'anonymous' THEN '匿名（未记录身份）'
-        WHEN NULLIF(ual.username, '') IS NOT NULL THEN ual.username
+        WHEN NULLIF(MAX(ual.username), '') IS NOT NULL THEN MAX(ual.username)
         WHEN u.name IS NOT NULL AND NULLIF(u.name, '') IS NOT NULL THEN u.name
         ELSE ual.user_id
       END AS display_name,
@@ -164,7 +164,10 @@ export async function getUserUsageSummary(filters = {}) {
     FROM user_action_logs ual
     LEFT JOIN users u ON ual.user_id = u.id${JOIN_SUFFIX}
     WHERE ${whereStr} AND ual.user_id IS NOT NULL
-    GROUP BY ual.user_id, u.name, ual.username
+    -- 只按 user_id 聚合：否则同一用户的历史记录里 username 有 NULL / 非空两种，
+    -- 会被拆成多行、在 TOP10 里重复出现（实测 anonymous 被拆成 3246 与 1483 两行）。
+    -- 取代表值用 MAX()，满足 ONLY_FULL_GROUP_BY 且结果稳定。
+    GROUP BY ual.user_id, u.name
     ORDER BY action_count DESC`;
   return await query(sql, params);
 }

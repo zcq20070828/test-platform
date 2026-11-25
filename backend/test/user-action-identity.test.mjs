@@ -145,6 +145,23 @@ t('★★ 历史匿名记录不再叫「访客」，改为说明未记录身份'
   }
 });
 
+t('★★★ 按用户聚合时不能把 username/name 放进 GROUP BY（同一人会被拆成多行）', () => {
+  // 实测事故：为了兼容 ONLY_FULL_GROUP_BY 把 `u.name, ual.username` 加进 GROUP BY，
+  // 结果同一 anonymous 因为历史记录里 username 有 NULL 与 '访客' 两种，
+  // 被拆成两行（3246 + 1483），在 TOP10 里重复出现。
+  // 正确做法：只按 user_id 聚合，代表值用 MAX() 取。
+  const fn = DAO.slice(DAO.indexOf('export async function getUserUsageSummary'));
+  const body = fn.slice(0, 2200);
+  const groupBy = body.match(/GROUP BY\s+([^\n`]+)/);
+  assert.ok(groupBy, 'getUserUsageSummary 找不到 GROUP BY');
+  const cols = groupBy[1].trim();
+  assert.ok(/^ual\.user_id(,\s*u\.name)?$/.test(cols),
+    `GROUP BY 为「${cols}」，不应包含 ual.username（会把同一人拆行）`);
+  // 取代表值必须用聚合函数，否则 ONLY_FULL_GROUP_BY 下不稳
+  assert.ok(/NULLIF\(MAX\(ual\.username\)/.test(body),
+    'username 没用 MAX() 聚合（ONLY_FULL_GROUP_BY 下会报错或结果不稳）');
+});
+
 t('★★ 前端不能把 user_id 当名字展示（会露出英文 anonymous）', () => {
   const VIEW = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'views', 'UserActionsView.vue'), 'utf8');
   // 去掉注释再判断：说明文字里会引用旧写法（`row.display_name || row.user_id`），
