@@ -240,7 +240,11 @@ async function getTasks(filters = {}) {
     params.push(filters.workflowId);
   }
   if (filters.limit) {
-    sql += ' ORDER BY created_at DESC LIMIT ?';
+    // 排序稳定性（2026-11-25）：
+    // 只按 created_at 排序时，同一秒创建的两个任务顺序不确定——
+    // 「最近一个任务是哪个」就没有确定答案，而「继续」正是靠这个判断的。
+    // 加 id 作为次级排序键，保证同一秒内也有稳定顺序。
+    sql += ' ORDER BY created_at DESC, id DESC LIMIT ?';
     params.push(filters.limit);
   }
 
