@@ -45,7 +45,7 @@ function loadNamer() {
     }
     throw new Error(`${name} 解析失败`);
   };
-  const code = [grab('extractReportProjectName'), grab('extractProjectInfo'), grab('buildDeliverableBaseName')].join('\n');
+  const code = [grab('stripProjectNameExplanation'), grab('extractReportProjectName'), grab('extractProjectInfo'), grab('buildDeliverableBaseName')].join('\n');
   // UNKNOWN_PROJECT_NAME 是模块级常量（2026-11-25 引入），
   // 沙箱里必须补上，否则 buildDeliverableBaseName 引用不到。
   const factory = new Function(
