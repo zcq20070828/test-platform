@@ -166,5 +166,36 @@ t('图标与类型标签同源（不会显示「报告」却用文件夹图标�
     '图标没有使用同一套判据');
 });
 
+// ---------------- 缺陷 4：列表接口不带 artifacts（真正的根因）----------------
+
+const TASK_DAO = fs.readFileSync(path.join(ROOT, 'backend', 'database', 'task-dao.js'), 'utf8');
+
+t('formatTask 必须映射 artifacts（根因）', () => {
+  // 这是用户报「还是提示没有可下载的内容」的真正原因：
+  // formatTask 是 DAO 的统一出口，它没映射 artifacts，
+  // 于是列表接口返回 undefined，前端 artifact 对象既无 content 也无 downloadUrl，
+  // 点下载必然弹「该输出物没有可下载的内容」。
+  // 只有详情接口走 resolveTaskForArtifact 单独查列，所以详情能看到、列表看不到。
+  const start = TASK_DAO.indexOf('function formatTask');
+  assert.ok(start > 0, '找不到 formatTask');
+  const end = TASK_DAO.indexOf('\n}', TASK_DAO.indexOf('modelName', start));
+  const block = TASK_DAO.slice(start, end > start ? end : start + 3000);
+  assert.ok(/artifacts:/.test(block), 'formatTask 仍未映射 artifacts，列表接口拿不到交付物');
+});
+
+t('artifacts 兼容字符串与数组两种存储形态', () => {
+  const start = TASK_DAO.indexOf('function formatTask');
+  const block = TASK_DAO.slice(start, start + 4000);
+  assert.ok(/Array\.isArray\(row\.artifacts\)/.test(block), '未处理数组形态');
+  assert.ok(/JSON\.parse\(row\.artifacts\)/.test(block), '未处理字符串形态（MySQL 驱动可能返回字符串）');
+});
+
+t('列表接口对 artifacts 补 size', () => {
+  const start = SERVER.indexOf("app.get('/api/tasks', authenticate");
+  const block = SERVER.slice(start, start + 1500);
+  assert.ok(/normalizeArtifactsField\(slim\.artifacts\)/.test(block),
+    '列表接口没有补 size，卡片仍会显示「-」');
+});
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
 process.exit(failed ? 1 : 0);
