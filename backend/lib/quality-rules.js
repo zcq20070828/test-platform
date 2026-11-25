@@ -74,6 +74,53 @@ function hasTableWithColumns(text, columns) {
   return false;
 }
 
+/**
+ * 提取「同时含指定列」的表格的数据行（2026-11-25）
+ *
+ * 需求分析的实质检查要逐行看内容（描述是否为空、是否标注可测试性），
+ * 只有行数不够。返回每行 { 列名: 值 }。
+ *
+ * 匹配方式与 tableRowsWithColumns 一致：
+ *   只要表头某个单元格包含目标列名就算命中（「需求描述」能命中「需求描述（含业务规则）」）。
+ * 同一张表里目标列各取第一个命中的表头单元格。
+ *
+ * @param {string} text
+ * @param {string[]} columns 目标列名
+ * @returns {Array<Object<string,string>>} 数据行；找不到表时返回空数组
+ */
+function extractTableRows(text, columns) {
+  const lines = String(text || '').split(/\r?\n/);
+  const all = [];
+  let headerMap = null;
+
+  const flushIfBetter = () => { headerMap = null; };
+
+  for (const line of lines) {
+    if (!/^\s*\|.*\|\s*$/.test(line)) { flushIfBetter(); continue; }
+    const cells = line.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+    if (/^[-:\s|]+$/.test(cells.join(''))) continue;
+
+    if (!headerMap) {
+      const map = {};
+      for (const col of columns) {
+        const idx = cells.findIndex((c) => c === col || c.includes(col));
+        if (idx >= 0) map[col] = idx;
+      }
+      // 全部目标列都找到了才算这是目标表
+      if (Object.keys(map).length === columns.length) headerMap = map;
+      continue;
+    }
+
+    const row = {};
+    for (const [col, idx] of Object.entries(headerMap)) {
+      row[col] = cells[idx] !== undefined ? cells[idx] : '';
+    }
+    if (Object.values(row).some((v) => String(v).trim())) all.push(row);
+  }
+
+  return all;
+}
+
 /** 表格里某列的去重值（用于校验编号唯一性） */
 function columnValues(text, columnName) {
   const lines = String(text || '').split(/\r?\n/);
@@ -136,7 +183,27 @@ const RULES = {
       severity: 'blocker',
       weight: 20,
       desc: '需求编号使用占位符（如 FR-xxx）而非真实编号',
-      check: (t) => countMatches(t, /\b(?:FR|NFR|API)-x{2,}\b/gi) === 0,
+      check: (t) => {
+        // 只看「需求编号」列里的占位符，不做全文正则（2026-11-25 修）。
+        //
+        // 原来直接 countMatches(t, /\b(?:FR|NFR|API)-x{2,}\b/) 扫全文，两处误报：
+        //   1) 门禁自己的「质量提示」banner 里引用了规则描述「(如 FR-xxx)」，
+        //      于是这份文档被判「使用了占位编号」——**门禁检查自己的提示文本**，
+        //      会自我强化，一次不通过就永远不通过；
+        //   2) 追溯矩阵里 `TC-SMS-xxx` / `TC-API-xxx` 是「待补充用例编号」的占位，
+        //      属于正常写法，不是需求编号占位。
+        // 现在只取「需求编号」列的实际取值来判断。
+        const rows = extractTableRows(t, ['需求编号']);
+        const fromTable = rows.map((r) => String(r['需求编号'] || ''));
+        if (fromTable.length) {
+          return fromTable.every((v) => !/\b(?:FR|NFR|API)-x{2,}\b/i.test(v));
+        }
+        // 没有可解析的需求表时退回全文判断，但排除质量提示 banner 那一行
+        const body = String(t || '').split(/\r?\n/)
+          .filter((l) => !/质量提示|确定性检查|noPlaceholderIds/.test(l))
+          .join('\n');
+        return countMatches(body, /\b(?:FR|NFR|API)-x{2,}\b/gi) === 0;
+      },
     },
     {
       id: 'noInventedApi',
@@ -148,6 +215,112 @@ const RULES = {
         const hasApiTable = hasTableWithColumns(t, ['接口编号']);
         const mentionsApiTest = /接口测试|API\s*测试/i.test(t);
         return !(mentionsApiTest && !hasApiTable && !/API-\d+/.test(t));
+      },
+    },
+
+    // ── 以下四条是「实质检查」（2026-11-25）──
+    //
+    // 背景：原来 6 条规则全是「有没有」——有没有需求编号表格、有没有提到
+    // 「非功能需求」、有没有「验收标准」字样。一份把章节标题写全、
+    // 但每条需求都是空泛描述的报告能拿满分（生产 4 个任务全是 100%）。
+    //
+    // 这四条开始判「对不对」，全部是规则可判定的（不调 LLM）：
+    //   1) 每条功能需求是否真有描述（不是空行/占位）
+    //   2) 描述里是否含可验证的具体要素（字段名/数值/状态码/规则），
+    //      纯形容词堆砌（「优化体验」「提升效率」）判不可验证
+    //   3) 是否标注了可测试性（☑是/☑否 或 可测试/不可测试）
+    //   4) 是否为输入里没出现的需求凭空编号（防编造）——只在输入有编号体系时查
+    {
+      id: 'functionalDescNotEmpty',
+      category: 'substance',
+      severity: 'blocker',
+      weight: 15,
+      desc: '功能需求清单存在空描述行（只有编号没有内容）',
+      check: (t) => {
+        const rows = extractTableRows(t, ['需求编号', '需求描述']);
+        if (!rows.length) return true;  // 没解析到就交给 hasFunctionalList 判
+        const empty = rows.filter((r) => {
+          const desc = String(r['需求描述'] || '').replace(/[\s\-—]/g, '');
+          // 空、或只写了「待补充」「TBD」这类占位
+          const isTooShort = desc.length < 4;
+          const isPlaceholder = /^(待补充|待定|tbd|todo|暂无|无)$/i.test(desc);
+          return isTooShort || isPlaceholder;
+        });
+        return empty.length === 0;
+      },
+    },
+    {
+      id: 'functionalDescVerifiable',
+      category: 'substance',
+      severity: 'major',
+      weight: 15,
+      desc: '过多功能需求描述为纯形容词（无可验证要素）',
+      check: (t) => {
+        const rows = extractTableRows(t, ['需求编号', '需求描述']);
+        if (rows.length < 3) return true;  // 样本太少不判
+
+        // 先排除「明显有具体信息」的描述——宁可漏判也不要误杀。
+        //
+        // 第一版用的正则只认「字段名/数值+单位/状态码/规则词」，
+        // 实测把「周期 2026-06-15 至 10-31，支持运营平台上下线」
+        // 「主标题、副标题、两个任务模块标题均可配置」这类**很具体**的描述
+        // 判成了纯形容词（44% 误判）。真实需求描述大量是中文业务语义，
+        // 不可能都带字段名。
+        //
+        // 改成：只要出现数字、专有名词特征（引号原文/英文标识/括号列举）、
+        // 或具体动作对象，就算「有可验证要素」。真正要抓的是
+        // 「优化用户体验」「提升系统性能」这种没有任何对象和判据的空话。
+        const concrete = new RegExp([
+          '\\d',                                  // 任何数字（日期/长度/次数/阈值）
+          '[A-Za-z_]{3,}',                        // 英文标识（字段名/接口名）
+          '[\\u201c\\u201d\\u300c\\u300d"][^\\u201c\\u201d\\u300c\\u300d"]+[\\u201c\\u201d\\u300c\\u300d"]', // 引号原文（用 unicode 转义，避免标点被转换）
+          '[\\uff08(][^\\uff08\\uff09()]+[\\uff09)]',  // 括号列举
+          '仅|必须|不得|不超过|最多|至少|互斥|优先级|唯一|上限|下限|支持|可配置|显示|跳转|校验',
+        ].join('|'));
+
+        const vague = rows.filter((r) => !concrete.test(String(r['需求描述'] || '')));
+        // 允许 1/4 以内是概述性需求（如「活动整体流程」这类），超过说明整份报告偏空泛
+        return vague.length / rows.length <= 0.25;
+      },
+    },
+    {
+      id: 'testabilityMarked',
+      category: 'substance',
+      severity: 'major',
+      weight: 15,
+      desc: '功能需求未标注可测试性（☑是/☑否 或 可测试/不可测试）',
+      check: (t) => {
+        const rows = extractTableRows(t, ['需求编号', '可测试性']);
+        if (!rows.length) return true;
+        const marked = rows.filter((r) => {
+          const v = String(r['可测试性'] || '');
+          return /☑|✓|√|是|否|可测试|不可测试|待定/.test(v) && v.replace(/[\s☐☑□]/g, '').length > 0;
+        });
+        return marked.length / rows.length >= 0.8;
+      },
+    },
+    {
+      id: 'noInventedRequirementIds',
+      category: 'fabrication',
+      severity: 'major',
+      weight: 15,
+      desc: '需求编号在输入里不存在（疑似编造）',
+      // 只在能拿到原始输入时判（checkByAgentRules 会传 ctx.originalInput）。
+      // 输入本身没有编号体系时不判——那时候编号是模型自己建的体系，不算编造。
+      check: (t, ctx) => {
+        const original = String(ctx?.originalInput || '');
+        if (!original) return true;
+        const inputIds = new Set(
+          (original.match(/\b(?:FR|NFR|API)-\d{1,4}\b/gi) || []).map((x) => x.toUpperCase())
+        );
+        if (inputIds.size < 2) return true;   // 输入无编号体系 → 不判
+        const outIds = new Set(
+          (String(t).match(/\b(?:FR|NFR|API)-\d{1,4}\b/gi) || []).map((x) => x.toUpperCase())
+        );
+        if (!outIds.size) return true;
+        const invented = [...outIds].filter((id) => !inputIds.has(id));
+        // 允许少量扩展编号（如把 §3.2 拆成 FR-101），超过 20% 说明大范围编造
+        return invented.length / outIds.size <= 0.2;
       },
     },
   ],
@@ -621,7 +794,8 @@ export function checkWithRules(agentId, text, options = {}) {
   for (const rule of rules) {
     let ok = false;
     try {
-      ok = rule.check(body) === true;
+      // 传 ctx 让规则能拿到原始输入（如「需求编号是否编造」需要跟输入比对）
+      ok = rule.check(body, { originalInput: options.originalInput || '', agentId }) === true;
     } catch (_) {
       ok = false;  // 规则自身异常按未通过处理，避免静默放行
     }

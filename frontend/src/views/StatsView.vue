@@ -243,6 +243,55 @@
       </el-row>
     </el-card>
 
+    <!-- 审核意见分类统计（2026-11-25）
+         目的：看出「哪类问题反复出现」。生产近 30 天 591 条意见里
+         fact（幻觉/编造）109 条高居第一——这类最该被门禁拦住，
+         是最值得优先改提示词的方向。原来这些意见只能逐任务翻。 -->
+    <el-card shadow="hover" style="margin-top: 20px">
+      <template #header>
+        <div class="card-header">
+          <span class="tab-label"><MsIcon name="fact_check" :size="18" /> 审核意见分类统计</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="review-stat-hint" v-if="reviewNoteStats.total">
+              近 {{ reviewNoteStats.days }} 天 {{ reviewNoteStats.tasks }} 个任务共
+              <strong>{{ reviewNoteStats.total }}</strong> 条意见
+            </span>
+            <el-radio-group v-model="reviewNoteDays" @change="loadReviewNoteStats">
+              <el-radio-button :value="7">近7天</el-radio-button>
+              <el-radio-button :value="30">近30天</el-radio-button>
+              <el-radio-button :value="90">近90天</el-radio-button>
+            </el-radio-group>
+          </div>
+        </div>
+      </template>
+
+      <div v-if="!reviewNoteStats.supported" class="review-stat-empty">
+        当前数据库版本不支持该统计（需要 MariaDB 10.6+ / MySQL 8+ 的 JSON_TABLE）。
+      </div>
+      <div v-else-if="!reviewNoteStats.byCategory.length" class="review-stat-empty">
+        近 {{ reviewNoteStats.days }} 天没有审核意见记录。
+      </div>
+      <div v-else>
+        <div class="review-stat-row" v-for="item in reviewNoteStats.byCategory" :key="item.key">
+          <span class="review-stat-label">{{ categoryLabel(item.key) }}</span>
+          <el-progress
+            :percentage="barPercent(item.count)"
+            :stroke-width="16"
+            :show-text="false"
+            :color="categoryColor(item.key)"
+            class="review-stat-bar"
+          />
+          <span class="review-stat-count">{{ item.count }} 条</span>
+        </div>
+        <div class="review-stat-foot">
+          按严重度：<span v-for="s in reviewNoteStats.bySeverity" :key="s.key" class="review-stat-sev">
+            {{ severityLabel(s.key) }} {{ s.count }} 条
+          </span>
+          <span class="review-stat-note">「事实性（幻觉）」占比最高时，说明交付物里有编造内容，应优先加强提示词的事实约束与门禁的编造检测。</span>
+        </div>
+      </div>
+    </el-card>
+
     <!-- 趋势图表 -->
     <el-card shadow="hover" style="margin-top: 20px">
       <template #header>
@@ -592,6 +641,98 @@ function openActiveUsers() {
   activeUsersVisible.value = true
 }
 
+// ── 审核意见分类统计（2026-11-25）──
+// 审核意见一直是「逐任务」散落的，看不出整体在反复犯哪类错。
+// 后端用 JSON_TABLE 把 review_notes 摊平聚合，这里只负责画。
+const reviewNoteDays = ref(30)
+const reviewNoteStats = ref<{
+  supported: boolean
+  total: number
+  tasks: number
+  days: number
+  byCategory: Array<{ key: string; count: number }>
+  bySeverity: Array<{ key: string; count: number }>
+}>({ supported: true, total: 0, tasks: 0, days: 30, byCategory: [], bySeverity: [] })
+
+// 后端给的 key 是英文枚举，落到界面上要有中文
+const CATEGORY_LABELS: Record<string, string> = {
+  fact: '事实性（疑似幻觉）',
+  logic: '逻辑性',
+  assertion: '断言/预期结果',
+  format: '格式规范',
+  coverage: '覆盖不足',
+  traceability: '需求可追溯',
+  duplicate: '重复冗余',
+  requirement: '需求理解偏差',
+  placeholder: '占位符未替换',
+  security: '安全性',
+  other: '其他'
+}
+const categoryLabel = (key: string) => CATEGORY_LABELS[key] || key
+
+const SEVERITY_LABELS: Record<string, string> = {
+  blocker: '阻断',
+  major: '重要',
+  minor: '次要',
+  info: '提示'
+}
+const severityLabel = (key: string) => SEVERITY_LABELS[key] || key
+
+// 颜色按「危害程度」而非排名：事实性和逻辑性最红，格式类最浅
+const CATEGORY_COLORS: Record<string, string> = {
+  fact: '#F56C6C',
+  logic: '#F56C6C',
+  assertion: '#E6A23C',
+  requirement: '#E6A23C',
+  coverage: '#E6A23C',
+  traceability: '#909399',
+  duplicate: '#909399',
+  format: '#67C23A',
+  placeholder: '#67C23A',
+  security: '#9B59B6'
+}
+const categoryColor = (key: string) => CATEGORY_COLORS[key] || '#909399'
+
+// 条形长度以「最严重的那一类」为 100%，方便一眼看出相对量级
+function barPercent(count: number): number {
+  const list = reviewNoteStats.value.byCategory
+  const top = list.length ? Number(list[0]?.count) || 0 : 0
+  if (!top) return 0
+  return Math.max(2, Math.round((Number(count) || 0) / top * 100))
+}
+
+async function loadReviewNoteStats() {
+  const fallback = {
+    supported: false, total: 0, tasks: 0,
+    days: reviewNoteDays.value, byCategory: [], bySeverity: []
+  }
+  try {
+    // 注意：request() 不走 Promise.reject，失败时返回 { success:false }，
+    // 所以必须显式判 success，不能只靠 catch。
+    const res: any = await request<any>(
+      `/api/quality/review-note-stats?days=${reviewNoteDays.value}`
+    )
+    if (res?.success === false) {
+      console.warn('[审核意见分类] 接口返回失败:', res?.error)
+      reviewNoteStats.value = fallback
+      return
+    }
+    const body = res?.data ?? {}
+    reviewNoteStats.value = {
+      supported: body.supported !== false,
+      total: Number(body.total) || 0,
+      tasks: Number(body.tasks) || 0,
+      days: Number(body.days) || reviewNoteDays.value,
+      byCategory: Array.isArray(body.byCategory) ? body.byCategory : [],
+      bySeverity: Array.isArray(body.bySeverity) ? body.bySeverity : []
+    }
+  } catch (e: any) {
+    // 兜底：不打断整个统计页
+    console.warn('[审核意见分类] 加载异常:', e?.message || e)
+    reviewNoteStats.value = fallback
+  }
+}
+
 // 返回上一页
 const goBack = () => {
   router.push('/')
@@ -614,7 +755,8 @@ const refreshStats = async () => {
       loadEfficiency(),
       loadAgentRanking(),
       loadUserActionStats(),
-      loadDefectsStats()
+      loadDefectsStats(),
+      loadReviewNoteStats()
     ])
   } finally {
     loading.value = false
@@ -923,6 +1065,56 @@ onMounted(() => {
   font-size: 12px;
   color: var(--el-text-color-placeholder);
   line-height: 32px;
+}
+
+/* 审核意见分类统计 */
+.review-stat-hint {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+.review-stat-empty {
+  padding: 24px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--el-text-color-placeholder);
+}
+.review-stat-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+}
+.review-stat-label {
+  flex: 0 0 150px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+  text-align: right;
+  white-space: nowrap;
+}
+.review-stat-bar {
+  flex: 1 1 auto;
+}
+.review-stat-count {
+  flex: 0 0 64px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+.review-stat-foot {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.review-stat-sev {
+  margin-right: 14px;
+  color: var(--el-text-color-regular);
+}
+.review-stat-note {
+  display: block;
+  margin-top: 6px;
+  color: var(--el-text-color-placeholder);
 }
 
 .text-gray {

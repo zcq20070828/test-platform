@@ -416,7 +416,7 @@ export function decideReviewVerdict(results, options = {}) {
  *     此时正确的动作是「按问题清单局部改进」，而不是「扔掉重来」。
  *
  * 因此：
- *   - 门禁已达标 + 中位数 ≥ softThreshold（默认 70）→ passed，标注「客观达标+主观可用」
+ *   - 门禁已达标 + 中位数 ≥ softThreshold（默认 75）→ passed，标注「客观达标+主观可用」
  *   - 门禁已达标 + 中位数 < softThreshold → 仍 passed，但 verdict='passed_with_notes'，
  *     让上层保留审核意见供人工参考，不触发重试
  *   - 门禁未达标 → 按原阈值判定，不通过则重试
@@ -424,7 +424,7 @@ export function decideReviewVerdict(results, options = {}) {
  * @param {Array} results - 审核结果
  * @param {Object} options
  * @param {number} [options.threshold=80] - 主观分阈值（门禁未达标时使用）
- * @param {number} [options.softThreshold=70] - 门禁已达标时的主观分下限
+ * @param {number} [options.softThreshold=75] - 门禁已达标时的主观分下限
  * @param {boolean} [options.gatePassed=false] - 确定性门禁是否已客观达标
  * @param {number} [options.minValid=2]
  */
@@ -446,7 +446,7 @@ export function decideReviewVerdictWithGate(results, options = {}) {
     return { ...base, gatePassed: true };
   }
 
-  const softThreshold = Number(options.softThreshold ?? 70);
+  const softThreshold = Number(options.softThreshold ?? 75);
   const median = base.median;
   if (median != null && median >= softThreshold) {
     if (base.passed) {
@@ -536,7 +536,7 @@ export function collectUnionIssues(results) {
  * @param {number} [options.threshold=80] - 门禁未达标时的评分阈值
  * @param {number} [options.majorDensityLimit=0.03] - major 密度放行上限
  * @param {number} [options.majorDensityWarn=0.06] - major 密度「带意见放行」上限
- * @param {number} [options.softThreshold=70] - 门禁达标时综合分的兜底下限
+ * @param {number} [options.softThreshold=75] - 门禁达标时综合分的兜底下限
  * @param {number} [options.minValid=2]
  */
 export function decideReviewVerdictByDensity(results, options = {}) {
@@ -546,7 +546,7 @@ export function decideReviewVerdictByDensity(results, options = {}) {
   const threshold = Number(options.threshold ?? 80);
   const majorLimit = Number(options.majorDensityLimit ?? 0.03);
   const majorWarn = Number(options.majorDensityWarn ?? 0.06);
-  const softThreshold = Number(options.softThreshold ?? 70);
+  const softThreshold = Number(options.softThreshold ?? 75);
 
   const scores = list.map((r) => Number(r.score) || 0);
   const usable = list.filter((r) => !isReviewerFailure(r));

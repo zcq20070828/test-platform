@@ -214,9 +214,89 @@ export async function getQualityTrend(days = 30) {
   }));
 }
 
+/**
+ * 审核意见分类统计（2026-11-25）
+ *
+ * 背景：生产近 30 天审核意见 238 条，但只能逐任务翻。看不出「哪类问题反复出现」，
+ * 也就无法据此改提示词或加门禁规则。实测分布是 fact 57 / logic 43 / assertion 24…
+ * fact（幻觉/编造）高居第一，这类恰恰最该被门禁拦住。
+ *
+ * 数据源：tasks.review_notes 是 JSON 数组，每项含 category/severity/description。
+ * 用 JSON_TABLE 展开聚合。MariaDB 10.6+ 支持；老版本会抛错，这里降级返回空并告警，
+ * 不能让统计接口把页面拖挂。
+ *
+ * @param {Object} [opts]
+ * @param {number} [opts.days=30]
+ * @param {string} [opts.agentId] 只看某个智能体
+ * @returns {Promise<{byCategory:Array, bySeverity:Array, total:number, tasks:number, supported:boolean}>}
+ */
+export async function getReviewNoteStats({ days = 30, agentId = null } = {}) {
+  const dayLimit = Number(days) || 30;
+  const params = [dayLimit];
+  let agentFilter = '';
+  if (agentId) {
+    agentFilter = ' AND t.agent_id = ?';
+    params.push(agentId);
+  }
+
+  try {
+    const rows = await query(
+      `SELECT
+         COALESCE(JSON_UNQUOTE(JSON_EXTRACT(jt.note, '$.category')), 'other') AS category,
+         COALESCE(JSON_UNQUOTE(JSON_EXTRACT(jt.note, '$.severity')), 'minor')  AS severity,
+         COUNT(*) AS cnt,
+         COUNT(DISTINCT t.id) AS task_cnt
+       FROM tasks t,
+            JSON_TABLE(t.review_notes, '$[*]' COLUMNS (note JSON PATH '$')) jt
+      WHERE t.review_notes IS NOT NULL
+        AND JSON_VALID(t.review_notes)
+        AND t.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)${agentFilter}
+      GROUP BY category, severity`,
+      params,
+    );
+
+    const byCategory = new Map();
+    const bySeverity = new Map();
+    let total = 0;
+    const taskIds = new Set();
+    for (const r of rows) {
+      const cnt = Number(r.cnt) || 0;
+      total += cnt;
+      byCategory.set(r.category, (byCategory.get(r.category) || 0) + cnt);
+      bySeverity.set(r.severity, (bySeverity.get(r.severity) || 0) + cnt);
+      // task_cnt 是每个 (category,severity) 组合内的去重任务数，
+      // 不能直接相加去重；这里只用于粗略规模，精确任务数另查
+    }
+
+    const headRows = await query(
+      `SELECT COUNT(*) AS tasks FROM tasks t
+        WHERE t.review_notes IS NOT NULL AND JSON_VALID(t.review_notes)
+          AND t.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)${agentFilter}`,
+      params,
+    );
+
+    const sortDesc = (m) => [...m.entries()]
+      .map(([k, v]) => ({ key: k, count: v }))
+      .sort((a, b) => b.count - a.count);
+
+    return {
+      supported: true,
+      total,
+      tasks: Number(headRows[0]?.tasks) || 0,
+      byCategory: sortDesc(byCategory),
+      bySeverity: sortDesc(bySeverity),
+      days: dayLimit,
+    };
+  } catch (e) {
+    // JSON_TABLE 不可用（MariaDB < 10.6 / MySQL < 8）时不能让接口 500，
+    // 返回 supported:false 让前端显示「当前数据库版本不支持该统计」
+    console.warn(`[ReviewStats] 审核意见统计失败（可能是数据库版本不支持 JSON_TABLE）: ${e.message}`);
+    return { supported: false, total: 0, tasks: 0, byCategory: [], bySeverity: [], days: dayLimit };
+  }
+}
+
 /** 某任务的质量快照 */
-export async function getTaskQuality(taskId) {
-  const rows = await query('SELECT * FROM task_quality_metrics WHERE task_id = ? LIMIT 1', [taskId]);
+export async function getTaskQuality(taskId) {  const rows = await query('SELECT * FROM task_quality_metrics WHERE task_id = ? LIMIT 1', [taskId]);
   if (!rows.length) return null;
   const r = rows[0];
   let byReason = {};
