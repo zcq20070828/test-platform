@@ -749,9 +749,73 @@ const RULES = {
  * @param {string} agentId
  * @returns {Array|null}
  */
+/**
+ * 所有交付物共用的规则（2026-11-25）
+ *
+ * getRulesFor 会把它们追加到任意智能体的规则集里。
+ * 这些都是「不管哪种交付物都该成立」的要求，不针对具体类型。
+ */
+const COMMON_RULES = [
+  {
+    id: 'projectNameNoExplanation',
+    category: 'format',
+    severity: 'major',
+    weight: 15,
+    desc: '「项目名称」一栏附加了来源说明（会让交付物文件名变成一长串解释）',
+    // 实测任务 ad2fa5b2 的交付物里写着：
+    //   项目名称：托管系统（IDaaS 认证服务端）—— 来源：输入文档标题「托管系统技术方案」
+    //             及附件名，未作归纳
+    // 后半句是模型在解释「这个名字从哪来的」，属于说明文字。
+    // 但项目名会被用作交付物文件名，于是文件名变成：
+    //   「托管系统——_来源：输入文档标题「托管系统技术方案」及附件名，未作归纳测试用例.md」
+    //
+    // 判据：只检查「项目名称」这一行/单元格里有没有解释性标记。
+    // 不全文扫「来源」二字——报告里写「需求来源：产品需求」是完全正常的。
+    check: (t) => {
+      const text = String(t || '');
+      // 表格行：| 项目名称 | xxx |
+      const tableCells = [...text.matchAll(/^\|\s*项目名称\s*\|\s*([^|\n]*)\|/gm)].map((m) => m[1]);
+      // 列表行：- 项目名称：xxx
+      const listItems = [...text.matchAll(/^[-*+]\s*(?:\*\*)?项目名称(?:\*\*)?\s*[:：]\s*([^\n]*)/gm)]
+        .map((m) => m[1]);
+      const values = [...tableCells, ...listItems];
+      if (!values.length) return true;   // 没有项目名称栏位，不判
+      const hasExplanation = (v) => /(?:——|—|--|–)\s*(?:来源|出处|说明|依据|取自|备注)/
+        .test(v)
+        || /[,，。;；]\s*(?:未作|已按|取自|来源|出处)/.test(v)
+        || /[（(][^（）()]{0,40}(?:来源|出处)[^（）()]{0,40}[)）]/.test(v)
+        || /(?:来源|出处)\s*[:：]/.test(v);
+      return !values.some(hasExplanation);
+    },
+  },
+];
+
+/**
+ * getRulesFor：某智能体的完整规则集 = 自有规则 + 通用规则
+ *
+ * 注意 test-case-generator 不在 RULES 里 —— 它的逐条检查走独立引擎
+ * case-quality-gate.js（能解析用例表格，判得比通用规则细）。
+ * 但通用规则（如「项目名称不许带说明」）对它同样适用，
+ * 所以这里不能因为 RULES 没这个 key 就返回 null。
+ */
 export function getRulesFor(agentId) {
-  return RULES[agentId] || null;
+  const own = RULES[agentId] || null;
+  // 只给「有确定性检查的智能体」配通用规则。
+  // 完全陌生的 agentId 仍返回 null，保持「未配置规则」的语义。
+  if (!own && !COMMON_RULE_AGENTS.has(agentId)) return null;
+  return [...(own || []), ...COMMON_RULES];
 }
+
+/**
+ * 需要通用规则、但没有自有规则集的智能体
+ *
+ * test-case-generator 的逐条判定在 case-quality-gate 里，
+ * 这里只补它需要的通用项（项目名规范）。
+ */
+const COMMON_RULE_AGENTS = new Set([
+  'test-case-generator',
+  'ai-app-tester',
+]);
 
 /** 支持确定性检查的智能体列表 */
 export function listRuleAgents() {

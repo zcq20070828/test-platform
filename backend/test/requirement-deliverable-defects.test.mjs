@@ -43,6 +43,7 @@ function loadNamingFunctions() {
     return SERVER.slice(start, start + 10 + (next > 0 ? next : 4000));
   };
   const code = [
+    grab('stripProjectNameExplanation'),
     grab('extractReportProjectName'),
     grab('extractProjectInfo'),
     grab('buildDeliverableBaseName'),
