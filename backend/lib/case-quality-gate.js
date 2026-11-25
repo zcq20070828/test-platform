@@ -597,6 +597,242 @@ export function inspectCase(c, ctx = {}) {
   };
 }
 
+/**
+ * 确定性反编造检查（2026-11-25）
+ *
+ * 为什么需要它：生产近 30 天 487 条审核意见里，「事实性（疑似幻觉）」109 条居首。
+ * 但这些意见全是审核 LLM **主观**打的 category=fact，只能作为「改进建议」带意见放行——
+ * 实测 17 个完成任务中 11 个是 passed_with_notes，等于一条都没拦住。
+ *
+ * 关键观察：fact 类问题里有相当一部分是**可确定性判定**的。真实样本：
+ *   - 「FR-017 写明 13 个返回码，实际列举 103000 至 110044 共 14 个」→ 数量自相矛盾
+ *   - 「调用'回写/重新激活接口'，原始需求及接口清单均无此接口」→ 标识符不在原文
+ *   - 「令牌表名不一致：TC-027 用 token_info、TC-063 用 token」→ 同一概念多个名字
+ * 这些不需要 LLM 判断，规则就能判，而且判得比 LLM 稳定可复现。
+ *
+ * 设计原则：**宁漏不误杀**。只查「声称来自原文、但原文里确实没有」的硬标识符，
+ * 不查自然语言表述（那容易把合理推断误判成编造）。
+ */
+
+/** 抽取「N 个 X」这类量化断言 */
+function extractQuantityClaims(text) {
+  const claims = [];
+  const re = /(?<![0-9])(\d{1,4})\s*个\s*([\u4e00-\u9fa5A-Za-z]{1,6})(?![0-9])/g;
+  for (const m of String(text || '').matchAll(re)) {
+    claims.push({ count: Number(m[1]), unit: m[2] });
+  }
+  return claims.filter((c) => c.count > 0 && c.count < 1000);
+}
+
+/**
+ * 把「103000 至 110044」这类列举展开成实际项数
+ *
+ * 只认**看起来像业务编码**的区间：两端等长、有序。
+ * 不设跨度上限——业务编码跨度可能很大（HTTP 200~599、返回码 103000~110044），
+ * 跨度大不代表不是编码。日期/时间通常带分隔符（2026-01-01），已被等长条件排除。
+ */
+function countEnumeratedItems(text) {
+  const t = String(text || '');
+  const ranges = [];
+  for (const m of t.matchAll(/(\d{3,7})\s*(?:至|到|~|－|—)\s*(\d{3,7})/g)) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    if (String(m[1]).length === String(m[2]).length && b > a) {
+      ranges.push({ from: a, to: b });
+    }
+  }
+  const lists = [];
+  for (const m of t.matchAll(/((?:\b\d{3,7}\b[\s,、，]{1,4}){3,}\b\d{3,7}\b)/g)) {
+    const nums = new Set((m[1].match(/\b\d{3,7}\b/g) || []).map(Number));
+    if (nums.size >= 4) lists.push(nums);
+  }
+  return { ranges, lists };
+}
+
+/**
+ * 检查「N 个 X」的数量断言与同一行内其他数量表述是否自洽。
+ *
+ * 只比对**同一行**，跨段落会把不同语境的数量混起来。
+ *
+ * 两类判据（都来自真实审核意见）：
+ *   1) 显式总数「共 N 个」与前面的「M 个X」不一致。
+ *      真实样本：「写明 13 个返回码，实际列举 103000 至 110044 共 14 个」——
+ *      返回码是稀疏编码（跨 7045），用区间长度算会得出荒谬结果，
+ *      必须用句子自己给出的总数 14 来比。
+ *   2) 连续编码区间与声明的数量差 2 倍以上。
+ *      防范没有「共 N 个」的写法。
+ *
+ * 宁漏不误杀：数字相同、或数量差 1（可能是口径差异）都不判。
+ */
+export function checkQuantityConsistency(text) {
+  const problems = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (line.length > 400) continue;   // 太长的一行可能混多个语境
+    const claims = extractQuantityClaims(line);
+    if (!claims.length) continue;
+
+    // 判据 1：显式总数「共 N 个 / 共 N 项 / 总计 N 条」
+    // 同一句里既说「13 个返回码」又说「共 14 个」，本身就是硬矛盾，差 1 也要判。
+    // （真实样本就是差 1：13 vs 14，早期要求「差≥2」把它漏掉了。）
+    const explicitTotals = [...line.matchAll(/共\s*(\d{1,4})\s*[个项条]/g)].map((m) => Number(m[1]));
+    let reportedByTotal = false;
+    if (explicitTotals.length) {
+      const total = explicitTotals[explicitTotals.length - 1];
+      for (const c of claims) {
+        if (c.count !== total) {
+          reportedByTotal = true;
+          problems.push({
+            claim: c.count,
+            unit: c.unit,
+            detail: `称「${c.count} 个${c.unit}」，但同一句给出的总数是 ${total}`,
+          });
+        }
+      }
+    }
+    // 同一句已经被「显式总数」判过就不再跑区间判据：
+    // 「13 个返回码，实际列举 103000 至 110044 共 14 个」既矛盾于总数 14、
+    // 又矛盾于区间跨度 7045，报两次是同一件事重复计数。
+    // 且稀疏编码下区间跨度没有意义（7045 不是真实条目数），只留总数那条。
+    if (reportedByTotal) continue;
+
+    // 判据 2：连续区间
+    //
+    // 必须有「列举」语境词才判。「范围 200 至 599」描述的是跨度，
+    // 不是说这中间每一项都存在——按区间长度判会大面积误杀。
+    // 只有「列举/包括/分别/如下」这类明确是逐项罗列的写法，
+    // 区间长度才等于实际项数。
+    if (!/列举|罗列|包括|分别为|如下|涵盖/.test(line)) continue;
+    const { ranges, lists } = countEnumeratedItems(line);
+    for (const claim of claims) {
+      for (const r of ranges) {
+        const span = r.to - r.from + 1;
+        if (span >= claim.count * 2 && span > claim.count + 2) {
+          problems.push({
+            claim: claim.count,
+            unit: claim.unit,
+            detail: `称「${claim.count} 个${claim.unit}」，但列举区间 ${r.from}~${r.to} 跨 ${span} 项`,
+          });
+        }
+      }
+      for (const s of lists) {
+        if (s.size >= claim.count * 2 && s.size > claim.count + 2) {
+          problems.push({
+            claim: claim.count,
+            unit: claim.unit,
+            detail: `称「${claim.count} 个${claim.unit}」，但实际列举 ${s.size} 项`,
+          });
+        }
+      }
+    }
+  }
+  return problems;
+}
+
+/**
+ * 抽取「像接口/字段/状态枚举」的硬标识符。
+ *
+ * 只收三类（需求文档里必然成文的东西，原文没有就是编造）：
+ *   1) 接口路径：必须以 /api、/v1、/v2、/rest 等**真实前缀**开头
+ *   2) 全大写状态枚举：TOKEN_ISSUED、PENDING_AUTH
+ *   3) 蛇形表名/字段名：token_info、auth_flow
+ *
+ * 宁漏不误杀：抽取宽一点，后面误杀一大片。实测放宽到「任何 /xxx」时，
+ * 真实交付物里的 XSS 测试数据 `<script>alert(1)</script>`、
+ * 自然语言分隔「清空登录态/cookie」「单点/4G取号/cookie/短验登录」
+ * 全被当成接口路径，3 份真实交付物里 2 份被误判 85%~95% 编造。
+ */
+export function extractHardIdentifiers(text) {
+  const t = String(text || '');
+  const out = new Set();
+
+  // 1) 接口路径：必须有真实 API 前缀，且不含 HTML/引号等噪声
+  for (const m of t.matchAll(/\/(?:api|v[1-9]|rest|service|gateway)\/[A-Za-z0-9_\-/{}.:]{0,80}/gi)) {
+    out.add(m[0].toLowerCase());
+  }
+
+  const COMMON = /^(?:HTTPS|HTTP|JSON|XML|API|CRUD|ASCII|UTF|UUID|SQL|REST|HTML|TLS|SSL|CSV|URL|URI|JWT|OIDC|SSO|CSRF|XSS|CORS|TCP|UDP|DNS|CPU|RAM|TPS|QPS|SLA|UTC|GMT|PDF|DOCX|XLSX|MD5|SHA|AES|RSA|TOAST|COOKIE|SCRIPT|LOADING|NULL|TRUE|FALSE|NONE|GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)$/;
+  // 2) 全大写：必须带下划线（PENDING_AUTH 这类状态枚举）。
+  //    不带下划线的全大写词太容易是普通缩写（GPRS/WIFI/PHONE），不收。
+  for (const m of t.matchAll(/\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+){1,4})\b/g)) {
+    if (!COMMON.test(m[1])) out.add(m[1]);
+  }
+
+  // 3) 蛇形小写：至少含一个下划线。
+  //    排除常见的非标识符词（如 4g / 短验 这类中英混排切出来的碎片）。
+  for (const m of t.matchAll(/\b([a-z][a-z0-9]*(?:_[a-z0-9]+){1,4})\b/g)) {
+    const v = m[1];
+    if (v.length < 5) continue;          // 太短的多为噪声
+    out.add(v);
+  }
+
+  return out;
+}
+
+/**
+ * 检查交付物是否引用了原文中不存在的硬标识符。
+ *
+ * @param {string} delivered - 交付物文本
+ * @param {string} original  - 原始输入
+ * @param {Object} [opts]
+ * @param {number} [opts.maxRatio=0.34] - 允许的「原文没有的标识符」比例上限。
+ * @param {number} [opts.minIdentifiers=8] - 至少要有这么多标识符才按比例判。
+ *   小样本上比例没有意义：只有 4 个标识符时，2 个命名扩展就占 50%，
+ *   会被判成编造——但「/api/v1/auth/validate」明显是「/api/v1/auth/token」
+ *   的合理扩展。分母太小时改成按**绝对个数**判（≥4 个才判）。
+ * @returns {{ invented:string[], ratio:number, total:number, overLimit:boolean, skipped?:string }}
+ */
+export function checkInventedIdentifiers(delivered, original, opts = {}) {
+  const maxRatio = Number(opts.maxRatio ?? 0.34);
+  const minIdentifiers = Number(opts.minIdentifiers ?? 8);
+  const src = String(original || '');
+  // 没有原文（或太短）就无法判断「原文有没有」，直接放行
+  if (src.trim().length < 100) {
+    return { invented: [], ratio: 0, total: 0, overLimit: false, skipped: 'no-source' };
+  }
+
+  // 原文本身没有硬标识符（纯自然语言需求）时没有判断基准，放行
+  const srcIds = extractHardIdentifiers(src);
+  if (srcIds.size < 3) {
+    return { invented: [], ratio: 0, total: 0, overLimit: false, skipped: 'source-has-no-identifiers' };
+  }
+  const srcLower = src.toLowerCase();
+  const srcIdSet = new Set([...srcIds].map((x) => x.toLowerCase()));
+
+  const outIds = extractHardIdentifiers(delivered);
+  if (!outIds.size) {
+    return { invented: [], ratio: 0, total: 0, overLimit: false };
+  }
+
+  const invented = [];
+  for (const id of outIds) {
+    const low = id.toLowerCase();
+    if (srcIdSet.has(low)) continue;
+    // 原文里以任何形式出现过（含连字符/无下划线变体）都算有依据
+    if (srcLower.includes(low)) continue;
+    if (srcLower.includes(low.replace(/_/g, '-'))) continue;
+    if (srcLower.includes(low.replace(/_/g, ''))) continue;
+    invented.push(id);
+  }
+
+  const ratio = outIds.size ? invented.length / outIds.size : 0;
+  // 判定口径分两档：
+  //   大样本（≥minIdentifiers）用比例——基数够大，比例才有统计意义；
+  //   小样本用「比例高 且 绝对数 ≥3」——只有 4~7 个标识符时，
+  //   2 个命名扩展就占 50%，纯比例会误杀；但 3 个以上且占比过半，
+  //   基本可以确定在编造（如编造接口 + 状态机 + 表名）。
+  const overLimit = outIds.size >= minIdentifiers
+    ? ratio > maxRatio
+    : (ratio > 0.5 && invented.length >= 3);
+
+  return {
+    invented: invented.slice(0, 20),
+    ratio: Math.round(ratio * 1000) / 1000,
+    total: outIds.size,
+    overLimit,
+    judgedBy: outIds.size >= minIdentifiers ? 'ratio' : 'count',
+  };
+}
+
 // ============================================================
 // 5. 整体门禁
 // ============================================================
@@ -699,14 +935,46 @@ export function checkDeliverable(text, options = {}) {
   const usabilityPass = usabilityRate >= minRate;
   const dimensionPass = !dimensions || !requireDimensionCoverage || dimensions.pass;
 
+  // ---------- 确定性反编造（2026-11-25）----------
+  //
+  // 这是「真正拦住」的核心：以前 fact 类问题全靠审核 LLM 主观打标签，
+  // 结果 11/17 个任务带意见放行，等于没拦。
+  // 这里把其中可确定性判定的部分（数量自相矛盾、大面积引用原文没有的标识符）
+  // 直接纳入 pass 判定，不再只当建议。
+  const quantityIssues = checkQuantityConsistency(text);
+  const invention = checkInventedIdentifiers(text, original);
+
+  // 数量矛盾：只要出现 1 处就判不通过——「称 13 个却列了 45 个」
+  // 这类硬矛盾会让执行的人按错误的清单去测，属于必须修的错误。
+  const quantityPass = quantityIssues.length === 0;
+
+  // 编造标识符：超过比例上限才判。单看 1 个查不到的名字可能是合理命名扩展，
+  // 大面积出现才说明确实在凭空造接口/字段/状态机。
+  const inventionPass = !invention.overLimit;
+
+  const fabrication = {
+    quantityIssues,
+    quantityPass,
+    inventedIdentifiers: invention.invented,
+    inventedRatio: invention.ratio,
+    inventedTotal: invention.total,
+    inventionPass,
+    skipped: invention.skipped || null,
+  };
+
+  const pass = usabilityPass && dimensionPass && quantityPass && inventionPass;
+
   return {
     applicable: true,
     total: results.length,
     usable,
     usabilityRate,
-    pass: usabilityPass && dimensionPass,
+    pass,
     usabilityPass,
     dimensionPass,
+    quantityPass,
+    inventionPass,
+    fabrication,
     minUsabilityRate: minRate,
     bySeverity,
     byReason,
@@ -728,6 +996,7 @@ export function checkDeliverable(text, options = {}) {
       dimensions,
       uncoveredProbes,
       targetKind,
+      fabrication,
     }),
   };
 }
@@ -744,7 +1013,7 @@ const REASON_LABELS = {
   missingLayer: '层级未标注',
 };
 
-function buildSummary({ total, usable, usabilityRate, byReason, minRate, dimensions, uncoveredProbes, targetKind }) {
+function buildSummary({ total, usable, usabilityRate, byReason, minRate, dimensions, uncoveredProbes, targetKind, fabrication }) {
   const parts = Object.entries(byReason)
     .sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `${REASON_LABELS[k] || k} ${v} 条`);
@@ -753,15 +1022,29 @@ function buildSummary({ total, usable, usabilityRate, byReason, minRate, dimensi
     : `可用率 ${(usabilityRate * 100).toFixed(1)}% 未达标（阈值 ${(minRate * 100).toFixed(0)}%）`;
   const dimLabel = targetKind === 'ai-app' ? '风险维度覆盖' : '维度覆盖';
   const dimText = dimensions ? `${dimLabel}：${dimensions.text}` : '';
+
+  // 反编造结论要单独说清楚，否则用户看到「不通过」却不知道病根在哪
+  const fabLines = [];
+  if (fabrication) {
+    if (fabrication.quantityPass === false) {
+      fabLines.push(`数量自相矛盾 ${fabrication.quantityIssues.length} 处`);
+    }
+    if (fabrication.inventionPass === false) {
+      fabLines.push(`疑似编造标识符 ${fabrication.inventedIdentifiers.length} 个（占 ${(fabrication.inventedRatio * 100).toFixed(0)}%）`);
+    }
+  }
+
   return {
     text: [
       `${verdict}：${usable}/${total} 条可直接使用${parts.length ? `；问题分布：${parts.join('、')}` : ''}`,
       dimText,
       uncoveredProbes && uncoveredProbes.length ? `未覆盖必测点 ${uncoveredProbes.length} 个` : '',
+      fabLines.length ? `事实性检查不通过：${fabLines.join('、')}` : '',
     ].filter(Boolean).join('；'),
     verdict,
     issues: parts,
     dimensionText: dimText,
+    fabricationText: fabLines.join('、'),
   };
 }
 
@@ -883,6 +1166,28 @@ export function buildRepairPrompt(report, options = {}) {
     for (const r of report.repairs.slice(0, 10)) {
       lines.push(`   - ${r.caseId} ${r.field}: ${r.from} → ${r.to}`);
     }
+  }
+
+  // 13/14：确定性反编造（2026-11-25）
+  // 这两类以前只由审核 LLM 主观提出、作为建议放行；现在会直接阻断交付，
+  // 所以必须在修复指令里写清楚「错在哪、怎么改」，否则模型无从下手。
+  const fab = report.fabrication;
+  if (fab?.quantityIssues?.length) {
+    lines.push('');
+    lines.push(`13. 数量自相矛盾（${fab.quantityIssues.length} 处）：文中声明的数量与实际列举不符，必须改成一致。`);
+    for (const q of fab.quantityIssues.slice(0, 15)) {
+      lines.push(`   - ${q.detail}`);
+    }
+    lines.push('   要么改声明的数量，要么补齐/删减列举项；不确定时以原始需求为准，需求没写数量就不要写具体数字。');
+  }
+  if (fab?.inventionPass === false) {
+    lines.push('');
+    lines.push(`14. 引用了原始需求中不存在的标识符（${fab.inventedIdentifiers.length} 个，占全部标识符的 ${(fab.inventedRatio * 100).toFixed(0)}%）：`);
+    lines.push(`   ${fab.inventedIdentifiers.join('、')}`);
+    lines.push('   这些接口路径 / 字段名 / 表名 / 状态枚举在原始需求里都找不到。请逐项核实：');
+    lines.push('   - 原文确实存在的 → 改为原文的准确写法；');
+    lines.push('   - 原文没有但业务上必要的 → 明确标注「（建议新增，原文未定义）」，不要当作既有事实描述；');
+    lines.push('   - 完全臆测的 → 直接删除，不要为了让用例看起来完整而编造接口或状态机。');
   }
 
   lines.push('');
