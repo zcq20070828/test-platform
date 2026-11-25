@@ -10,6 +10,7 @@ import { Marked } from 'marked'
 import { sanitizeHtml, renderMarkdownSafe, escapeHtml } from '@/utils/safe-html'
 import MsIcon from '@/components/MsIcon.vue'
 import ChangePlanCard from '@/components/ChangePlanCard.vue'
+import ArtifactCard from '@/components/ArtifactCard.vue'
 import type { ChangePlan } from '@/components/ChangePlanCard.vue'
 import { formatClock } from '@/utils/time'
 import { getAgentIcon } from '@/utils/agentIcons'
@@ -221,25 +222,17 @@ async function openPreview(artifact: any) {
   previewVisible.value = true
 }
 
-async function useArtifactAsInput(artifact: any) {
-  let content = artifact.content
-  
-  if (!content && artifact.downloadUrl) {
-    try {
-      const _token_ = localStorage.getItem('token'); const response = await fetch(artifact.downloadUrl, { headers: _token_ ? { 'Authorization': `Bearer ${_token_}` } : {} })
-      if (!response.ok) throw new Error('加载失败')
-      content = await response.text()
-    } catch (err: any) {
-      ElMessage.error(`加载失败：${err.message}`)
-      return
-    }
-  }
-  
+/**
+ * 用作输入（2026-11-25 重构）
+ *
+ * 内容由 ArtifactCard 取好传进来，这里不再自己 fetch。
+ */
+function onUseAsInput(artifact: any) {
+  const content = String(artifact?.content || '')
   if (!content) {
     ElMessage.warning('该输出物没有内容可用作输入')
     return
   }
-  
   // 追加到输入框
   const prefix = localInput.value ? localInput.value.trim() + '\n\n--- 以下为输出物内容 ---\n\n' : ''
   localInput.value = prefix + content
@@ -829,51 +822,14 @@ onMounted(() => { scrollToBottom() })
                 输出物（{{ userFacingArtifacts(msg.artifacts).length }}个）
               </div>
               <div class="artifacts-list">
-                <div v-for="artifact in userFacingArtifacts(msg.artifacts)" :key="artifact.id" class="artifact-card">
-                  <div class="artifact-icon">
-                    <MsIcon v-if="artifact.type === 'text'" name="description" />
-                    <MsIcon v-else-if="artifact.type === 'code'" name="edit" />
-                    <MsIcon v-else-if="artifact.type === 'report'" name="analytics" />
-                    <MsIcon v-else-if="artifact.type === 'image'" name="image" />
-                    <MsIcon v-else name="folder_open" />
-                  </div>
-                  <div class="artifact-info">
-                    <div class="artifact-name">{{ artifact.name }}</div>
-                    <div class="artifact-meta">
-                      <span class="artifact-type">{{ getArtifactTypeLabel(artifact.type) }}</span>
-                      <span v-if="artifact.size" class="artifact-size">{{ formatFileSize(artifact.size) }}</span>
-                      <span class="artifact-time">{{ formatTime(artifact.createdAt) }}</span>
-                    </div>
-                  </div>
-                  <div class="artifact-actions">
-                    <el-button
-                      v-if="artifact.content || artifact.downloadUrl"
-                      text size="small"
-                      @click="openPreview(artifact)"
-                    >
-                      <MsIcon name="visibility" /> 预览
-                    </el-button>
-                    <el-button
-                      text size="small" type="info"
-                      @click="copyArtifactContent(artifact)"
-                    >
-                      <MsIcon name="content_copy" /> 复制
-                    </el-button>
-                    <el-button
-                      v-if="artifact.content || artifact.downloadUrl"
-                      text size="small" type="success"
-                      @click="useArtifactAsInput(artifact)"
-                    >
-                      <MsIcon name="arrow_forward" /> 用作输入
-                    </el-button>
-                    <el-button
-                      text size="small" type="primary"
-                      @click="downloadArtifact(artifact)"
-                    >
-                      <MsIcon name="download" /> 下载
-                    </el-button>
-                  </div>
-                </div>
+                <!-- 卡片抽成 ArtifactCard（2026-11-25 重构）：判据只有一份 -->
+                <ArtifactCard
+                  v-for="artifact in userFacingArtifacts(msg.artifacts)"
+                  :key="artifact.id"
+                  :artifact="artifact"
+                  :show="['preview', 'copy', 'useAsInput', 'download']"
+                  @use-as-input="onUseAsInput"
+                />
               </div>
             </div>
 
@@ -958,13 +914,13 @@ onMounted(() => { scrollToBottom() })
       <el-tag size="small" type="info">{{ previewArtifact.type?.toUpperCase() }}</el-tag>
       <span class="preview-size" v-if="previewArtifact.size">{{ formatFileSize(previewArtifact.size) }}</span>
       <div class="preview-actions">
-        <el-button size="small" type="success" plain @click="useArtifactAsInput(previewArtifact)">
+        <el-button size="small" type="success" plain @click="onUseAsInput(previewArtifact)">
           <MsIcon name="arrow_forward" /> 用作输入
         </el-button>
         <el-button size="small" type="primary" plain @click="downloadArtifact(previewArtifact)">
           <MsIcon name="download" /> 下载
         </el-button>
-        <el-button size="small" plain @click="copyToClipboard(previewArtifact.content)">
+        <el-button size="small" plain @click="copyArtifactContent(previewArtifact)">
           <MsIcon name="content_copy" /> 复制
         </el-button>
       </div>
@@ -972,7 +928,7 @@ onMounted(() => { scrollToBottom() })
     <div class="preview-content" v-html="previewRenderedContent"></div>
     <template #footer>
       <el-button @click="previewVisible = false">关闭</el-button>
-      <el-button type="success" @click="useArtifactAsInput(previewArtifact)">
+      <el-button type="success" @click="onUseAsInput(previewArtifact)">
         <MsIcon name="arrow_forward" /> 用作输入
       </el-button>
     </template>

@@ -105,39 +105,47 @@ t('size 缺失不影响下载（容错）', () => {
 
 // ---------------- 缺陷 1：按钮缺失 ----------------
 
-t('任务列表的预览按钮不再只认 content', () => {
-  const start = TASKS_VIEW.indexOf('class="artifact-actions"');
-  const block = TASKS_VIEW.slice(start, start + 1400);
-  assert.ok(!/v-if="artifact\.content"[^>]*@click="previewArtifact"/.test(block),
-    '预览按钮仍只在有 content 时显示，后端不给 content 就永远看不到');
-  assert.ok(/canPreviewArtifact\(artifact\)/.test(block), '缺少统一的预览判定函数');
+t('任务列表不再自己实现按钮判据（已收进 ArtifactCard）', () => {
+  // 2026-11-25 重构：判据统一到 ArtifactCard，
+  // 调用方只传 show 数组决定显示哪几个按钮。
+  // 这条测试从「检查调用方有没有正确的 v-if」改为「检查调用方不再自己判」，
+  // 因为后者才是重构后该守住的不变量。
+  assert.ok(/<ArtifactCard/.test(TASKS_VIEW), '未使用 ArtifactCard');
+  const code = TASKS_VIEW.split('\n').filter((l) => !/^\s*(\/\/|<!--|\*)/.test(l)).join('\n');
+  assert.ok(!/v-if="artifact\.content/.test(code), '仍在用 artifact.content 作按钮条件');
 });
 
-t('预览判定包含 downloadUrl，且排除二进制格式', () => {
-  const start = TASKS_VIEW.indexOf('function canPreviewArtifact');
-  assert.ok(start > 0, '缺少 canPreviewArtifact');
-  const block = TASKS_VIEW.slice(start, start + 700);
-  assert.ok(/artifact\.downloadUrl/.test(block), '没把 downloadUrl 当可预览依据');
-  assert.ok(/docx/.test(block) && /xlsx/.test(block), '未排除二进制格式，预览会出乱码');
+t('预览判定在 ArtifactCard 里，认 downloadUrl 并排除二进制', () => {
+  const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
+  assert.ok(/const canPreview = computed/.test(CARD), '组件缺 canPreview');
+  const idx = CARD.indexOf('const canPreview');
+  const block = CARD.slice(idx, idx + 200);
+  assert.ok(/!isBinary\.value/.test(block), '未排除二进制格式');
+  const contentIdx = CARD.indexOf('const hasContent');
+  assert.ok(/a\.downloadUrl/.test(CARD.slice(contentIdx, contentIdx + 300)), '没把 downloadUrl 当可用依据');
+  assert.ok(/BIN_EXTS/.test(CARD) && /docx/.test(CARD), '缺二进制扩展名列表');
 });
 
-t('任务列表补齐「复制」「用作输入」按钮', () => {
-  const start = TASKS_VIEW.indexOf('class="artifact-actions"');
-  const block = TASKS_VIEW.slice(start, start + 1600);
-  assert.ok(/copyArtifactContent/.test(block), '缺少复制按钮');
-  assert.ok(/useArtifactAsInput/.test(block), '缺少用作输入按钮');
+t('任务列表通过 show 声明要哪几个按钮', () => {
+  const m = TASKS_VIEW.match(/:show="\[([^\]]+)\]"/);
+  assert.ok(m, 'TasksView 未传 show');
+  for (const action of ['preview', 'copy', 'useAsInput', 'download']) {
+    assert.ok(m[1].includes(action), `show 里缺 ${action}`);
+  }
 });
 
-t('复制对二进制格式给明确提示，不尝试读文本', () => {
-  const start = TASKS_VIEW.indexOf('async function copyArtifactContent');
-  const block = TASKS_VIEW.slice(start, start + 900);
-  assert.ok(/不支持复制内容/.test(block), '复制二进制文件时没有提示');
+t('复制对二进制格式给明确提示（在 ArtifactCard 里）', () => {
+  const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
+  assert.ok(/不支持复制内容/.test(CARD), '复制二进制文件时没有提示');
+  const idx = CARD.indexOf('async function onCopy');
+  assert.ok(/isBinary\.value/.test(CARD.slice(idx, idx + 400)), '复制前未判二进制');
 });
 
 t('「用作输入」真的把内容带进提交框', () => {
-  const start = TASKS_VIEW.indexOf('async function useArtifactAsInput');
-  const block = TASKS_VIEW.slice(start, start + 1000);
-  assert.ok(/query: \{ seed:/.test(block), '没有把内容通过 query 传给提交页');
+  // 重构后：ArtifactCard 取好内容 → emit → TasksView 的 handler 负责跳转
+  assert.ok(/function handleUseArtifactAsInput/.test(TASKS_VIEW), '缺 handler');
+  const idx = TASKS_VIEW.indexOf('function handleUseArtifactAsInput');
+  assert.ok(/query: \{ seed:/.test(TASKS_VIEW.slice(idx, idx + 800)), '没有通过 query 传内容');
   // Dashboard 侧要真的读这个参数，否则跳过去输入框还是空的
   const DASHBOARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'views', 'DashboardView.vue'), 'utf8');
   assert.ok(/route\.query\.seed/.test(DASHBOARD), 'Dashboard 没有读取 seed，用作输入无效');
@@ -159,11 +167,15 @@ t('输出物类型按扩展名细化（不再全是「文件」）', () => {
   assert.ok(/md\|docx\?/.test(block), '未识别报告');
 });
 
-t('图标与类型标签同源（不会显示「报告」却用文件夹图标）', () => {
-  assert.ok(/function artifactIcon/.test(TASKS_VIEW), '缺少 artifactIcon');
-  // 模板里图标必须走 artifactIcon(artifactKind(...))
-  assert.ok(/artifactIcon\(artifactKind\(artifact\)\)/.test(TASKS_VIEW),
-    '图标没有使用同一套判据');
+t('图标与类型标签同源（在 ArtifactCard 里用同一份 kind）', () => {
+  const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
+  assert.ok(/const kind = computed/.test(CARD), '缺少 kind 判据');
+  // 标签与图标都从同一个 kind 派生，不可能不一致
+  assert.ok(/const kindLabel = computed/.test(CARD), '缺 kindLabel');
+  assert.ok(/const kindIcon = computed/.test(CARD), '缺 kindIcon');
+  // 模板里两者都直接绑定，不再各自传参
+  assert.ok(/:name="kindIcon"/.test(CARD), '图标没有绑定 kindIcon');
+  assert.ok(/\{\{ kindLabel \}\}/.test(CARD), '标签没有绑定 kindLabel');
 });
 
 // ---------------- 缺陷 4：列表接口不带 artifacts（真正的根因）----------------

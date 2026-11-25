@@ -9,6 +9,7 @@ import 'highlight.js/styles/github-dark.css'
 import { Marked } from 'marked'
 import { sanitizeHtml, renderMarkdownSafe, escapeHtml } from '@/utils/safe-html'
 import MsIcon from '@/components/MsIcon.vue'
+import ArtifactCard from '@/components/ArtifactCard.vue'
 import { formatClock } from '@/utils/time'
 import { getAgentIcon } from '@/utils/agentIcons'
 
@@ -68,109 +69,17 @@ const isDragOver = ref(false)
 const attachments = ref<AttachmentFile[]>([])
 const isVoiceActive = ref(false)
 
-// 预览弹窗
-const previewVisible = ref(false)
-const previewArtifact = ref<any>(null)
-const previewRenderedContent = ref('')
+// 输出物预览状态已移除（2026-11-25 重构）：
+// 预览弹窗内建在 ArtifactCard 里，本组件不再维护这三个 ref。
 
 /**
- * 输出物是否「有内容可取」（2026-11-25）
+ * 用作输入（2026-11-25 重构）
  *
- * 后端产出的 artifacts 只有 downloadUrl、没有 content。
- * 只判 content 会让预览/用作输入/复制三个按钮全部不显示。
+ * 内容由 ArtifactCard 取好传进来——取内容的逻辑（content / downloadUrl /
+ * 认证头）现在只有组件里一份，各调用方不再各自维护。
  */
-function hasArtifactContent(artifact: any): boolean {
-  if (!artifact) return false
-  return !!(artifact.content || artifact.downloadUrl)
-}
-
-/**
- * 能否预览（排除二进制格式）
- *
- * docx/xlsx/pdf 按文本读是乱码，这类只给下载。
- */
-function canPreviewArtifact(artifact: any): boolean {
-  if (!hasArtifactContent(artifact)) return false
-  const binExts = ['.docx', '.xlsx', '.pdf', '.zip', '.doc', '.xls', '.ppt', '.pptx']
-  const fname = String(artifact?.name || '').toLowerCase()
-  return !binExts.some((ext) => fname.endsWith(ext))
-}
-
-/** 按需取输出物文本内容（有 content 直接用，否则走 downloadUrl） */
-async function fetchArtifactText(artifact: any): Promise<string> {
-  if (artifact?.content) return String(artifact.content)
-  if (!artifact?.downloadUrl) return ''
-  const token = localStorage.getItem('token')
-  const res = await fetch(artifact.downloadUrl, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  })
-  if (!res.ok) throw new Error(`加载失败（HTTP ${res.status}）`)
-  return await res.text()
-}
-
-async function openPreview(artifact: any) {
-  previewArtifact.value = artifact
-  let content = ''
-  try {
-    content = await fetchArtifactText(artifact)
-  } catch (e: any) {
-    ElMessage.error(`预览失败：${e?.message || e}`)
-    return
-  }
-  if (content) {
-    const previewMarked = new Marked({ breaks: true, gfm: true })
-    previewMarked.use({
-      renderer: {
-        code({ text, lang }: { text: string; lang?: string }) {
-          const language = lang || ''
-          let highlighted: string
-          try {
-            highlighted = (language && hljs.getLanguage(language))
-              ? hljs.highlight(text, { language }).value
-              : hljs.highlightAuto(text).value
-          } catch {
-            highlighted = escapeHtml(text)
-          }
-          return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${escapeHtml(language || 'code')}</span></div><pre class="code-block-pre"><code class="hljs language-${escapeHtml(language)}">${highlighted}</code></pre></div>`
-        },
-      },
-    })
-    previewRenderedContent.value = renderMarkdownSafe(content, previewMarked)
-  } else {
-    previewRenderedContent.value = '<p style="color:#999;text-align:center;">无预览内容</p>'
-  }
-  previewVisible.value = true
-}
-
-/** 复制输出物内容（2026-11-25 新增：原来只在有 content 时才有复制按钮） */
-async function copyArtifact(artifact: any) {
-  const binExts = ['.docx', '.xlsx', '.pdf', '.zip', '.doc', '.xls', '.ppt', '.pptx']
-  const fname = String(artifact?.name || '').toLowerCase()
-  if (binExts.some((ext) => fname.endsWith(ext))) {
-    ElMessage.info('Word/Excel 文件不支持复制内容，请下载后打开查看')
-    return
-  }
-  try {
-    const content = await fetchArtifactText(artifact)
-    if (!content) {
-      ElMessage.warning('该输出物没有可复制的内容')
-      return
-    }
-    await navigator.clipboard.writeText(content)
-    ElMessage.success('已复制到剪贴板')
-  } catch (e: any) {
-    ElMessage.error(`复制失败：${e?.message || e}`)
-  }
-}
-
-async function useArtifactAsInput(artifact: any) {
-  let content = ''
-  try {
-    content = await fetchArtifactText(artifact)
-  } catch (e: any) {
-    ElMessage.error(`读取输出物失败：${e?.message || e}`)
-    return
-  }
+function onUseAsInput(artifact: any) {
+  const content = String(artifact?.content || '')
   if (!content) {
     ElMessage.warning('该输出物没有内容可用作输入')
     return
@@ -354,13 +263,21 @@ const editingArtifact = ref<any>(null)
 const editDialogVisible = ref(false)
 const editContent = ref('')
 
-function editArtifact(artifact: any) {
-  if (!artifact.content) {
+/**
+ * 编辑（2026-11-25 重构）
+ *
+ * 内容由 ArtifactCard 取好传进来。原来这里只认 artifact.content，
+ * 后端不给 content 时「编辑」点了会提示"没有可编辑的内容"——
+ * 现在组件已把 downloadUrl 的内容取回来。
+ */
+function onEditArtifact(artifact: any) {
+  const content = artifact?.content
+  if (!content) {
     ElMessage.warning('该输出物没有可编辑的内容')
     return
   }
   editingArtifact.value = artifact
-  editContent.value = typeof artifact.content === 'string' ? artifact.content : JSON.stringify(artifact.content, null, 2)
+  editContent.value = typeof content === 'string' ? content : JSON.stringify(content, null, 2)
   editDialogVisible.value = true
 }
 
@@ -611,64 +528,16 @@ onMounted(() => {
                 输出物（{{ msg.artifacts.length }}个）
               </div>
               <div class="artifacts-list">
-                <div v-for="artifact in msg.artifacts" :key="artifact.id" class="artifact-card">
-                  <div class="artifact-icon">
-                    <MsIcon v-if="artifact.type === 'text'" name="description" />
-                    <MsIcon v-else-if="artifact.type === 'code'" name="edit" />
-                    <MsIcon v-else-if="artifact.type === 'report'" name="analytics" />
-                    <MsIcon v-else-if="artifact.type === 'image'" name="image" />
-                    <MsIcon v-else name="folder_open" />
-                  </div>
-                  <div class="artifact-info">
-                    <div class="artifact-name">{{ artifact.name }}</div>
-                    <div class="artifact-meta">
-                      <span class="artifact-type">{{ getArtifactTypeLabel(artifact.type) }}</span>
-                      <span v-if="artifact.size" class="artifact-size">{{ formatFileSize(artifact.size) }}</span>
-                      <span class="artifact-time">{{ formatTime(artifact.createdAt) }}</span>
-                    </div>
-                  </div>
-                  <div class="artifact-actions">
-                    <!-- 按钮可用性判断不要只用 artifact.content（2026-11-25 修）
-                         后端产出的 artifacts 只有 downloadUrl、没有 content，
-                         用 v-if="artifact.content" 会让「预览/用作输入/复制」
-                         三个按钮全部消失，用户只看到「编辑」和「下载」。
-                         统一用 canPreviewArtifact / hasArtifactContent，
-                         它们都支持走 downloadUrl 取内容。 -->
-                    <el-button
-                      v-if="canPreviewArtifact(artifact)"
-                      text size="small"
-                      @click="openPreview(artifact)"
-                    >
-                      <MsIcon name="visibility" /> 预览
-                    </el-button>
-                    <el-button
-                      v-if="hasArtifactContent(artifact)"
-                      text size="small" type="success"
-                      @click="useArtifactAsInput(artifact)"
-                    >
-                      <MsIcon name="arrow_forward" /> 用作输入
-                    </el-button>
-                    <el-button
-                      text size="small" type="warning"
-                      @click="editArtifact(artifact)"
-                    >
-                      <MsIcon name="edit" /> 编辑
-                    </el-button>
-                    <el-button
-                      text size="small" type="primary"
-                      @click="downloadArtifact(artifact)"
-                    >
-                      <MsIcon name="download" /> 下载
-                    </el-button>
-                    <el-button
-                      v-if="hasArtifactContent(artifact)"
-                      text size="small"
-                      @click="copyArtifact(artifact)"
-                    >
-                      <MsIcon name="content_copy" /> 复制
-                    </el-button>
-                  </div>
-                </div>
+                <!-- 卡片抽成 ArtifactCard（2026-11-25 重构）：判据只有一份，
+                     调用方只决定显示哪几个按钮 -->
+                <ArtifactCard
+                  v-for="artifact in msg.artifacts"
+                  :key="artifact.id"
+                  :artifact="artifact"
+                  :show="['preview', 'useAsInput', 'edit', 'download', 'copy']"
+                  @use-as-input="onUseAsInput"
+                  @edit="onEditArtifact"
+                />
               </div>
             </div>
             
@@ -808,37 +677,11 @@ onMounted(() => {
       </template>
     </el-dialog>
 
-    <!-- 输出物预览弹窗 -->
-    <el-dialog
-      v-model="previewVisible"
-      :title="previewArtifact?.name || '输出物预览'"
-      width="800px"
-      :destroy-on-close="true"
-      class="artifact-preview-dialog"
-    >
-      <div class="preview-meta" v-if="previewArtifact">
-        <el-tag size="small" type="info">{{ previewArtifact.type?.toUpperCase() }}</el-tag>
-        <span class="preview-size" v-if="previewArtifact.size">{{ formatFileSize(previewArtifact.size) }}</span>
-        <div class="preview-actions">
-          <el-button size="small" type="success" plain @click="useArtifactAsInput(previewArtifact)">
-            <MsIcon name="arrow_forward" /> 用作输入
-          </el-button>
-          <el-button size="small" type="primary" plain @click="downloadArtifact(previewArtifact)">
-            <MsIcon name="download" /> 下载
-          </el-button>
-          <el-button size="small" plain @click="copyToClipboard(previewArtifact.content)">
-            <MsIcon name="content_copy" /> 复制
-          </el-button>
-        </div>
-      </div>
-      <div class="preview-content" v-html="previewRenderedContent"></div>
-      <template #footer>
-        <el-button @click="previewVisible = false">关闭</el-button>
-        <el-button type="success" @click="useArtifactAsInput(previewArtifact)">
-          <MsIcon name="arrow_forward" /> 用作输入
-        </el-button>
-      </template>
-    </el-dialog>
+    <!-- 输出物预览弹窗已移除（2026-11-25 重构）
+         预览能力现在内建在 ArtifactCard 里，每个卡片自带弹窗。
+         这里原来还有一份独立的预览弹窗 + openPreview/resolveContent 逻辑，
+         与组件内那份重复，且它只认 artifact.content（后端不给 content
+         时这里的功能其实是坏的）。删掉避免两份实现继续漂移。 -->
   </div>
 </template>
 
