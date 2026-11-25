@@ -57,12 +57,27 @@ t('存在 enrichInputWithRecentContext（无 UUID 时的续做通道）', () => 
   assert.ok(/async function enrichInputWithRecentContext/.test(SERVER), '缺少续做注入函数');
 });
 
-t('UUID 通道未命中时会回落到续做通道', () => {
-  // 2026-11-25 起这段外面包了三元（上游注入命中就跳过显式引用），
-  // 所以匹配的是「referenced 判空 → else 里调续做通道」这个语义，
-  // 不再要求 referenced 那一行必须是 const 声明。
-  assert.ok(/enrichInputWithTaskReferences[\s\S]{0,400}?\n(\s*)if \(referenced\)[\s\S]{0,300}?\1\} else \{[\s\S]{0,300}?enrichInputWithRecentContext/.test(SERVER),
-    '未接上回落逻辑');
+t('UUID 通道未命中时会回落到续做通道（对话模式除外）', () => {
+  // 现在的分派是三层（2026-11-25）：
+  //   1) 有 referenced → 用引用任务的结果
+  //   2) 否则若是对话模式 → 明确跳过（上下文已由对话链路确定）
+  //   3) 否则（新建任务）→ 调续做通道 enrichInputWithRecentContext
+  //
+  // 不能再用「if(referenced)…else{enrich}」的旧形状匹配，
+  // 中间多了对话模式分支。改为逐段验证三层都在、顺序正确。
+  const start = SERVER.indexOf('const referenced = upstreamInjected');
+  assert.ok(start > 0, '找不到分派逻辑');
+  const block = SERVER.slice(start, SERVER.indexOf('// ========== 熔断器检查', start));
+
+  const iRef = block.indexOf('if (referenced)');
+  const iChat = block.indexOf("else if (options.mode === 'chat')");
+  const iNew = block.indexOf('enrichInputWithRecentContext', iChat);
+  assert.ok(iRef > 0, '缺少「有引用」分支');
+  assert.ok(iChat > iRef, '缺少对话模式分支');
+  assert.ok(iNew > iChat, '新建任务分支未接上续做通道');
+  // 对话分支内部不能调续做通道
+  const chatBranch = block.slice(iChat, block.indexOf('// 新建任务', iChat));
+  assert.ok(!/enrichInputWithRecentContext\s*\(/.test(chatBranch), '对话分支误调续做通道');
 });
 
 t('续做识别按内容语义判断，不用长度上限', () => {
