@@ -5583,6 +5583,8 @@ async function executeChatRound(task, message, userFiles, options = {}) {
               summary: `本轮修订后：${afterGate.summary.text}`,
               usabilityPass: afterGate.usabilityPass,
               dimensionPass: afterGate.dimensionPass,
+              quantityPass: afterGate.quantityPass,
+              inventionPass: afterGate.inventionPass,
               dimensionCoverage: afterGate.dimensions ? {
                 text: afterGate.dimensions.text,
                 probeCoverage: afterGate.dimensions.probeCoverage,
@@ -14048,6 +14050,12 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             summary: gateReport.summary.text,
             usabilityPass: gateReport.usabilityPass,
             dimensionPass: gateReport.dimensionPass,
+            // 事实性两项必须一起广播（2026-11-25）：
+            // 前端要靠它们说清「未达标是哪一项没过」。
+            // 实测 b9bd13ec 显示「99.6% 未达标」，用户完全看不懂——
+            // 真实原因是 inventionPass=false（反编造检查），但界面只看到可用率。
+            quantityPass: gateReport.quantityPass,
+            inventionPass: gateReport.inventionPass,
             dimensionCoverage: gateReport.dimensions ? {
               text: gateReport.dimensions.text,
               probeCoverage: gateReport.dimensions.probeCoverage,
