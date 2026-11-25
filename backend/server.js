@@ -12732,29 +12732,37 @@ async function enrichInputWithUpstreamRequirement(agentId, taskInput, userId, cu
 async function enrichInputWithRecentContext(agentId, taskInput, userId, currentTaskId) {
   if (!userId) return null;
   const input = String(taskInput || '').trim();
-  // 长度上限放到 400：实测一条「…从审核结果看，该用例还有优化空间，继续优化」
-  // 有 192 字，原 60 字上限直接把它挡在门外，于是续做指令被当成全新需求重跑。
-  // 上限只是用来排除「整份需求文档」这类长输入（那种本来就不需要注入上文）。
-  if (!input || input.length > 400) return null;
+  if (!input) return null;
   // 已显式引用某个任务 → 交给 enrichInputWithTaskReferences
   if (UUID_PATTERN.test(input)) { UUID_PATTERN.lastIndex = 0; return null; }
   UUID_PATTERN.lastIndex = 0;
 
-  // 续做/改稿类指令。
-  // 2026-11-23 补「继续优化/继续改进/还有优化空间/在此基础上」等——
-  // 用户看完审核意见说「继续优化」时，指的是**上一份交付物**，
-  // 若当成新需求会从需求重跑一遍，与意图不符且更慢。
-  // 续做/改稿指令识别
+  // 是不是「指代上一份产出」的指令（2026-11-25 改为按内容语义判断）
   //
-  // 2026-11-23 二次修正：穷举动词永远补不完。实测连续漏了两次：
-  //   「…还有优化空间，继续优化」→ 词表没有「继续优化」
-  //   「优化完要输出交付物」    → 词表有「优化一下」没有「优化完」
-  // 改为与前端同一套**模式识别**：出现改稿动词（且不是长需求描述）就算改稿，
-  // 或出现明确的指代/重做词。前后端判断必须一致（测试会比对判定结果）。
+  // 原来这里有两个长度门槛，都属于「用长度代替语义」的错法：
+  //   - `input.length > 400` → 想排除「整份需求文档」这类长输入
+  //   - `REVISE_VERB_RE && input.length <= 80` → 想判断「这是不是改稿指令」
+  //
+  // 两者都不成立：
+  //   - 一份完整需求文档可能很短（几百字的接口说明），也可能是长段落；
+  //     判断依据应该是「它是不是在描述需求」而不是「它有多长」。
+  //   - 改稿指令可能很长（把审核意见整段贴进来说「按这个改」），
+  //     按 80 字切会把它当成新需求，从需求重跑一遍。
+  //
+  // 现在的判据：
+  //   出现**指代词**（刚才/上面/这份/继续…）→ 明确指代上一份，注入上文；
+  //   出现**改稿动作词**但没有具体新对象 → 也是在改上一份；
+  //   有具体对象的新指令（编号/数量/领域名词）→ 按独立需求处理，不注入。
+  //
+  // 这两个词表本身是内容特征（不是长度），与之前一致：
+  //   2026-11-23 曾连续漏了两个词（「优化完」「继续优化」），
+  //   所以词表要覆盖「动词 + 常见后缀」而不只是固定搭配。
   const REVISE_VERB_RE = /优化|改进|完善|修订|调整|改一下|改改|再改|重写|改写|润色|补充|精简|细化/;
   const REVISE_REF_RE = /刚才|刚刚|上面|之前|上次|上一个|前一个|那份|这份|该需求|同样的需求|重新生成|再生成|再来一次|重做|重跑|重新做|继续|接着|在此基础上|基于上面|基于刚才|针对上面|针对这份/;
-  const refersToPrevious = REVISE_REF_RE.test(input)
-    || (REVISE_VERB_RE.test(input) && input.length <= 80);
+  const semantic = assessSelfContained(input);
+  const hasRef = REVISE_REF_RE.test(input);
+  const hasVerb = REVISE_VERB_RE.test(input);
+  const refersToPrevious = hasRef || (hasVerb && !semantic.selfContained);
   if (!refersToPrevious) return null;
 
   let recent = [];

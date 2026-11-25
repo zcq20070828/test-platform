@@ -127,12 +127,18 @@ t('★★ 前后端对「改稿指令」的判断必须一致', () => {
   }
 });
 
-t('★ 「继续优化」不再有长度上限挡路（实测 192 字被 60 字上限挡掉）', () => {
+t('★ 「继续优化」这类长指令不再被长度挡住（改用语义判定）', () => {
   const fn = enrichFn();
-  const m = fn.match(/input\.length > (\d+)\) return null/);
-  assert.ok(m, '找不到长度上限');
-  const limit = Number(m[1]);
-  assert.ok(limit >= 400, `长度上限 ${limit} 太小；实测那条改稿指令有 192 字`);
+  // 原判据是 `input.length > 400 return null`，实测一条 192 字的改稿指令
+  // 曾被 60 字上限挡掉，放宽到 400 才通过。
+  //
+  // 2026-11-25 用户要求「不能根据长度判断，要根据内容语义判断」，
+  // 长度门槛整体去掉：一份需求文档自然含大量业务对象，靠语义判据
+  // 就能和「改稿指令」区分开，不需要再猜长度。
+  assert.ok(!/input\.length > \d+\) return null/.test(fn), '仍在用长度上限排除输入');
+  assert.ok(/assessSelfContained\(input\)/.test(fn), '未使用内容语义判定');
+  // 实测那条 192 字指令必须仍被识别为改稿
+  assert.ok(/REVISE_VERB_RE/.test(fn) && /REVISE_REF_RE/.test(fn), '词表丢失');
 });
 
 // ---------------- B) 注入内容 ----------------

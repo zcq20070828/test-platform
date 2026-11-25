@@ -65,19 +65,20 @@ t('UUID 通道未命中时会回落到续做通道', () => {
     '未接上回落逻辑');
 });
 
-t('续做识别有长度上限（避免误伤正常需求）', () => {
-  // 上限的作用是防止「粘贴一整份需求文档，里面恰好有『继续优化』四个字」
-  // 被误判成续做指令、把上一份任务的内容注入进来。
+t('续做识别按内容语义判断，不用长度上限', () => {
+  // 原来这里断言「必须有一个长度上限（如 input > 400 就不算续做）」，
+  // 作用是防「粘贴一整份需求文档，里面恰好有『继续优化』四个字」被误判成续做。
   //
-  // 阈值本身可以调（2026-11-23 从 60 放宽到 400：实测一条真实的改稿指令
-  // 「…从审核结果看，该用例还有优化空间，继续优化」有 192 字，60 直接把它挡在门外，
-  // 于是被当成全新需求重跑）。要求的是「有上限且不会窄到挡掉真实指令」。
+  // 2026-11-25 改为按内容语义判断（用户要求：不能根据长度判断）。
+  // 防误判现在靠的是**语义判据**而不是长度：
+  //   有具体对象的新指令（编号/数量/领域名词）→ 按独立需求处理，不注入上文。
+  //   「一份需求文档」必然含大量具体对象，自然不会被当成续做指令。
   const fn = SERVER.slice(SERVER.indexOf('async function enrichInputWithRecentContext'), SERVER.indexOf('async function enrichInputWithTaskReferences'));
-  const m = fn.match(/input\.length > (\d+)\) return null/);
-  assert.ok(m, '缺少长度上限');
-  const limit = Number(m[1]);
-  assert.ok(limit >= 400, `上限 ${limit} 太窄：实测改稿指令有 192 字，留足余量才不误伤`);
-  assert.ok(limit <= 2000, `上限 ${limit} 过宽：正常需求文档会被误判为续做指令`);
+  // 不许再有长度门槛
+  assert.ok(!/input\.length > \d+\) return null/.test(fn), '仍在用长度上限排除长输入');
+  // 必须用语义判定
+  assert.ok(/assessSelfContained\(input\)/.test(fn), '未使用内容语义判定');
+  assert.ok(/!semantic\.selfContained/.test(fn), '未用语义结果来判断是否续做');
 });
 
 t('续做识别要求含指代词', () => {
