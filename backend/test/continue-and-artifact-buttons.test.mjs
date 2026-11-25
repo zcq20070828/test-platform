@@ -94,42 +94,43 @@ t('UnifiedChatPanel 不再用 artifact.content 单独作为按钮条件', () => 
     `仍有 ${offenders.length} 处只用 artifact.content 作条件：\n${offenders.join('\n')}`);
 });
 
-t('三个按钮改用统一的可用性判断', () => {
-  assert.ok(/hasArtifactContent/.test(UNIFIED), '缺少 hasArtifactContent');
-  assert.ok(/canPreviewArtifact/.test(UNIFIED), '缺少 canPreviewArtifact');
-  // 预览、用作输入、复制三个都要用上
-  const idx = UNIFIED.indexOf('class="artifact-actions"');
-  const block = UNIFIED.slice(idx, idx + 1600);
-  assert.ok(/canPreviewArtifact\(artifact\)/.test(block), '预览按钮未用新判断');
-  assert.ok(/hasArtifactContent\(artifact\)/.test(block), '用作输入/复制未用新判断');
+t('按钮判据统一在 ArtifactCard（2026-11-25 重构后）', () => {
+  const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
+  assert.ok(/const hasContent = computed/.test(CARD), '组件缺 hasContent');
+  assert.ok(/const canPreview = computed/.test(CARD), '组件缺 canPreview');
+  assert.ok(/<ArtifactCard/.test(UNIFIED), 'UnifiedChatPanel 未使用组件');
+  // 调用方不该再自己判
+  assert.ok(!/function hasArtifactContent/.test(UNIFIED), 'UnifiedChatPanel 仍有自己的判据');
 });
 
-t('hasArtifactContent 认 downloadUrl（这是后端实际给的字段）', () => {
-  const idx = UNIFIED.indexOf('function hasArtifactContent');
-  assert.ok(idx > 0, '找不到函数');
-  const block = UNIFIED.slice(idx, idx + 300);
-  assert.ok(/artifact\.downloadUrl/.test(block), 'downloadUrl 未被算作有内容');
+t('hasContent 认 downloadUrl（后端实际只给这个字段）', () => {
+  const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
+  const idx = CARD.indexOf('const hasContent = computed');
+  assert.ok(idx > 0, '找不到 hasContent');
+  const block = CARD.slice(idx, idx + 300);
+  assert.ok(/a\.downloadUrl/.test(block), 'downloadUrl 未被算作有内容');
 });
 
 t('预览排除二进制格式（按文本读会乱码）', () => {
-  const idx = UNIFIED.indexOf('function canPreviewArtifact');
-  const block = UNIFIED.slice(idx, idx + 500);
-  assert.ok(/docx/.test(block) && /xlsx/.test(block), '未排除二进制格式');
+  const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
+  assert.ok(/BIN_EXTS/.test(CARD), '缺二进制列表');
+  assert.ok(/docx/.test(CARD) && /xlsx/.test(CARD), '未排除二进制格式');
 });
 
-t('取内容时支持走 downloadUrl（不再只读 content）', () => {
-  assert.ok(/async function fetchArtifactText/.test(UNIFIED), '缺少统一的取内容函数');
-  const idx = UNIFIED.indexOf('async function fetchArtifactText');
-  const block = UNIFIED.slice(idx, idx + 600);
-  assert.ok(/artifact\.downloadUrl/.test(block), '未支持 downloadUrl');
+t('取内容统一走 resolveContent（组件内，支持 downloadUrl + 认证头）', () => {
+  const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
+  assert.ok(/async function resolveContent/.test(CARD), '缺少统一的取内容函数');
+  const idx = CARD.indexOf('async function resolveContent');
+  const block = CARD.slice(idx, idx + 700);
+  assert.ok(/a\.downloadUrl/.test(block), '未支持 downloadUrl');
   assert.ok(/Authorization/.test(block), '未带认证头，会 401');
 });
 
-t('三个交互都改为异步取内容', () => {
-  for (const fn of ['openPreview', 'copyArtifact', 'useArtifactAsInput']) {
-    const idx = UNIFIED.indexOf(`function ${fn}`);
-    assert.ok(idx > 0, `找不到 ${fn}`);
-    assert.ok(/async function/.test(UNIFIED.slice(idx - 8, idx + 20)), `${fn} 不是异步，无法走 downloadUrl`);
+t('组件的三个交互都是异步取内容', () => {
+  const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
+  for (const fn of ['onPreview', 'onCopy', 'onUseAsInput']) {
+    // 用完整签名匹配，避免 indexOf 命中调用处而非定义处
+    assert.ok(new RegExp(`async function ${fn}\\(`).test(CARD), `${fn} 不是异步定义，无法走 downloadUrl`);
   }
 });
 
