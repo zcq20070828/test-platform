@@ -118,10 +118,33 @@ t('多种约束写法都能识别', () => {
     '| TC-003 | 长度 255 |',
     '| TC-004 | maxLength=255 |',
     '| TC-005 | len(clientId)<=255 |',
+    '| TC-006 | 0<=len<=255 |',
+    '| TC-007 | clientId 64 位以内 |',
+    '| TC-008 | clientId 1~64 位 |',
   ].join('\n');
   const r = checkUnsupportedConstraints(forms + PAD.repeat(3), SRC);
-  assert.ok(r.total >= 4, `应识别到多条约束，实际 ${r.total}`);
-  assert.ok(r.unsupported >= 4, `应判为无依据，实际 ${r.unsupported}`);
+  assert.ok(r.total >= 7, `应识别到多条约束，实际 ${r.total}`);
+  assert.ok(r.unsupported >= 6, `应判为无依据，实际 ${r.unsupported}`);
+});
+
+// 「N 字符 / N 位」这个写法曾经也在 CONSTRAINTS_PATTERNS 里，
+// 在 12 份真实用例集上制造了大量误杀：这些数字不是约束，是在描述数据本身。
+t('描述数据本身的位数不算虚构约束（真实误杀）', () => {
+  const desc = [
+    // 错误数据的格式描述，不是字段约束
+    '| TC-001 | timestamp="1735660800000"（13 位纯数字） |',
+    // AES-128 的固有密钥长度，原文写「密钥为 ClientSecret 前16位」
+    '| TC-002 | 用 ClientSecret 前 16 位作 AES 密钥加密 loginName |',
+    // 手机号本身就是 11 位
+    '| TC-003 | 用测试手机号 13800138000（11 位）发起短信验证 |',
+    // 注入载荷的长度，不是需求里的字段上限
+    '| TC-004 | clawUid 取 1000 字符重复串触发注入 |',
+    // HTTP 状态码，被「上限」这个词误抓过
+    '| TC-005 | 超出上限时返回 400 |',
+  ].join('\n') + PAD.repeat(3);
+  const r = checkUnsupportedConstraints(desc, SRC);
+  assert.strictEqual(r.total, 0, `应全部不判为约束，实际识别到 ${r.total} 条`);
+  assert.strictEqual(r.overLimit, false, '描述数据的位数被误判为虚构约束');
 });
 
 t('门禁 pass 已包含约束检查', async () => {
