@@ -168,15 +168,24 @@ async function invoke(params) {
     // 九维必测点 → 确定性用例（2026-11-09）
     // 过去只有「数据」维是确定性计算的，其余八维只回一段「关注点 + 指引」，模型写不写没人管，
     // 「九维覆盖率」因此只是标注。这里把九维必测点直接展开成可落表用例，
-    // 门禁用同一份探针清单判定，覆盖率成为约束。
+    // 门禁用同一份探针判定，覆盖率成为约束。
     // 注意：无论调用方请求了哪几个维度，必测点一律九维全量——
     // 门禁是按九维判定的，少生成一维就等于少一维无法通过。
+    //
+    // 需求上下文（2026-11-26）：探针断言里写死了 code=0 / HTTP 200 / 「6-32 位」，
+    // 不看需求实际定义了什么。实测任务 7fd39497：229 行交付物 200 行来自这套模板，
+    // 101 行断言 code=0 而需求唯一成功码是 103000，审核判 36 分 + 一票否决。
+    // 所以把需求原文一并传进去，让生成器把断言/步骤换成需求里的真值。
+    const requirementContext = params.requirementContext && typeof params.requirementContext === 'object'
+      ? params.requirementContext
+      : null;
     const dimensionGen = includeDimensionCases
       ? generateDimensionCases({
         task,
         module: options.module || options.target,
         inputSpec: spec,
         maxPerDimension: options.maxPerDimension,
+        requirementContext,
       })
       : { cases: [], checklist: [], stats: { total: 0, dimensionCount: 0, byDimension: {} } };
 
