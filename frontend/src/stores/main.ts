@@ -1488,6 +1488,7 @@ export const useMainStore = defineStore('main', () => {
           if (data.dimensionPass === false) failedParts.push('维度覆盖')
           if (data.quantityPass === false) failedParts.push('数量自相矛盾')
           if (data.inventionPass === false) failedParts.push('疑似编造标识符')
+          if (data.constraintPass === false) failedParts.push('约束值无需求依据')
           const reason = !data.pass && failedParts.length
             ? `（未过项：${failedParts.join('、')}）`
             : ''

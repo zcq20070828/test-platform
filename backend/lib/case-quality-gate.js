@@ -1410,6 +1410,15 @@ export function buildRepairPrompt(report, options = {}) {
     }
     lines.push('   要么改声明的数量，要么补齐/删减列举项；不确定时以原始需求为准，需求没写数量就不要写具体数字。');
   }
+  if (fab?.inventionPass === false) {
+    lines.push('');
+    lines.push(`14. 引用了原始需求中不存在的标识符（${fab.inventedIdentifiers.length} 个，占全部标识符的 ${(fab.inventedRatio * 100).toFixed(0)}%）：`);
+    lines.push(`   ${fab.inventedIdentifiers.join('、')}`);
+    lines.push('   这些接口路径 / 字段名 / 表名 / 状态枚举在原始需求里都找不到。请逐项核实：');
+    lines.push('   - 原文确实存在的 → 改为原文的准确写法；');
+    lines.push('   - 原文没有但业务上必要的 → 明确标注「（建议新增，原文未定义）」，不要当作既有事实描述；');
+    lines.push('   - 完全臆测的 → 直接删除，不要为了让用例看起来完整而编造接口或状态机。');
+  }
   if (fab?.constraintPass === false) {
     lines.push('');
     lines.push(`15. 数值约束在需求中无依据（${fab.unsupportedConstraints}/${fab.constraintRows} 条，占 ${(fab.constraintRatio * 100).toFixed(0)}%）：`);
@@ -1422,15 +1431,6 @@ export function buildRepairPrompt(report, options = {}) {
     lines.push('   - **需求未定义**：保留边界用例是合理的，但必须在交付物开头加一句类别级说明，');
     lines.push('     例如「以下用例中的字段长度约束（0~255）原文未定义，为构造边界用例的假设值，待需求方确认」。');
     lines.push('   注意：只在某条用例里写「该字段长度原文未定义」不算——那是单条说明，不能覆盖整批约束。');
-  }
-  if (fab?.inventionPass === false) {
-    lines.push('');
-    lines.push(`14. 引用了原始需求中不存在的标识符（${fab.inventedIdentifiers.length} 个，占全部标识符的 ${(fab.inventedRatio * 100).toFixed(0)}%）：`);
-    lines.push(`   ${fab.inventedIdentifiers.join('、')}`);
-    lines.push('   这些接口路径 / 字段名 / 表名 / 状态枚举在原始需求里都找不到。请逐项核实：');
-    lines.push('   - 原文确实存在的 → 改为原文的准确写法；');
-    lines.push('   - 原文没有但业务上必要的 → 明确标注「（建议新增，原文未定义）」，不要当作既有事实描述；');
-    lines.push('   - 完全臆测的 → 直接删除，不要为了让用例看起来完整而编造接口或状态机。');
   }
 
   lines.push('');

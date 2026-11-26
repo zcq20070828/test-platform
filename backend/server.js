@@ -6011,6 +6011,7 @@ async function executeChatRound(task, message, userFiles, options = {}) {
               dimensionPass: afterGate.dimensionPass,
               quantityPass: afterGate.quantityPass,
               inventionPass: afterGate.inventionPass,
+              constraintPass: afterGate.constraintPass,
               dimensionCoverage: afterGate.dimensions ? {
                 text: afterGate.dimensions.text,
                 probeCoverage: afterGate.dimensions.probeCoverage,
@@ -14529,6 +14530,10 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
             // 真实原因是 inventionPass=false（反编造检查），但界面只看到可用率。
             quantityPass: gateReport.quantityPass,
             inventionPass: gateReport.inventionPass,
+            // 约束无依据也要广播（2026-11-26）：漏这一项的话，
+            // 因「套用行业默认值」被拦下的交付物，界面上会显示成
+            // 「可用率 99% 未达标」而说不出未过项，退回 b9bd13ec 那种困惑。
+            constraintPass: gateReport.constraintPass,
             dimensionCoverage: gateReport.dimensions ? {
               text: gateReport.dimensions.text,
               probeCoverage: gateReport.dimensions.probeCoverage,
@@ -14564,14 +14569,26 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
           //      修复循环拿不到任何待修项，直接 break，然后按「不通过」判死；
           //   2) 强行拼进补丁格式，模型回的表对不上这些文件级问题。
           // 所以这类问题单独走一次全文重写：输出整份修正后的文档。
+          // 约束无依据（套用行业默认值）也走全文重写（2026-11-26）：
+          // 它和上面两类是同一个性质——问题不在单条用例行里，而是
+          // 「整批用例建立在同一个虚构约束上」（实测 195/222 条基于长度 255）。
+          // 外科式修复按用例行替换动不到根，模型只会给每行补一句「原文未定义」，
+          // 而门禁认的是类别级说明，补完还是不过 → 空转到轮次耗尽被一票否决。
           const hasFabricationIssue = gateReport.applicable && !gateReport.pass
             && gateReport.fabrication
-            && (gateReport.fabrication.quantityPass === false || gateReport.fabrication.inventionPass === false);
+            && (gateReport.fabrication.quantityPass === false
+              || gateReport.fabrication.inventionPass === false
+              || gateReport.fabrication.constraintPass === false);
 
           if (hasFabricationIssue && CASE_QUALITY_AUTO_REPAIR && repairRound < CASE_QUALITY_MAX_REPAIR_ROUNDS) {
             repairRound += 1;
             textBeforeRepair = text;
-            console.log(`[CaseGate] ${agentId} 事实性不通过（数量矛盾/编造标识符），发起第 ${repairRound} 轮全文重写修复`);
+            const fabLabels = [
+              gateReport.fabrication.quantityPass === false ? '数量自相矛盾' : '',
+              gateReport.fabrication.inventionPass === false ? '疑似编造' : '',
+              gateReport.fabrication.constraintPass === false ? '约束值无依据' : '',
+            ].filter(Boolean);
+            console.log(`[CaseGate] ${agentId} 事实性不通过（${fabLabels.join('/')}），发起第 ${repairRound} 轮全文重写修复`);
             broadcast({
               type: 'case_quality_repair',
               agentId,
@@ -14581,7 +14598,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
               polish: false,
               fabrication: true,
               issues: 1,
-              message: `🔧 检出事实性问题（${gateReport.fabrication.quantityPass === false ? '数量自相矛盾' : ''}${gateReport.fabrication.quantityPass === false && gateReport.fabrication.inventionPass === false ? '、' : ''}${gateReport.fabrication.inventionPass === false ? '疑似编造' : ''}），正在全文重写…`,
+              message: `🔧 检出事实性问题（${fabLabels.join('、')}），正在全文重写…`,
               timestamp: new Date().toISOString(),
             });
             try {
@@ -14617,7 +14634,10 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                 const better = recheck.applicable
                   && recheck.usabilityRate >= gateReport.usabilityRate - 0.02
                   && (fabAfter.quantityPass !== false || gateReport.fabrication.quantityPass !== false)
-                  && (fabAfter.inventionPass !== false || gateReport.fabrication.inventionPass !== false);
+                  && (fabAfter.inventionPass !== false || gateReport.fabrication.inventionPass !== false)
+                  // 约束项同理：重写后仍然无依据就别采纳，否则会「修了一轮等于没修」，
+                  // 下一轮门禁再判一次不通过，白白烧一轮额度。
+                  && (fabAfter.constraintPass !== false || gateReport.fabrication.constraintPass !== false);
                 if (better) {
                   text = rewritten;
                   console.log(`[CaseGate] 全文重写已采纳（可用率 ${(gateReport.usabilityRate * 100).toFixed(1)}% → ${(recheck.usabilityRate * 100).toFixed(1)}%）`);
