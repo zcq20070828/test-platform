@@ -95,14 +95,15 @@ t('只有单条字段的零散说明 → 仍拦住（真实故障形态）', () 
 });
 
 t('没有原文时跳过，不误判', () => {
-  const r = checkUnsupportedConstraints('| TC-001 | 255 字符 |', '');
+  const r = checkUnsupportedConstraints('| TC-001 | len(clientId)<=255 |', '');
   assert.strictEqual(r.overLimit, false);
   assert.strictEqual(r.skipped, 'no-source');
 });
 
 t('原文太短时跳过（无判断基准）', () => {
-  const r = checkUnsupportedConstraints('| TC-001 | 255 字符 |', '短需求');
+  const r = checkUnsupportedConstraints('| TC-001 | len(clientId)<=255 |', '短需求');
   assert.strictEqual(r.overLimit, false);
+  assert.strictEqual(r.skipped, 'no-source');
 });
 
 t('没有数值约束的交付物不判', () => {
