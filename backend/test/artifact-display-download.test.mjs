@@ -122,15 +122,15 @@ t('任务列表不再自己实现按钮判据（已收进 ArtifactCard）', () =
   assert.ok(!/v-if="artifact\.content/.test(code), '仍在用 artifact.content 作按钮条件');
 });
 
-t('预览判定在 ArtifactCard 里，认 downloadUrl 并排除二进制', () => {
+t('预览判定在 ArtifactCard 里，认 downloadUrl（docx/xlsx 也能预览）', () => {
   const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
   assert.ok(/const canPreview = computed/.test(CARD), '组件缺 canPreview');
+  // 2026-11-26：预览走服务端转换，docx/xlsx 支持；不是「排除二进制」
   const idx = CARD.indexOf('const canPreview');
-  const block = CARD.slice(idx, idx + 200);
-  assert.ok(/!isBinary\.value/.test(block), '未排除二进制格式');
+  const block = CARD.slice(idx, idx + 400);
+  assert.ok(/docx\|xlsx/.test(block), '预览应支持 docx/xlsx（后端有转换能力）');
   const contentIdx = CARD.indexOf('const hasContent');
   assert.ok(/a\.downloadUrl/.test(CARD.slice(contentIdx, contentIdx + 300)), '没把 downloadUrl 当可用依据');
-  assert.ok(/BIN_EXTS/.test(CARD) && /docx/.test(CARD), '缺二进制扩展名列表');
 });
 
 t('任务列表通过 show 声明要哪几个按钮', () => {
