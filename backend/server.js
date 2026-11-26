@@ -3501,6 +3501,8 @@ app.get('/api/tasks', authenticate, async (req, res) => {
 
   // 从数据库读取已完成/历史任务(权威数据源)
   let taskList = [];
+  // artifacts 落库为空但注册表有文件的任务（2026-11-25）
+  const artifactsNeedingRebuild = [];
   try {
     const dbTasks = await taskDAO.getTasks({ userId: req.user.id, limit: 1000 });
     console.log(`[API] /api/tasks 返回 ${dbTasks.length} 个任务`);
@@ -3513,7 +3515,14 @@ app.get('/api/tasks', authenticate, async (req, res) => {
       // artifacts 统一过 normalizeArtifactsField 补 size（2026-11-25）
       // formatTask 现在会映射 artifacts，但落库的记录没有 size 字段，
       // 前端卡片会显示成「文件  -  14:38:09」。这里顺带补齐。
-      slim.artifacts = normalizeArtifactsField(slim.artifacts);
+      const slimArtifacts = normalizeArtifactsField(slim.artifacts);
+      slim.artifacts = slimArtifacts;
+      // artifacts 为空但注册表里有文件 → 标记出来，由调用方批量补
+      // （2026-11-25 修：任务 a9c49330 是 failed 状态、artifacts 落库为 []，
+      //   但 task_output_files 里有 3 个真实文件。前端拿到空数组后
+      //   走兜底提取，生成的卡片没有 downloadUrl，界面上只剩「下载」一个按钮
+      //   且点了提示"没有可下载的内容"。）
+      if (!slimArtifacts.length) artifactsNeedingRebuild.push(t.id);
       return {
         ...slim,
         reviewNoteCount: noteCount,
@@ -3528,6 +3537,40 @@ app.get('/api/tasks', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[Tasks] 从数据库加载任务失败:', err.message);
+  }
+
+  // 给「artifacts 落库为空但注册表有文件」的任务补上交付物（2026-11-25）
+  //
+  // 实测任务 a9c49330：status=failed 时 artifacts 落库为 []，
+  // 但 task_output_files 里有 3 个真实文件（md/docx/xlsx 各一）。
+  // 前端拿到空数组后走「从正文提取」的兜底，生成的卡片没有 downloadUrl，
+  // 界面上只剩「下载」一个按钮，点了还提示"没有可下载的内容"。
+  //
+  // 这里批量补：只对确实需要重建的任务查注册表，有文件才覆盖。
+  // 放在列表接口而不是只放详情——聊天面板拿的是列表数据。
+  if (artifactsNeedingRebuild.length) {
+    try {
+      const rebuilt = await Promise.all(
+        artifactsNeedingRebuild.slice(0, 50).map(async (tid) => {
+          const arts = await artifactsFromRegistry(tid);
+          return { tid, arts };
+        }),
+      );
+      let patched = 0;
+      for (const { tid, arts } of rebuilt) {
+        if (!arts.length) continue;
+        const row = taskList.find((t) => t.id === tid);
+        if (row) {
+          row.artifacts = arts;
+          patched += 1;
+        }
+      }
+      if (patched) {
+        console.log(`[Tasks] 从注册表补回 ${patched} 个任务的交付物（DB artifacts 为空）`);
+      }
+    } catch (e) {
+      console.warn(`[Tasks] 注册表补交付物失败（不影响列表）: ${e.message}`);
+    }
   }
 
   // 合并内存 Map 中的任务(正在运行或刚创建但 DB insert 可能失败的)
@@ -3727,7 +3770,21 @@ async function artifactsFromRegistry(taskId) {
     const rows = await taskDAO.getTaskOutputFiles(taskId);
     if (!rows.length) return [];
     const ordered = rows.slice().sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-    return ordered.map((f, i) => {
+
+    // 按文件名去重（2026-11-25）
+    //
+    // 实测任务 a9c49330：注册表里 6 条记录，其实是 3 个文件各存了两遍
+    // （生成时写一次、重试后又写一次）。不去重的话界面上会显示 6 个同名卡片。
+    // 保留**最早**的那条：同一文件被重复写入时，第一次的路径通常更可靠。
+    const seen = new Map();
+    for (const f of ordered) {
+      const key = String(f.filePath || '').split('/').pop() || String(f.filePath || '');
+      if (!key) continue;
+      if (!seen.has(key)) seen.set(key, f);
+    }
+    const unique = [...seen.values()];
+
+    return unique.map((f, i) => {
       // size 必须补上（2026-11-25）：注册表里没有这个字段，
       // 前端 artifact-meta 收到 undefined 就显示成「-」，
       // 用户看到的就是「文件  -  14:38:09」这种缺一块的信息。
@@ -3850,6 +3907,32 @@ app.get('/api/tasks/:id', authenticate, async (req, res) => {
         task.artifacts = dbArts;
       } else if (task.artifacts === undefined || task.artifacts === null) {
         task.artifacts = dbArts;
+      }
+      // DB artifacts 为空 → 从注册表补（2026-11-25）
+      // 与列表接口同一处理：实测任务 a9c49330 落库为 []，
+      // 但注册表里有 3 个真实文件，不补的话前端只剩「下载」按钮且点了报错。
+      const emptyAfterDb = !Array.isArray(task.artifacts) || task.artifacts.length === 0;
+      if (emptyAfterDb) {
+        const rebuilt = await artifactsFromRegistry(id);
+        if (rebuilt.length) {
+          task.artifacts = rebuilt;
+          console.log(`[Tasks] 详情从注册表补回 ${rebuilt.length} 个交付物（任务 ${id.slice(0, 8)}）`);
+        }
+      } else {
+        // 内存 Map 里的 artifacts 可能是旧代码写进去的（同一文件重复多条），
+        // 也可能是列表接口补回时未去重的结果。这里统一按文件名再去一次重，
+        // 保证详情和列表看到的一致（2026-11-25）。
+        const seen = new Map();
+        for (const a of task.artifacts) {
+          const key = String(a?.name || a?.path || '').split('/').pop();
+          if (!key) continue;
+          if (!seen.has(key)) seen.set(key, a);
+        }
+        const deduped = [...seen.values()];
+        if (deduped.length !== task.artifacts.length) {
+          console.log(`[Tasks] 详情去重交付物 ${task.artifacts.length} → ${deduped.length}（任务 ${id.slice(0, 8)}）`);
+          task.artifacts = deduped;
+        }
       }
       task.manualHours = Number(r.manual_hours) || 0;
       task.laborCost = Number(r.labor_cost) || 0;
