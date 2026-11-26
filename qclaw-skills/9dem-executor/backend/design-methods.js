@@ -563,7 +563,9 @@ function expectedForLevel(factorName, value, ctx = {}) {
   // 登录态
   if (/登录态|登录状态|认证|login|auth/i.test(f)) {
     if (isFalse) return '页面跳转至登录页且地址含 /login，接口返回 401 且响应体不含业务数据';
-    return '页面停留在目标页不跳转登录，接口返回 200 且响应体 code=0';
+    // 不写具体业务码：各系统成功码不同，实测托管系统是 103000 而这里曾写死 0，
+    // 落地后 101 行断言与需求冲突被审核一票否决。HTTP 200 是协议层事实，可以断言。
+    return '页面停留在目标页不跳转登录，接口返回 200 且返回业务成功码';
   }
   // 角色 / 权限
   if (/角色|权限|role|perm/i.test(f)) {
@@ -574,7 +576,7 @@ function expectedForLevel(factorName, value, ctx = {}) {
   if (/网络|network|信号|带宽/i.test(f)) {
     if (/弱网|3g|2g|低带宽|限速/.test(v)) return '请求在 30 秒内完成并返回 200，加载期间显示 loading，超时提示可重试';
     if (/断网|离线|offline/.test(v)) return '请求失败并提示网络异常，恢复网络后重试返回 200';
-    return `在「${v}」下请求返回 200 且响应体 code=0，无 5xx`;
+    return `在「${v}」下请求返回 200 且返回业务成功码，无 5xx`;
   }
   // 端 / 平台 / 浏览器
   if (/平台|端|系统|浏览器|设备|机型|分辨率|platform|browser|device|os/i.test(f)) {

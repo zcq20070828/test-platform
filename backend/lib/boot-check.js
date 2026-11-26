@@ -32,6 +32,11 @@ export const REQUIRED_MODULES = [
   // 九维规划与确定性用例生成 —— 直接决定用例交付物有没有 42 条必测点与黑盒9法覆盖
   { id: '9dem_planner', rel: '9dem-planner/backend/9dem-planner-invoker.js' },
   { id: '9dem_executor', rel: '9dem-executor/backend/9dem-invoker.js' },
+  // 需求上下文提取（2026-11-26）：九维必测点的断言/步骤靠它落到需求真值上。
+  // 缺了不会崩（降级成通用模板），但就退回「code=0 与需求成功码 103000 冲突」的
+  // 老毛病 —— 实测任务 7fd39497 因此被判 36 分 + 一票否决。
+  // 属于「缺了静默变差」的依赖，必须当必需模块校验。
+  { id: '9dem_requirement_context', rel: '9dem-executor/backend/requirement-context.js' },
 ];
 
 /** 缺失只告警的模块：依赖外部工具链或特定环境，缺了对应功能不可用但不影响主流程 */

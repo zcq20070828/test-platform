@@ -13435,8 +13435,20 @@ function buildApiTestCasesMarkdown(apis, existingText = '') {
  *
  * 补强只加客观条件，不改判定方向（正常/拒绝不变），也不编造业务文案——
  * 文案统一用「与需求一致」表述，避免把系统的猜测写成交付事实。
+ *
+ * ⚠️ 这里曾经硬编码「业务成功码 code=0」（2026-11-26 修）。
+ * code=0 是行业默认值，托管系统需求的唯一成功码是 103000：
+ * 一份 229 行的交付物里 101 行断言 code=0，审核判 36 分 + 一票否决，
+ * 原话是「全表成功码写 code=0，与需求唯一成功码 103000 冲突」。
+ * 现在成功码从需求上下文取（reqCtx.successCode），取不到就写中性表述，
+ * 绝不再套默认值。
+ *
+ * @param {string} expected 原预期结果
+ * @param {Object} c 基线用例
+ * @param {string} rowCtx 行上下文
+ * @param {Object} [reqCtx] 需求上下文（deriveRequirementContext 的返回值）
  */
-function strengthenAssertion(expected, c, rowCtx) {
+function strengthenAssertion(expected, c, rowCtx, reqCtx = null) {
   const e = String(expected || '').trim();
   const layer = String(c.layer || '').trim();
   const ctx = `${rowCtx || ''} ${e}`;
@@ -13446,19 +13458,28 @@ function strengthenAssertion(expected, c, rowCtx) {
   if (/["「『'][^"」』']{2,}["」』']/.test(e)) return e;
   if (/[A-Za-z_][A-Za-z0-9_]*\s*[=＝:]\s*\S+/.test(e)) return e;
 
+  // 需求里查到的成功码；查不到就用中性表述（不许回落成 code=0）
+  const success = reqCtx && reqCtx.successCode;
+  const successHint = success && success.code
+    ? `业务成功码 ${success.field && success.field !== '业务成功码' ? success.field + '=' : ''}${success.code}`
+    : '业务成功码';
+  // 需求里有业务错误码时用它表达失败，否则用通用的「业务失败码」
+  const errorCodes = (reqCtx && reqCtx.errorCodes) || [];
+  const failHint = errorCodes.length ? `业务失败码（如 ${errorCodes[0]}）` : '业务失败码';
+
   const isReject = /拒绝|拦截|失败|不允许|禁止|报错|提示|不通过|非法/.test(e) || layer === '异常';
   const isBoundary = layer === '边界' || /边界|min|max|超长|过短/.test(ctx);
 
   // 拒绝类：断言「明确失败 + 不产生副作用」
   if (isReject) {
-    return `${e}（可判定：返回 HTTP 4xx 或业务失败码 code≠0；响应含明确的错误提示且与需求文案一致；不写入脏数据、不返回 5xx）`;
+    return `${e}（可判定：返回 HTTP 4xx 或${failHint}；响应含明确的错误提示且与需求文案一致；不写入脏数据、不返回 5xx）`;
   }
   // 边界类：断言「边界值被正确处理」
   if (isBoundary) {
-    return `${e}（可判定：返回 HTTP 200 或业务成功码 code=0；响应中相关字段值与输入边界一致；无 5xx 与超时）`;
+    return `${e}（可判定：返回 HTTP 200 或${successHint}；响应中相关字段值与输入边界一致；无 5xx 与超时）`;
   }
   // 正常类：断言「成功 + 关键字段可见」
-  return `${e}（可判定：返回 HTTP 200 或业务成功码 code=0；响应包含该操作对应的业务字段且值符合预期；页面/接口无异常报错）`;
+  return `${e}（可判定：返回 HTTP 200 或${successHint}；响应包含该操作对应的业务字段且值符合预期；页面/接口无异常报错）`;
 }
 
 /**
@@ -13540,10 +13561,21 @@ function fillEmptyInputFromName(text) {
   return { text: lines.join('\n'), rowsFilled };
 }
 
-function buildDesignCasesMarkdown(text, designCases, stats) {
+function buildDesignCasesMarkdown(text, designCases, stats, reqCtx = null) {
   if (!Array.isArray(designCases) || !designCases.length) {
     return { text, added: 0, duplicate: 0 };
   }
+
+  // 需求上下文里能查到真实接口时，空步骤补出来的第 3 步落到具体接口上，
+  // 而不是「触发对应操作并观察接口响应与页面反馈」这种没法照做的话（2026-11-26）。
+  // 实测 7fd39497：196 行都是这句空话，审核原话「步骤不可照做」。
+  const endpoints = (reqCtx && reqCtx.endpoints) || [];
+  const pickEp = () => endpoints[0];
+  const callHint = () => {
+    const ep = pickEp();
+    if (!ep) return '执行该操作并记录接口响应体与时序';
+    return `调用 ${ep.method ? ep.method + ' ' : ''}${ep.path} 并记录响应体与时序`;
+  };
 
   // 已有用例编号（避免与模型已写的重复）
   const { cases: existing } = parseCaseTableForCount(text);
@@ -13577,10 +13609,15 @@ function buildDesignCasesMarkdown(text, designCases, stats) {
     }
     let steps = String(c.steps || '').trim();
     if (!steps) {
-      steps = `1. 准备前置条件：${String(c.precondition || '系统已部署且功能可访问').replace(/\n/g, ' ')}\n2. 按输入数据构造条件：${input || '按用例名称描述的场景构造'}\n3. 触发对应操作并观察接口响应与页面反馈\n4. 核对实际结果是否满足下方预期结果`;
+      steps = `1. 准备前置条件：${String(c.precondition || '系统已部署且功能可访问').replace(/\n/g, ' ')}\n2. 按输入数据构造条件：${input || '按用例名称描述的场景构造'}\n3. ${callHint()}\n4. 核对实际结果是否满足下方预期结果`;
+    } else if (!endpoints.length && /触发对应操作/.test(steps)) {
+      // 基线自带的步骤里也可能有空话；没有真实接口时至少把动作说清楚
+      steps = steps.replace(/触发对应操作并观察接口响应与页面反馈/g, '执行该操作并记录接口响应体与时序');
+    } else if (endpoints.length && /触发对应操作/.test(steps)) {
+      steps = steps.replace(/触发对应操作并观察接口响应与页面反馈/g, callHint());
     }
     let expected = String(c.expected || '').trim();
-    expected = strengthenAssertion(expected, c, rowCtx);
+    expected = strengthenAssertion(expected, c, rowCtx, reqCtx);
 
     rows.push({ ...c, _id: id, input, steps, expected });
   }
@@ -14059,6 +14096,9 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
     // 工具的基线用例与统计：用于确定性落地（2026-11-20）
     let toolDesignCases = null;
     let toolDesignStats = null;
+    // 需求上下文：基线用例落地时要把断言/步骤落到需求真值上（2026-11-26）。
+    // 必须在工具调用时就存下来 —— 落地发生在门禁循环之前，那时现算已经来不及。
+    let toolRequirementContext = null;
     console.log(`[Agent] Trying Gateway API for ${agentId}...`);
     // 构建 API 消息:前置对话历史 + system prompt + 当前输入
     // ========== 智能体"学习知识"上下文注入（V3: DB 持久化 + 内存缓存）==========
@@ -14224,6 +14264,31 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                     console.warn(`[Skill] 注入 intent-engine 配置失败: ${cfgErr.message}`);
                   }
                   const a = JSON.parse((tc.function && tc.function.arguments) || '{}');
+                  // 九维必测点用例要把断言/步骤落到需求真值上（2026-11-26）
+                  //
+                  // 模型的 task 参数只是它自己概括的需求，返回码表、接口清单、
+                  // 状态取值全都不在里面。实测 7fd39497：需求唯一成功码是 103000，
+                  // 但生成了 101 行 code=0 —— 因为探针断言里写死的就是 code=0。
+                  // 这里把**服务端手上的完整需求原文**提取成上下文后注入，
+                  // 让执行器用真值替换，而不是继续套行业默认值。
+                  if (skillId === '9dem-executor' && !a.requirementContext) {
+                    try {
+                      const ctxMod = await import(
+                        pathToFileURL(path.join(SKILLS_DIR, '9dem-executor', 'backend', 'requirement-context.js')).href
+                      );
+                      // CJS 模块经 import() 加载后函数挂在 default 上
+                      const ctxApi = ctxMod.default || ctxMod;
+                      const src = taskInput || a.task || '';
+                      const ctx = ctxApi.deriveRequirementContext(src);
+                      if (ctx && ctx.hasAny) {
+                        a.requirementContext = ctx;
+                        // 存一份给基线用例落地用（落地在门禁循环之前）
+                        toolRequirementContext = ctx;
+                      }
+                    } catch (ctxErr) {
+                      console.warn(`[9dem] 需求上下文提取失败（降级为通用模板）: ${ctxErr.message}`);
+                    }
+                  }
                   // 直接传完整参数,让各 invoker 自行解析(通用化)
                   const out = await skillMod[exec.main](a);
                   // pairwiseFull 是「全量组合明细」，给服务端用的（体积可达十几 MB），
@@ -14420,7 +14485,7 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
         // 放在门禁循环之前：模型抄不完（工具结果超窗口会被截断），
         // 不落地就等于这部分基线全丢（2026-11-20）
         if (toolDesignCases && toolDesignCases.length) {
-          const dc = buildDesignCasesMarkdown(text, toolDesignCases, toolDesignStats);
+          const dc = buildDesignCasesMarkdown(text, toolDesignCases, toolDesignStats, toolRequirementContext);
           if (dc.added > 0) {
             text = dc.text;
             console.log(`[DesignBackfill] ${agentId} 已落地 ${dc.added} 条基线用例（跳过重复 ${dc.duplicate} 条）`);
