@@ -80,21 +80,28 @@ t('文件名用 RFC 5987 filename* 传 UTF-8（中文名不乱码）', () => {
 
 // ---------------- 缺陷 2：size 缺失 ----------------
 
-t('artifactsFromRegistry 补 size 字段', () => {
+t('artifactsFromRegistry 走统一构造器（size 在构造器里补）', () => {
   const start = SERVER.indexOf('async function artifactsFromRegistry');
   const end = SERVER.indexOf('async function', start + 10);
   const block = SERVER.slice(start, end > start ? end : start + 2000);
-  assert.ok(/size/.test(block), '注册表重建的 artifacts 仍没有 size');
-  assert.ok(/statSync\(f\.filePath\)\.size/.test(block), '没有从文件系统取真实大小');
+  // 2026-11-26 重构：size 的 stat 逻辑收敛进 buildArtifact，
+  // 这里只验证「注册表重建确实走了构造器」。
+  assert.ok(/buildArtifacts\(/.test(block), '注册表重建未使用统一构造器');
+  // 构造器里必须有 statSync 取 size
+  const bStart = SERVER.indexOf('function buildArtifact(');
+  const bEnd = SERVER.indexOf('function buildArtifacts(');
+  const body = SERVER.slice(bStart, bEnd);
+  assert.ok(/statSync\(fp\)\.size/.test(body), '构造器没有从文件系统取真实大小');
 });
 
 t('normalizeArtifactsField 统一给历史数据补 size', () => {
   const start = SERVER.indexOf('function normalizeArtifactsField');
-  const end = SERVER.indexOf('\n}', SERVER.indexOf('return a;', start)) + 2;
+  const end = SERVER.indexOf('function', SERVER.indexOf('return a;', start));
   const block = SERVER.slice(start, end);
   assert.ok(/statSync\(a\.path\)\.size/.test(block),
     '读时没有补 size，历史任务仍显示「-」');
-  assert.ok(/a\.size != null/.test(block), '已有 size 时应跳过，避免重复 stat');
+  // 2026-11-26：改为 patch 模式（a.size == null 才补），语义等价
+  assert.ok(/a\.size == null/.test(block), '已有 size 时应跳过，避免重复 stat');
 });
 
 t('size 缺失不影响下载（容错）', () => {
