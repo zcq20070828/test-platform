@@ -531,21 +531,7 @@ async function rebuildArtifactsFromRegistry() {
         const eb = (b.filePath.split('.').pop() || '').toLowerCase();
         return (extPriority[ea] ?? 9) - (extPriority[eb] ?? 9);
       });
-      const artifacts = sorted.map((f, i) => {
-        const id = `artifact-${i}`;
-        return {
-          id,
-          name: path.basename(f.filePath),
-          type: 'file',
-          path: f.filePath,
-          createdAt: f.createdAt,
-          downloadUrl: `/api/tasks/${taskId}/artifacts/${id}/download`,
-          version: f.version,
-          versionSource: f.versionSource,
-          displayVersion: f.displayVersion,
-        };
-      });
-      task.artifacts = artifacts;
+      task.artifacts = buildArtifacts(taskId, sorted, { newestFirst: false, dedupeByName: false });
       rebuilt++;
     }
     if (rebuilt) console.log(`[Tasks] 已从注册表重建 ${rebuilt} 个任务的 artifacts`);
@@ -762,16 +748,17 @@ async function attachExecutionEvidence(task) {
     if (name === '执行证据.json') continue;
 
     const ext = path.extname(name).toLowerCase();
-    const isImage = ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(ext);
-    artifacts.push({
+    // 证据文件走统一构造器（2026-11-26）：id 前缀保持 evidence-N，
+    // 但类型推断、size、createdAt 等字段与交付物同一套。
+    artifacts.push(buildArtifact({
+      taskId: task.id,
+      filePath,
       id: `evidence-${i}`,
       name,
-      type: isImage ? 'image' : 'file',
-      ext,
-      path: filePath,
       downloadUrl: `/api/tasks/${task.id}/artifacts/evidence-${i}/download`,
-      createdAt: new Date().toISOString(),
-    });
+    }));
+    // 保留 ext 字段（证据卡片可能按扩展名区分处理）
+    if (ext) artifacts[artifacts.length - 1].ext = ext;
   }
 
   if (artifacts.length) {
@@ -3769,41 +3756,9 @@ async function artifactsFromRegistry(taskId) {
   try {
     const rows = await taskDAO.getTaskOutputFiles(taskId);
     if (!rows.length) return [];
-    const ordered = rows.slice().sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-
-    // 按文件名去重（2026-11-25）
-    //
-    // 实测任务 a9c49330：注册表里 6 条记录，其实是 3 个文件各存了两遍
-    // （生成时写一次、重试后又写一次）。不去重的话界面上会显示 6 个同名卡片。
     // 保留**最早**的那条：同一文件被重复写入时，第一次的路径通常更可靠。
-    const seen = new Map();
-    for (const f of ordered) {
-      const key = String(f.filePath || '').split('/').pop() || String(f.filePath || '');
-      if (!key) continue;
-      if (!seen.has(key)) seen.set(key, f);
-    }
-    const unique = [...seen.values()];
-
-    return unique.map((f, i) => {
-      // size 必须补上（2026-11-25）：注册表里没有这个字段，
-      // 前端 artifact-meta 收到 undefined 就显示成「-」，
-      // 用户看到的就是「文件  -  14:38:09」这种缺一块的信息。
-      let size;
-      try {
-        if (f.filePath && fsSync.existsSync(f.filePath)) {
-          size = fsSync.statSync(f.filePath).size;
-        }
-      } catch (_) { /* 取不到就留空，不影响下载 */ }
-      return {
-        id: `artifact-${i}`,
-        name: path.basename(f.filePath),
-        type: 'file',
-        path: f.filePath,
-        size,
-        downloadUrl: `/api/tasks/${taskId}/artifacts/artifact-${i}/download`,
-        createdAt: f.createdAt,
-      };
-    });
+    // （去重与类型推断都交给 buildArtifacts，这里只负责选时间顺序）
+    return buildArtifacts(taskId, rows, { newestFirst: false, dedupeByName: true });
   } catch (e) {
     console.error(`[ResolveArtifact] 注册表重建失败: ${e.message}`);
     return [];
@@ -3830,6 +3785,153 @@ function findArtifactCompat(task, artifactId) {
   return list.find(a => a.id === `artifact-${m[1]}`) || null;
 }
 
+// ============================================================
+// 交付物对象构造（2026-11-26 统一）
+// ============================================================
+//
+// 为什么要统一：同一个 artifacts 对象在 7 个地方各自构造，
+// 字段各不相同，结果「少按钮」这个问题被用户报了四次：
+//   - task_review_passed 的 artifacts 有 downloadUrl 但没 size
+//   - executeChatRound 的 chatArtifacts **没有 downloadUrl**（按钮全隐藏）
+//   - 注册表重建 有 downloadUrl 但没 version
+//   - workflow 那份 type 硬编码 'file'，md 也不标 report
+// 每次我只修一处，其他几处就漏。所以收敛成一个构造器，所有出口都调它。
+//
+// 任何新增出口都必须用这里的函数，否则又会出现字段不一致。
+
+/** 文本类扩展名：这类作为「报告」呈现，可预览可复制 */
+const ARTIFACT_TEXT_EXT = /\.(md|markdown|txt)$/i;
+/** 二进制扩展名：不可预览不可复制，只给下载 */
+const ARTIFACT_BIN_EXT = /\.(docx|xlsx|pptx|pdf|zip|doc|xls|ppt)$/i;
+/** 图片扩展名 */
+const ARTIFACT_IMG_EXT = /\.(png|jpe?g|gif|webp|svg|bmp)$/i;
+/** 审计用文件：不给用户看 */
+const ARTIFACT_AUDIT_RE = /执行证据|evidence/i;
+
+/**
+ * 由文件路径推断展示类型
+ *
+ * 前端 ArtifactCard 也有一份同样的判据（它还要处理历史数据里 type 是
+ * 'file' 的情况）。两处逻辑必须一致，否则会出现「后端说 report、
+ * 前端按 file 显示文件夹图标」这种不一致。
+ */
+function artifactTypeOf(filePath) {
+  const p = String(filePath || '');
+  if (ARTIFACT_IMG_EXT.test(p)) return 'image';
+  if (ARTIFACT_TEXT_EXT.test(p)) return 'report';
+  return 'file';
+}
+
+/**
+ * 构造单个交付物对象（**唯一入口**）
+ *
+ * @param {Object} args
+ * @param {string} args.taskId     任务 ID（拼下载地址用）
+ * @param {string} args.filePath   文件绝对路径
+ * @param {string} [args.id]       自定义 id，默认按 index 生成 artifact-N
+ * @param {number} [args.index]    下标（决定 artifact-N 的 N）
+ * @param {string} [args.name]     展示文件名，默认取 basename
+ * @param {string} [args.downloadUrl] 自定义下载地址
+ * @param {string|Date} [args.createdAt]
+ * @param {Object} [args.file]     注册表行（带 version/versionSource/displayVersion）
+ * @param {boolean} [args.withSize=true] 是否 stat 文件拿大小
+ * @returns {Object}
+ */
+function buildArtifact({
+  taskId,
+  filePath,
+  id = null,
+  index = 0,
+  name = null,
+  downloadUrl = null,
+  createdAt = null,
+  file = null,
+  withSize = true,
+} = {}) {
+  const fp = String(filePath || '');
+  const nm = name || path.basename(fp);
+  const artId = id || `artifact-${index}`;
+
+  // size：前端卡片会显示「文件  42.2KB  …」，缺了就显示成「-」。
+  // 从文件系统实时取，取不到就留 undefined（不要写成 0，0 会被渲染成 "0 B"）。
+  let size;
+  if (withSize && fp) {
+    try {
+      if (fsSync.existsSync(fp)) size = fsSync.statSync(fp).size;
+    } catch (_) { /* 取不到就留空 */ }
+  }
+
+  const out = {
+    id: artId,
+    name: nm,
+    type: artifactTypeOf(fp),
+    path: fp,
+    // downloadUrl 是前端判断「能不能预览/复制/下载」的依据，绝不能省
+    downloadUrl: downloadUrl || `/api/tasks/${taskId}/artifacts/${artId}/download`,
+    createdAt: createdAt || (file && file.createdAt) || new Date().toISOString(),
+  };
+  if (size != null) out.size = size;
+
+  // 版本信息（注册表有就带上，供前端标 v1/v2）
+  const v = (file && file.displayVersion) || (file && file.version);
+  if (v) out.version = v;
+  if (file && file.versionSource) out.source = file.versionSource;
+
+  return out;
+}
+
+/**
+ * 构造一组交付物对象（去重 + 过滤审计文件 + 排序）
+ *
+ * 这是大多数出口该用的函数：给任务 ID 和注册表行，得到可直接下发的数组。
+ *
+ * @param {string} taskId
+ * @param {Array} files    注册表行（{ filePath, createdAt, displayVersion, versionSource }）
+ * @param {Object} [opts]
+ * @param {number} [opts.limit]       最多返回几个（默认不限）
+ * @param {boolean} [opts.newestFirst=true] 按时间倒序
+ * @param {boolean} [opts.dedupeByName=true] 按文件名去重
+ * @returns {Array}
+ */
+function buildArtifacts(taskId, files, opts = {}) {
+  const limit = Number(opts.limit) || 0;
+  const newestFirst = opts.newestFirst !== false;
+  const dedupe = opts.dedupeByName !== false;
+
+  let list = Array.isArray(files) ? files.slice() : [];
+  list = list.filter((f) => f && f.filePath);
+  // 审计文件不给用户看
+  list = list.filter((f) => !ARTIFACT_AUDIT_RE.test(path.basename(String(f.filePath))));
+
+  list.sort((a, b) => {
+    const ta = new Date(a.createdAt || 0).getTime();
+    const tb = new Date(b.createdAt || 0).getTime();
+    return newestFirst ? tb - ta : ta - tb;
+  });
+
+  if (dedupe) {
+    const seen = new Set();
+    const kept = [];
+    for (const f of list) {
+      const nm = path.basename(String(f.filePath));
+      if (seen.has(nm)) continue;
+      seen.add(nm);
+      kept.push(f);
+    }
+    list = kept;
+  }
+
+  if (limit > 0) list = list.slice(0, limit);
+
+  return list.map((f, i) => buildArtifact({
+    taskId,
+    filePath: f.filePath,
+    index: i,
+    createdAt: f.createdAt,
+    file: f,
+  }));
+}
+
 /**
  * 将 tasks 表的 artifacts 字段归一化为数组
  * 关键：mysql2 对 longtext 中的 JSON 可能直接返回已解析的对象/数组（而非字符串），
@@ -3852,24 +3954,36 @@ function normalizeArtifactsField(v) {
     return [];
   })();
 
-  // 补 size（2026-11-25）
+  // 补齐历史数据缺的字段（2026-11-25 / 2026-11-26）
   //
-  // 落库的 artifacts 只有 id/name/type/path/downloadUrl/createdAt，
-  // 没有 size —— 前端 artifact-meta 收到 undefined 就显示成「-」，
-  // 用户看到「文件  -  14:38:09」这种缺一块的信息。
+  // 落库的 artifacts 可能缺 size，而且 type 被早期代码硬编码成 'file'
+  // （md 也标 file，前端按文件夹图标显示）。
   //
-  // 在这里统一补而不是改写入侧：历史任务已经存过一批没 size 的记录，
+  // 在这里统一补而不是改写入侧：历史任务已经存过一批，
   // 改写入侧只能管新的，读时补能同时覆盖历史数据。
-  // 文件不存在时留空，不影响下载。
   return list.map((a) => {
     if (!a || typeof a !== 'object') return a;
-    if (a.size != null) return a;
-    try {
-      if (a.path && fsSync.existsSync(a.path)) {
-        return { ...a, size: fsSync.statSync(a.path).size };
-      }
-    } catch (_) { /* 取不到就保持 undefined */ }
-    return a;
+    const patch = {};
+
+    // size：前端卡片显示「文件  42.2KB  …」，缺了就显示成「-」
+    if (a.size == null) {
+      try {
+        if (a.path && fsSync.existsSync(a.path)) {
+          patch.size = fsSync.statSync(a.path).size;
+        }
+      } catch (_) { /* 取不到就保持 undefined */ }
+    }
+
+    // type：早期代码把 md 也硬编码成 'file'。
+    // 用统一判据重算（artifactTypeOf），但只在「算出来与存的不一致」时才改，
+    // 避免覆盖正常的历史值（比如有人手工标过 type）。
+    const inferred = artifactTypeOf(a.path || a.name || '');
+    if (inferred && a.type !== inferred && (a.type === 'file' || a.type == null)) {
+      patch.type = inferred;
+    }
+
+    if (Object.keys(patch).length === 0) return a;
+    return { ...a, ...patch };
   });
 }
 
@@ -5864,50 +5978,20 @@ async function executeChatRound(task, message, userFiles, options = {}) {
       let chatArtifacts = [];
       if (producedDeliverable) {
         try {
-          // 与 ArtifactCard 的 hasContent 判据对齐（2026-11-26）：
+          // 走统一构造器（2026-11-26）：去重、过滤审计文件、类型推断、
+          // downloadUrl、size 都在 buildArtifacts 里保证，这里不再自己拼字段。
           //
-          // 这里原来只给 { id, name, type, path, version, source }，**没有 downloadUrl**。
-          // 前端 ArtifactCard 的 hasContent 是 `content || downloadUrl`，
-          // 两者都没有 → 预览/复制/用作输入全部隐藏，只剩「下载」一个按钮，
-          // 而且点了会提示「该输出物没有可下载的内容」。
-          //
-          // 另外原来直接 slice(0, 4)，会把同名的 docx/xlsx 重复条目也算进来
-          // （实测同一交付物被写两遍，4 条里 2 条是重复的）。
-          // 现在按文件名去重后取最新 3 个。
+          // 历史教训：这里曾漏了 downloadUrl，导致对话模式的交付物
+          // 只剩「下载」一个按钮（前端 hasContent = content || downloadUrl 判 false）。
           const outs = await taskDAO.getTaskOutputFiles(task.id);
-          const TEXT_EXT = /\.(md|markdown|txt)$/i;
-          const seenNames = new Set();
-          const picked = [];
-          // outs 按 created_at 升序，倒序取最新
-          for (const f of [...(outs || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))) {
-            const nm = String(f.filePath || '').split('/').pop();
-            if (!nm || seenNames.has(nm)) continue;
-            if (/执行证据|evidence/i.test(nm)) continue;   // 审计文件不给用户看
-            seenNames.add(nm);
-            picked.push(f);
-            if (picked.length >= 3) break;   // 通常就是 md/docx/xlsx 三份
+          chatArtifacts = buildArtifacts(task.id, outs, { limit: 3, newestFirst: true });
+          // 同步 task.artifacts 让下标与上面一致：
+          // 下载接口 findArtifactCompat 按 task.artifacts 数组下标解析 artifact-N，
+          // 不同步的话点下载会拿到别的文件。
+          if (chatArtifacts.length) {
+            task.artifacts = chatArtifacts;
+            try { await persistTask(task.id); } catch (_) { /* 落库失败不影响本轮 */ }
           }
-          chatArtifacts = picked.map((f, i) => ({
-            id: f.id,
-            name: String(f.filePath || '').split('/').pop(),
-            type: TEXT_EXT.test(String(f.filePath || '')) ? 'report' : 'file',
-            path: f.filePath,
-            // downloadUrl 必须给：它是 ArtifactCard 判断「能不能预览/复制/下载」的依据。
-            //
-            // 索引有个坑：下载接口 findArtifactCompat 是按 **task.artifacts 数组下标**
-            // 解析 artifact-N 的。如果这里用去重后的下标，而 task.artifacts 是
-            // 生成时那 4 条（含重复），就会取错文件。
-            //
-            // 所以这里直接把 task.artifacts 同步成「去重后的注册表内容」，
-            // 让两者索引严格对应。这样既修了按钮缺失，也保证点下载拿到的是正确文件。
-            downloadUrl: `/api/tasks/${task.id}/artifacts/artifact-${i}/download`,
-            version: f.displayVersion,
-            source: f.versionSource,
-            createdAt: f.createdAt,
-          }));
-          // 同步 task.artifacts 使下标与上面一致（内存对象 + 落库）
-          task.artifacts = chatArtifacts.map((a) => ({ ...a, type: 'file' }));
-          try { await persistTask(task.id); } catch (_) { /* 落库失败不影响本轮 */ }
         } catch (_) { /* 取文件失败不影响消息发送 */ }
       }
 
@@ -16917,13 +17001,9 @@ async function executeTaskWithReview(task, userId = null) {
       // 将保存的文件路径添加到任务对象
       if (savedFiles.length > 0) {
         task.outputFiles = savedFiles;
-        task.artifacts = savedFiles.map((filePath, i) => ({
-          id: `artifact-${i}`,
-          name: path.basename(filePath),
-          type: 'file',
-          path: filePath,
-          downloadUrl: `/api/tasks/${task.id}/artifacts/artifact-${i}/download`,
-          createdAt: new Date().toISOString()
+        // 统一构造器（2026-11-26）：类型按扩展名推断、带 size、downloadUrl 必有
+        task.artifacts = savedFiles.map((filePath, i) => buildArtifact({
+          taskId: task.id, filePath, index: i,
         }));
       }
 
@@ -17007,13 +17087,8 @@ async function executeTaskWithReview(task, userId = null) {
       }
       if (failFiles.length > 0) {
         task.outputFiles = failFiles;
-        task.artifacts = failFiles.map((filePath, i) => ({
-          id: `artifact-${i}`,
-          name: path.basename(filePath),
-          type: 'file',
-          path: filePath,
-          downloadUrl: `/api/tasks/${task.id}/artifacts/artifact-${i}/download`,
-          createdAt: new Date().toISOString()
+        task.artifacts = failFiles.map((filePath, i) => buildArtifact({
+          taskId: task.id, filePath, index: i,
         }));
         console.log(`[TaskWithReview] Saved ${failFiles.length} deliverable file(s) despite review failure for task ${task.id}`);
       }
@@ -18146,18 +18221,18 @@ async function persistWorkflowArtifacts(taskId, artifacts) {
 function buildWorkflowArtifacts(workflowId, outputFiles, stageKey) {
   if (!outputFiles || !outputFiles.length) return [];
   return outputFiles.map((fp, i) => {
-    const name = path.basename(fp);
-    const ext = path.extname(fp).toLowerCase();
     const artifactId = `${stageKey}-${i}`;
-    return {
+    const ext = path.extname(fp).toLowerCase();
+    // 统一构造器（2026-11-26）：原来 type 硬编码 'file'，
+    // 工作流里的 md 也不标 report，前端按文件夹图标显示。
+    const art = buildArtifact({
+      taskId: workflowId,
+      filePath: fp,
       id: artifactId,
-      name,
-      type: 'file',
-      ext,
-      path: fp,
       downloadUrl: `/api/tasks/${workflowId}/artifacts/${artifactId}/download`,
-      createdAt: new Date().toISOString(),
-    };
+    });
+    if (ext) art.ext = ext;
+    return art;
   });
 }
 

@@ -50,10 +50,16 @@ function registryFn() {
 
 // ---------------- 去重 ----------------
 
-t('注册表重建按文件名去重', () => {
+t('注册表重建按文件名去重（去重逻辑在构造器里）', () => {
+  // 2026-11-26 重构：去重收敛进 buildArtifacts，这里只验接线
   const fn = registryFn();
-  assert.ok(/const seen = new Map\(\)/.test(fn), '缺少去重逻辑');
-  assert.ok(/if \(!seen\.has\(key\)\) seen\.set\(key, f\)/.test(fn), '未保留首次出现的记录');
+  assert.ok(/buildArtifacts\(taskId, rows/.test(fn), '注册表重建未使用统一构造器');
+  assert.ok(/dedupeByName: true/.test(fn), '未显式要求去重');
+  // 构造器里要有去重实现
+  const bStart = SERVER.indexOf('function buildArtifacts(');
+  const bEnd = SERVER.indexOf('function normalizeArtifactsField');
+  const body = SERVER.slice(bStart, bEnd);
+  assert.ok(/const seen = new Set\(\)/.test(body), '构造器缺少去重逻辑');
 });
 
 t('去重键是文件名而不是完整路径', () => {
@@ -62,10 +68,12 @@ t('去重键是文件名而不是完整路径', () => {
     '未按文件名去重——同一文件写到不同目录时会被当成两个交付物');
 });
 
-t('去重后仍带 downloadUrl 与 size', () => {
-  const fn = registryFn();
-  assert.ok(/downloadUrl: `\/api\/tasks\/\$\{taskId\}\/artifacts/.test(fn), '缺 downloadUrl');
-  assert.ok(/size,/.test(fn), '缺 size');
+t('去重后仍带 downloadUrl 与 size（构造器保证）', () => {
+  const bStart = SERVER.indexOf('function buildArtifact(');
+  const bEnd = SERVER.indexOf('function buildArtifacts(');
+  const body = SERVER.slice(bStart, bEnd);
+  assert.ok(/downloadUrl: downloadUrl \|\| `\/api\/tasks\//.test(body), '构造器缺 downloadUrl');
+  assert.ok(/out\.size = size/.test(body), '构造器缺 size');
 });
 
 // ---------------- 列表接口补回 ----------------

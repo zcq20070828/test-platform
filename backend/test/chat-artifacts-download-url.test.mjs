@@ -52,34 +52,48 @@ function chatArtifactBlock() {
   return SERVER.slice(start, end);
 }
 
-t('chatArtifacts 带 downloadUrl（这是按钮显示的依据）', () => {
+t('chatArtifacts 走统一构造器（downloadUrl 由它保证）', () => {
   const block = chatArtifactBlock();
-  assert.ok(/downloadUrl:/.test(block), '缺少 downloadUrl —— 前端 hasContent 会判 false，按钮全隐藏');
+  // 2026-11-26 重构：字段由 buildArtifacts 统一产出
+  assert.ok(/buildArtifacts\(task\.id, outs/.test(block), '未使用统一构造器');
+  const bStart = SERVER.indexOf('function buildArtifact(');
+  const bEnd = SERVER.indexOf('function buildArtifacts(');
+  assert.ok(/downloadUrl: downloadUrl \|\|/.test(SERVER.slice(bStart, bEnd)),
+    '构造器没保证 downloadUrl —— 前端 hasContent 会判 false');
 });
 
 t('downloadUrl 指向本任务的 artifacts 下载路由', () => {
-  const block = chatArtifactBlock();
-  assert.ok(/downloadUrl: `\/api\/tasks\/\$\{task\.id\}\/artifacts\/artifact-\$\{i\}\/download`/.test(block),
+  const bStart = SERVER.indexOf('function buildArtifact(');
+  const bEnd = SERVER.indexOf('function buildArtifacts(');
+  const body = SERVER.slice(bStart, bEnd);
+  assert.ok(/`\/api\/tasks\/\$\{taskId\}\/artifacts\/\$\{artId\}\/download`/.test(body),
     'downloadUrl 格式不对');
 });
 
-t('按文件名去重（不再 slice(0,4) 带重复）', () => {
+t('按文件名去重（由构造器做，不是裸 slice）', () => {
   const block = chatArtifactBlock();
-  assert.ok(/seenNames/.test(block), '缺少去重');
-  // 注释里会写「原来直接 slice(0, 4)」，允许；只看生效代码
+  assert.ok(/limit: 3/.test(block), '对话轮应限制 3 个');
   const code = block.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
   assert.ok(!/slice\(0, 4\)/.test(code), '仍是裸 slice(0,4)');
+  // 去重实现应在构造器里
+  const bStart = SERVER.indexOf('function buildArtifacts(');
+  const bEnd = SERVER.indexOf('function normalizeArtifactsField');
+  assert.ok(/const seen = new Set\(\)/.test(SERVER.slice(bStart, bEnd)), '构造器缺少去重');
 });
 
-t('排除审计证据文件', () => {
-  const block = chatArtifactBlock();
-  assert.ok(/执行证据|evidence/.test(block), '未排除证据文件');
+t('排除审计证据文件（构造器统一过滤）', () => {
+  const bStart = SERVER.indexOf('function buildArtifacts(');
+  const bEnd = SERVER.indexOf('function normalizeArtifactsField');
+  const body = SERVER.slice(bStart, bEnd);
+  assert.ok(/ARTIFACT_AUDIT_RE/.test(body), '构造器未过滤审计文件');
+  assert.ok(/执行证据|evidence/i.test(SERVER.match(/const ARTIFACT_AUDIT_RE = .*/)[0]),
+    '审计文件匹配规则变了');
 });
 
 t('索引与 task.artifacts 同步（否则点下载会拿错文件）', () => {
   const block = chatArtifactBlock();
-  assert.ok(/task\.artifacts = chatArtifacts\.map/.test(block),
-    '没有把 task.artifacts 同步成去重后的内容，artifact-N 下标会错位');
+  assert.ok(/task\.artifacts = chatArtifacts/.test(block),
+    '没有把 task.artifacts 同步成构造结果，artifact-N 下标会错位');
 });
 
 t('同步后落库（否则下次读库又是不一致的）', () => {
