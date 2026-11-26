@@ -820,6 +820,151 @@ function isTestDataIdentifier(id) {
 }
 
 /**
+ * 检查未定义约束被套用默认值（2026-11-26）
+ *
+ * 真实故障：任务 e8cee999 的用例集里，195 条长度类用例全部建立在
+ * 「0 <= len(field) <= 255」这个约束上，而**原始需求里没有 255**。
+ * 模型套用了「字段长度默认 255」这个行业习惯值，把它当成了需求事实。
+ *
+ * 连带错误（审核抓到的）：
+ *   - 边界用例标「0 字符」，实际传 "a"（1 字符）
+ *   - 标 254/255/256 字符，却共用同一个 64 字符串
+ *   - interfaceVersion 传 32 位字母（原文是 x.y 格式）
+ * 审核因此判 blocker + 26 条 major，一票否决。
+ *
+ * 判据：把用例里出现的**数值约束**抽出来，检查数字是否在输入原文出现。
+ *
+ * 为什么用比例而不是零容忍：合理推断是允许的（原文没写长度，模型补一个
+ * 常见值构造边界用例，工程上是常规做法）。真正的问题是**没标注为推断**。
+ * 所以只统计「无依据约束」的占比，超过阈值才判不通过。
+ *
+ * @param {string} delivered - 交付物文本
+ * @param {string} original  - 原始输入
+ * @param {Object} [opts]
+ * @param {number} [opts.maxRatio=0.5] - 无依据约束的条目占比上限
+ * @returns {{ total:number, unsupported:number, ratio:number, samples:string[], overLimit:boolean, skipped?:string }}
+ */
+export function checkUnsupportedConstraints(delivered, original, opts = {}) {
+  const maxRatio = Number(opts.maxRatio ?? 0.5);
+  const src = String(original || '');
+  // 没有原文就无法判断「原文有没有」，直接放行
+  if (src.trim().length < 100) {
+    return { total: 0, unsupported: 0, ratio: 0, samples: [], overLimit: false, skipped: 'no-source' };
+  }
+
+  // 从原文里收集所有出现过的数字（宽松：任何整数都算「原文提到过」）
+  const srcNums = new Set();
+  for (const m of src.matchAll(/\d+/g)) srcNums.add(String(Number(m[0])));
+
+  /**
+   * 某数字是否「在原文有依据」
+   *
+   * 关键：边界值法的固有写法会被误伤（2026-11-26 实测）。
+   * 一份通过审核的用例集里出现 `1/64/65`、`254/255/256` 这类组合 ——
+   * 65 和 256 本来就**不该**出现在需求里，它们是「边界外一个单位」，
+   * 用来验证超界行为。若只认「原文字面出现」，这类会被全判无依据。
+   *
+   * 所以放宽：N 在原文出现，或 N±1 / N±2 在原文出现（容纳边界外推）。
+   * 反过来，`255` 在一个完全没提长度约束的需求里，255/254/256 全都查不到，
+   * 仍然会被判无依据 —— 真正要抓的就是这种。
+   */
+  const hasBasis = (n) => {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return true;
+    for (const d of [0, -1, 1, -2, 2]) {
+      if (srcNums.has(String(v + d))) return true;
+    }
+    return false;
+  };
+
+  const lines = String(delivered || '').split(/\r?\n/);
+
+  // 数值约束的常见写法
+  const CONSTRAINT_PATTERNS = [
+    /\blen\s*\([^)]*\)\s*(?:<=|>=|<|>|=)\s*(\d{1,6})/gi,     // len(x)<=255
+    /\d{1,6}\s*(?:<=|=<)\s*len\s*\([^)]*\)\s*(?:<=|=<)\s*(\d{1,6})/gi, // 0<=len(x)<=255
+    /(\d{1,6})\s*(?:个)?\s*(?:字符|字节|位|characters?|bytes?)/gi,  // 255 字符
+    /(?:最多|最少|上限|下限|不超过|不少于|至多|至少)\s*(\d{1,6})/g,   // 最多 255
+    /长度\s*(?:限制|上限|下限|为)?\s*[:：]?\s*(\d{1,6})/g,        // 长度 255
+    /(?:min|max)(?:Length|_length|length)\s*[:：=]\s*(\d{1,6})/gi, // maxLength=255
+  ];
+
+  const constraintRows = [];
+  const samples = [];
+
+  for (const line of lines) {
+    // 只看表格行（用例正文），跳过标题与说明段
+    if (!/^\s*\|/.test(line)) continue;
+    if (/^\s*\|[\s\-:|]+\|\s*$/.test(line)) continue;   // 分隔行
+
+    const nums = new Set();
+    for (const re of CONSTRAINT_PATTERNS) {
+      re.lastIndex = 0;
+      for (const m of line.matchAll(re)) {
+        // 区间写法取最后一个捕获组（上界）
+        const n = Number(m[m.length - 1]);
+        if (Number.isFinite(n) && n > 0 && n < 1000000) nums.add(String(n));
+      }
+    }
+    if (!nums.size) continue;
+
+    constraintRows.push([...nums]);
+    const missing = [...nums].filter((n) => !hasBasis(n));
+    if (missing.length && samples.length < 8) {
+      samples.push(`约束值 ${missing.join('/')} 未在原始需求出现`);
+    }
+  }
+
+  const total = constraintRows.length;
+  if (!total) {
+    return { total: 0, unsupported: 0, ratio: 0, samples: [], overLimit: false, disclosed: true };
+  }
+  const unsupported = constraintRows.filter((nums) => nums.some((n) => !hasBasis(n))).length;
+  const ratio = Math.round((unsupported / total) * 1000) / 1000;
+
+  /**
+   * 是否有「约束来源说明」
+   *
+   * 实测近 30 天全部 8 份用例集：7 份用了原文不存在的 255，**全都没做任何说明**。
+   * 唯一做了说明的是 e8cee999（被一票否决那份），它写了
+   * 「约束原文未定义（待确认…）」—— 说明模型的表达能力没问题，只是默认不写。
+   *
+   * 所以判据不是「不许用无依据约束」（合理推断是工程常态，需求没写字段长度时
+   * 模型补一个常见值来构造边界用例，本身没错），而是
+   * 「用了就必须在交付物里说明来源」。
+   */
+  // 说明必须是**针对约束来源的全局声明**，不能是逐个字段的零散说明。
+  //
+  // 实测 e8cee999：它写了一句「accessCode 其长度与字符集原文未定义，待确认 CL-010」，
+  // 这是针对**一个字段**的说明；而它整体铺了 48 行基于「长度 255」的用例，
+  // 却没有一句「这些长度约束都是假设值」。所以不能算已说明。
+  //
+  // 判据：出现「字段长度/长度约束/取值为假设/以下约束」这类**类别级**表述，
+  // 且与「假设/推断/原文未定义」同句。
+  const DISCLOSURE_RE = new RegExp(
+    [
+      '(?:字段长度|长度约束|长度限制|所有长度|各字段长度)[^\\n]{0,30}(?:假设|推断|原文未|未定义|未给出|待确认)',
+      '(?:约束|取值|枚举值|取值范围)[^\\n]{0,20}(?:均为?假设|按假设|属假设|为推断)',
+      '(?:以下|上述|本表|本文|全部)[^\\n]{0,15}(?:约束|长度)[^\\n]{0,25}(?:假设|推断|原文未|未在原文)',
+      '(?:假设|推断)[^\\n]{0,20}(?:字段长度|长度约束|取值约束)',
+    ].join('|'),
+    'i',
+  );
+  const disclosed = DISCLOSURE_RE.test(String(delivered || '').slice(0, 8000));
+
+  return {
+    total,
+    unsupported,
+    ratio,
+    samples,
+    // 只有「大量无依据约束 + 完全没说明」才判不通过。
+    // 单看比例会误伤合理推断；单看有说明又太松。
+    overLimit: ratio > maxRatio && !disclosed,
+    disclosed,
+  };
+}
+
+/**
  * 检查交付物是否引用了原文中不存在的硬标识符。
  *
  * @param {string} delivered - 交付物文本
@@ -1006,10 +1151,18 @@ export function checkDeliverable(text, options = {}) {
   // 直接纳入 pass 判定，不再只当建议。
   const quantityIssues = checkQuantityConsistency(text);
   const invention = checkInventedIdentifiers(text, original);
+  // 未定义约束套默认值（2026-11-26）：规则 e8cee999 的 195 条长度用例
+  // 全部建立在「字段长度 255」上，而需求里没有 255。
+  const constraints = checkUnsupportedConstraints(text, original);
 
   // 数量矛盾：只要出现 1 处就判不通过——「称 13 个却列了 45 个」
   // 这类硬矛盾会让执行的人按错误的清单去测，属于必须修的错误。
   const quantityPass = quantityIssues.length === 0;
+
+  // 无依据约束：比例超阈值且没做类别级说明 → 判不通过。
+  // 单独允许合理推断（需求没写长度时构造边界用例是常态），
+  // 但不允许把假设值当成需求事实铺满整份交付物。
+  const constraintPass = !constraints.overLimit;
 
   // 编造标识符：超过比例上限才判。单看 1 个查不到的名字可能是合理命名扩展，
   // 大面积出现才说明确实在凭空造接口/字段/状态机。
@@ -1023,9 +1176,16 @@ export function checkDeliverable(text, options = {}) {
     inventedTotal: invention.total,
     inventionPass,
     skipped: invention.skipped || null,
+    // 未定义约束（2026-11-26）
+    constraintRows: constraints.total,
+    unsupportedConstraints: constraints.unsupported,
+    constraintRatio: constraints.ratio,
+    constraintSamples: constraints.samples,
+    constraintDisclosed: constraints.disclosed,
+    constraintPass,
   };
 
-  const pass = usabilityPass && dimensionPass && quantityPass && inventionPass;
+  const pass = usabilityPass && dimensionPass && quantityPass && inventionPass && constraintPass;
 
   return {
     applicable: true,
@@ -1037,6 +1197,7 @@ export function checkDeliverable(text, options = {}) {
     dimensionPass,
     quantityPass,
     inventionPass,
+    constraintPass,
     fabrication,
     minUsabilityRate: minRate,
     bySeverity,
@@ -1094,6 +1255,12 @@ function buildSummary({ total, usable, usabilityRate, byReason, minRate, dimensi
     }
     if (fabrication.inventionPass === false) {
       fabLines.push(`疑似编造标识符 ${fabrication.inventedIdentifiers.length} 个（占 ${(fabrication.inventedRatio * 100).toFixed(0)}%）`);
+    }
+    if (fabrication.constraintPass === false) {
+      fabLines.push(
+        `${fabrication.unsupportedConstraints}/${fabrication.constraintRows} 条数值约束在需求中无依据`
+        + `（占 ${(fabrication.constraintRatio * 100).toFixed(0)}%），且未说明为假设值`,
+      );
     }
   }
 
@@ -1242,6 +1409,19 @@ export function buildRepairPrompt(report, options = {}) {
       lines.push(`   - ${q.detail}`);
     }
     lines.push('   要么改声明的数量，要么补齐/删减列举项；不确定时以原始需求为准，需求没写数量就不要写具体数字。');
+  }
+  if (fab?.constraintPass === false) {
+    lines.push('');
+    lines.push(`15. 数值约束在需求中无依据（${fab.unsupportedConstraints}/${fab.constraintRows} 条，占 ${(fab.constraintRatio * 100).toFixed(0)}%）：`);
+    lines.push('   以下约束里的数字在原始需求中找不到出处，却被当成需求事实写进了用例：');
+    for (const s2 of (fab.constraintSamples || []).slice(0, 8)) {
+      lines.push(`   - ${s2}`);
+    }
+    lines.push('   两种改法，选其一：');
+    lines.push('   - **有真实依据**：把约束改成需求原文写明的值（如原文写了 64 位就写 64，不要写 255）；');
+    lines.push('   - **需求未定义**：保留边界用例是合理的，但必须在交付物开头加一句类别级说明，');
+    lines.push('     例如「以下用例中的字段长度约束（0~255）原文未定义，为构造边界用例的假设值，待需求方确认」。');
+    lines.push('   注意：只在某条用例里写「该字段长度原文未定义」不算——那是单条说明，不能覆盖整批约束。');
   }
   if (fab?.inventionPass === false) {
     lines.push('');
