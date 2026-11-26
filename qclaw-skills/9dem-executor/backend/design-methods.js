@@ -68,7 +68,7 @@ function clip(list, max) {
 
 function makeCase(methodKey, data) {
   const meta = METHODS[methodKey];
-  return {
+  const c = {
     method: methodKey,
     methodKey: meta.key,
     methodLabel: meta.label,
@@ -82,6 +82,32 @@ function makeCase(methodKey, data) {
     priority: data.priority || '高',
     trace: data.trace || '',
   };
+  // 接口归属（2026-11-26）：数据类用例是按字段生成的，字段属于哪个接口
+  // 是确定性的，必须在这里记下来，不能留给下游按名字猜。
+  // 实测任务 539f4597：下游猜出「模块标 accessCodeValidate，步骤调 smsValidate」，
+  // 审核判「用例名与步骤接口错配」。
+  if (data.endpoint) c.endpoint = data.endpoint;
+  return c;
+}
+
+/**
+ * 按字段归属给用例打接口标记
+ *
+ * inputSpec 是一个**扁平**的字段集合，但同一份需求里往往有 8 个接口，
+ * 每个接口只认自己那几个参数。过去不区分，于是「mobile 调 smsSend」
+ * （原文 smsSend 要的是 loginName）、「给 getAuthUrlInfo 传 clawUid」
+ * （原文该接口只校验 refer/origin/sign）这类错配满篇都是。
+ *
+ * @param {Object} caseObj 用例
+ * @param {Object} fieldEndpointMap 字段 → 接口
+ * @param {string} field 该用例针对的字段
+ * @returns {Object} 打上 endpoint 的用例
+ */
+function attachEndpoint(caseObj, fieldEndpointMap, field) {
+  if (!caseObj || !fieldEndpointMap || typeof fieldEndpointMap !== 'object') return caseObj;
+  const ep = fieldEndpointMap[field];
+  if (ep && ep.path) caseObj.endpoint = { method: ep.method || '', path: ep.path };
+  return caseObj;
 }
 
 /** 统一去重键：忽略用例名称，聚焦「输入 + 步骤 + 预期」 */
@@ -130,10 +156,36 @@ function dedupeCases(cases) {
 
 // ---------------------------------------------------------------- 输入归一化
 
+/**
+ * 判断一个键是不是真正的「可测字段」（2026-11-26）
+ *
+ * 模型传 inputSpec 时常把接口路径、请求头集合、统计说明当成字段。
+ * 实测任务 26a56e33：`/custody/validate`、`commonHeaders` 被当成字符串字段，
+ * 按长度展开后 183 条用例全不可执行，审核判 6 个 blocker 一票否决。
+ *
+ * 过滤放在这一层而不是只放在 invoker 里 —— 因为 executeDesignMethods
+ * 也可能被别处直接调用，只挡一个入口等于没挡。
+ */
+function isRealFieldName(key) {
+  const k = String(key || '').trim();
+  if (!k) return false;
+  if (/^\//.test(k) || /^[a-z]+:\/\//i.test(k)) return false;          // 接口路径
+  if (/^(?:common)?headers?$|^请求头$|^公共请求头$|^requestHeaders$/i.test(k)) return false;
+  if (/headers?$/i.test(k) && !/^[a-z]*(?:id|code|token|key)$/i.test(k)) return false;
+  if (/[（(]/u.test(k)) return false;                                   // 说明文字
+  if (/说明|分区|统计|口径|完整度|要素|矩阵|清单|备注/.test(k)) return false;
+  if (k.length > 24 && /[\s、，,。；;]/.test(k)) return false;
+  return true;
+}
+
 function normalizeSpec(input) {
   const spec = input.inputSpec || input.spec || {};
-  if (spec && typeof spec === 'object' && !Array.isArray(spec)) return spec;
-  return {};
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(spec)) {
+    if (isRealFieldName(k)) out[k] = v;
+  }
+  return out;
 }
 
 function fieldBounds(spec) {
@@ -150,9 +202,19 @@ function fieldBounds(spec) {
     } else if (type === 'string') {
       const len = Array.isArray(s.length) ? s.length : null;
       info.minLength = s.minLength != null ? Number(s.minLength) : (len ? Number(len[0]) : 0);
-      info.maxLength = s.maxLength != null ? Number(s.maxLength) : (len ? Number(len[1]) : 255);
+      info.maxLength = s.maxLength != null ? Number(s.maxLength) : (len ? Number(len[1]) : null);
       if (!Number.isFinite(info.minLength)) info.minLength = 0;
-      if (!Number.isFinite(info.maxLength)) info.maxLength = 255;
+      // 不再给 maxLength 兜底 255（2026-11-26）
+      //
+      // 兜底 255 等于凭空造一个需求里没有的长度上限，然后基于它铺边界用例 ——
+      // 与「禁止把行业默认值当成需求事实」是同一条原则。
+      // 实测任务 26a56e33：模型把 `/custody/validate`、`commonHeaders` 当字段传进来，
+      // 这两者都没有长度定义，于是拼出「0<=len(/custody/validate)<=undefined」——
+      // undefined 甚至直接漏进了交付物，审核判 blocker。
+      // 现在：没有长度定义就留 null，hasLengthBounds 判定为 false，
+      // 长度类用例整批跳过（不生成胜过生成错的）。
+      if (s.maxLength != null && !Number.isFinite(Number(s.maxLength))) info.maxLength = null;
+      info.hasLengthBounds = Number.isFinite(info.maxLength) && info.maxLength > 0;
       info.pattern = s.pattern || '';
     }
     out[field] = info;
@@ -297,6 +359,21 @@ function genEquivalence(input) {
         priority: '中',
       }));
     } else {
+      // 字符串：没有长度定义就不生成长度类用例（2026-11-26）
+      //
+      // 过去 maxLength 兜底 255，于是「长度合法/过短/过长」三条照发，
+      // 用例里写着项目需求从未定义的长度上限。现在 hasLengthBounds=false
+      // 时只留一条「非空取值」用例，证明字段可用，不假装知道它的长度边界。
+      if (!info.hasLengthBounds) {
+        cases.push(makeCase('equivalence', {
+          name: `等价类-${field}-有效取值`,
+          layer: '正常',
+          input: `${field}="A"`,
+          expected: '正常接受并处理',
+          trace: `有效等价类 ${field} 取非空值（长度上限需求未定义，不设边界用例）`,
+        }));
+        continue;
+      }
       const mid = Math.max(info.minLength, Math.floor((info.minLength + info.maxLength) / 2));
       cases.push(makeCase('equivalence', {
         name: `等价类-${field}-长度合法`,
@@ -380,6 +457,10 @@ function genBoundary(input) {
         }));
       }
     } else if (info.type === 'string') {
+      // 没有长度定义就不造边界点（2026-11-26）
+      // 过去 maxLength 兜底 255，会生成 maxLength=255/maxLength+1=256 这类
+      // 需求里根本不存在的边界值，等于把行业默认值写进交付物。
+      if (!info.hasLengthBounds) continue;
       const points = [
         { n: info.minLength - 1, tag: 'minLength-1', layer: '异常' },
         { n: info.minLength, tag: 'minLength', layer: '边界' },
@@ -644,7 +725,19 @@ function genOrthogonal(input) {
 const HEURISTIC_PAYLOADS = [
   { tag: '空值', build: (f, info) => `${f}=${info.type === 'string' ? '""' : 'null'}`, expected: '按必填规则拒绝或走默认值，不崩溃' },
   { tag: 'null 字面量', build: (f) => `${f}=null`, expected: '拒绝 null 并返回参数错误' },
-  { tag: '超长输入', build: (f, info) => `${f}="${'A'.repeat(info.type === 'string' ? Math.min(info.maxLength + 50, 600) : 24)}"`, expected: '拒绝超长输入，不截断入库、不返回 5xx' },
+  // 超长输入：需求没定义长度上限时不能说「超长」——
+  // 没有基准就无所谓超。改用固定 600 字符的「明显偏长值」，
+  // 并且不把它命名为「超长」而是「超长（无上限定义，验证不崩溃）」。
+  // 实测踩过：maxLength 改为可空后，`null + 50 = 50` 会生成 50 字符的"超长"值，
+  // 名字与内容矛盾。
+  {
+    tag: '超长输入',
+    build: (f, info) => {
+      const base = Number.isFinite(info.maxLength) && info.maxLength > 0 ? info.maxLength + 50 : 600;
+      return `${f}="${'A'.repeat(Math.min(base, 600))}"`;
+    },
+    expected: '拒绝超长输入，不截断入库、不返回 5xx',
+  },
   // 注意：这里刻意不含 | 和换行。这些字符在 Markdown 表格里是结构字符，
   // 会直接把单元格切断，导致整行用例错位（实测 DC-081 的步骤被切断成 `~\``）。
   // 特殊字符覆盖的目的（触发转义/白名单缺陷）用 !@#$%^&*()_+<>?/\ 已足够。
@@ -665,6 +758,9 @@ function genErrorGuessing(input) {
     const info = bounds[field];
     for (const h of HEURISTIC_PAYLOADS) {
       if (h.tag === '超长输入' && info.type !== 'string') continue;
+      // 需求没定义长度上限时，没有「超长」的基准 —— 不生成这类用例。
+      // 保留了也没有可判定结论（无法断言"超过多少算超"）。
+      if (h.tag === '超长输入' && !info.hasLengthBounds) continue;
       const secPayload = h.tag === 'SQL 注入' || h.tag === 'XSS 载荷';
       cases.push(makeCase('errorGuessing', {
         name: `错误推测-${field}-${h.tag}`,
@@ -859,6 +955,19 @@ function executeDesignMethods(options) {
       out = { cases: [], skipped: true, reason: `生成异常:${e.message}` };
     }
     const cases = Array.isArray(out.cases) ? out.cases : [];
+    // 统一补接口归属（2026-11-26）
+    // 各生成器都能从字段名知道用例针对谁，但都不愿意记这个信息。
+    // 在出口处统一打标，避免每个生成器各写一遍、也避免漏掉。
+    const fem = input.fieldEndpointMap;
+    if (fem && typeof fem === 'object') {
+      for (const c of cases) {
+        if (c && !c.endpoint) {
+          // 从用例的 input 里取字段名（`field="..."` / `field=123`）
+          const m = String(c.input || '').match(/^\s*([A-Za-z_\u4e00-\u9fa5][\w\u4e00-\u9fa5.]*)\s*=/);
+          if (m) attachEndpoint(c, fem, m[1]);
+        }
+      }
+    }
     byMethod[meta.key] = cases.length;
     allCases.push(...cases);
     results.push({

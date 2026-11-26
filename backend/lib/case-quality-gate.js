@@ -257,7 +257,7 @@ export function repairPlaceholderInput(input, context = '') {
       } else {
         replacement = /^\d+$/.test(semantic) ? semantic : `"${semantic}"`;
       }
-    } else if (placeholder.tag === 'repeatedA' || placeholder.tag === 'emptyQuotes') {
+    } else if (placeholder.tag === 'repeatedA') {
       const inner = rawValue.replace(/^"|"$/g, '');
       const len = Math.max(inner.length, 1);
       const looksBoundary = /边界|min|max|超长|过短|\d+\s*位/i.test(part) || /边界|min|max|超长|过短|\d+\s*位/i.test(ctx);
@@ -273,6 +273,15 @@ export function repairPlaceholderInput(input, context = '') {
           replacement = `"${readableString(len)}"`;
         }
       }
+    } else if (placeholder.tag === 'emptyQuotes') {
+      // 空值用例必须保持空（2026-11-26）
+      //
+      // 这里曾经和 repeatedA 同处理，把 `field=""` 换成语义值（clawUid="a"）。
+      // 结果「错误推测-clawUid-空值」这条用例的输入变成了非空值 ——
+      // 名字说测空值，实际传了 "a"，断言「按必填规则拒绝」对合法值必然失败。
+      // 实测任务 6963d2b1：审核判约 30 条这类自相矛盾（major，占了 27 条里的一大半）。
+      // 空串不是占位符，是本用例要测的取值，不能"修复"。
+      return part;
     } else {
       const semantic = fieldExample(field, wantIllegal);
       replacement = /^-?\d+(\.\d+)?$/.test(semantic) ? semantic : `"${semantic}"`;
@@ -1555,6 +1564,83 @@ export function applyLayerColumnRepair(text) {
   return { text: lines.join('\n'), tablesRepaired, rowsRepaired };
 }
 
+/**
+ * 从用例行的文字推断它用了哪种设计方法
+ *
+ * 用于补「维度」列里缺失的方法名。判据只看行内已有的文字，
+ * 不猜业务 —— 推断不出就返回空，交给调用方决定是否放弃。
+ *
+ * @param {string} rowText 整行文本
+ * @param {string} layer 层级（正常/边界/异常）
+ * @returns {string} 方法名，或空串
+ */
+function inferMethodFromRow(rowText, layer) {
+  const t = String(rowText || '');
+  // 用例名里常直接写着方法（「等价类-xxx」「边界值-xxx」「场景-xxx」）
+  if (/等价类/.test(t)) return '等价类划分法';
+  if (/边界值|边界\s*len|minLength|maxLength/.test(t)) return '边界值分析法';
+  if (/因果图|规则R\d|C\d+=/.test(t)) return '因果图法';
+  if (/判定表/.test(t)) return '判定表法';
+  if (/正交/.test(t)) return '正交试验法';
+  if (/错误推测|注入|XSS|特殊字符|全角/.test(t)) return '错误推测法';
+  if (/场景|基本流|备选流/.test(t)) return '场景法';
+  if (/状态迁移|迁移/.test(t)) return '状态迁移法';
+  if (/功能图|前置条件不满足/.test(t)) return '功能图法';
+  // 行内推不出，按层级取最常用的一种（这只是标注，不改变用例内容）
+  if (layer === '边界') return '边界值分析法';
+  if (layer === '异常') return '错误推测法';
+  if (layer === '正常') return '等价类划分法';
+  return '';
+}
+
+/**
+ * 自动补「维度 / 设计方法」里缺失的方法
+ *
+ * 门禁要求维度列写成「维度 / 设计方法」，只写维度会被判 missingMethod
+ * 并计入不可用。实测任务 539f4597：7 条用例只写了「② 数据」，
+ * 审核判 major「7 条用例维度列未同时标注设计方法」。
+ *
+ * 补的是机械标签，不是用例内容 —— 方法与层级/名称都在行里可推，
+ * 让模型去返工这一列既慢又容易改坏别的东西。
+ *
+ * @param {string} text
+ * @returns {{ text: string, rowsRepaired: number }}
+ */
+export function applyDimensionMethodRepair(text) {
+  const lines = String(text || '').split('\n');
+  let rowsRepaired = 0;
+
+  let i = 0;
+  while (i < lines.length) {
+    if (!/^\s*\|.*\|\s*$/.test(lines[i])) { i += 1; continue; }
+    const start = i;
+    while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) i += 1;
+    const blockEnd = i;
+
+    const headerCells = lines[start].trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+    const map = mapHeader(headerCells);
+    if (map.dimension === undefined || map.layer === undefined) continue;
+
+    for (let r = start + 1; r < blockEnd; r += 1) {
+      const cells = lines[r].trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+      if (/^[-:\s|]+$/.test(cells.join(''))) continue;
+      const dim = cells[map.dimension] || '';
+      // 已经有方法（含「/」或「法」）就跳过
+      if (!dim || dim.includes('/') || dim.includes('法')) continue;
+      // 维度列必须能识别出带圈数字，否则交给别的规则处理（不是本函数职责）
+      if (!/[①②③④⑤⑥⑦⑧⑨]/.test(dim)) continue;
+
+      const method = inferMethodFromRow(cells.join(' '), cells[map.layer]);
+      if (!method) continue;
+      cells[map.dimension] = `${dim} / ${method}`;
+      lines[r] = `| ${cells.join(' | ')} |`;
+      rowsRepaired += 1;
+    }
+  }
+
+  return { text: lines.join('\n'), rowsRepaired };
+}
+
 export default {
   inspectAssertion,
   repairPlaceholderInput,
@@ -1566,6 +1652,7 @@ export default {
   spliceRepairedRows,
   applyInputRepairs,
   applyLayerColumnRepair,
+  applyDimensionMethodRepair,
 };
 
 // ============================================================

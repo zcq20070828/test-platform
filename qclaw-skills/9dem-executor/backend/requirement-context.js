@@ -225,7 +225,48 @@ function extractFieldConstraints(text) {
 }
 
 /**
- * 一次性提取全��需求上下文
+ * 提取「字段 → 所属接口」的映射
+ *
+ * 用例名说的是字段（如「等价类-creditToken-长度合法」），不含接口名。
+ * 光按用例名匹配接口必然匹配不到，全部落到第一个接口 —— 实测任务 26a56e33
+ * 就是 183 条用例的步骤**一律**写「调用 /custody/preAuth」，
+ * 而 creditToken 属于 validate、loginName 属于 smsSend。
+ *
+ * 做法：找出每个接口定义所在的那一行/那一段，把它附近的字段名记到该接口名下。
+ * 只在需求确实写了「某接口用哪些字段」时才有结果，猜不到就返回空。
+ *
+ * @returns {Object} 字段名 → {method, path}
+ */
+function extractFieldEndpointMap(text) {
+  const src = String(text || '');
+  const map = {};
+  if (!src) return map;
+
+  // 逐行扫：一行里既有接口路径、又有「必填/选填 字段列表」的，建立归属
+  for (const line of src.split(/\r?\n/)) {
+    const epMatch = line.match(/(GET|POST|PUT|PATCH|DELETE)?\s*(\/[\w\-]+\/[\w\-./{}$:]+)/i);
+    if (!epMatch) continue;
+    const ep = {
+      method: (epMatch[1] || '').toUpperCase(),
+      path: epMatch[2],
+    };
+
+    // 该行里的字段名：中文/英文标识符，出现在「必填」「选填」「Body」「参数」附近
+    const fieldPart = line.match(/(?:必填|选填|Body|参数|请求头|headers?)[:：]?\s*([^|。；\n]{2,200})/i);
+    const scope = fieldPart ? fieldPart[1] : line;
+    for (const m of scope.matchAll(/\b([a-zA-Z_][a-zA-Z0-9_]{2,30})\b/g)) {
+      const name = m[1];
+      // 过滤掉中文语境里的普通英文单词与接口自身片段
+      if (/^(?:http|https|json|body|post|get|put|delete|true|false|null|string|number)$/i.test(name)) continue;
+      if (ep.path.includes(`/${name}`)) continue;
+      if (!map[name]) map[name] = ep;
+    }
+  }
+  return map;
+}
+
+/**
+ * 一次性提取完整需求上下文
  *
  * @param {string} requirementText - 原始需求文本
  * @returns {Object} 上下文；各字段可能为 null/空数组，调用方必须能处理缺失
@@ -233,15 +274,17 @@ function extractFieldConstraints(text) {
 function deriveRequirementContext(requirementText) {
   const text = String(requirementText || '');
   const success = extractSuccessCode(text);
+  const endpoints = extractEndpoints(text);
   return {
     successCode: success,
     errorCodes: extractErrorCodes(text),
     httpCodes: extractHttpCodes(text),
-    endpoints: extractEndpoints(text),
+    endpoints,
+    fieldEndpointMap: extractFieldEndpointMap(text),
     stateValues: extractStateValues(text),
     fieldConstraints: extractFieldConstraints(text),
     // 有没有真正拿到可用的需求上下文（决定模板要不要降级）
-    hasAny: !!(success || extractEndpoints(text).length || extractHttpCodes(text).length),
+    hasAny: !!(success || endpoints.length || extractHttpCodes(text).length),
   };
 }
 
@@ -251,6 +294,7 @@ module.exports = {
   extractErrorCodes,
   extractHttpCodes,
   extractEndpoints,
+  extractFieldEndpointMap,
   extractStateValues,
   extractFieldConstraints,
 };

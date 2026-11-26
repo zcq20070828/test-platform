@@ -64,12 +64,52 @@ function buildInputSpecFromTask(task) {
 }
 
 /**
+ * 判断 inputSpec 的键到底是「可测字段」还是别的东西（2026-11-26）
+ *
+ * 模型传 inputSpec 时经常把这三类东西当成字段：
+ *   ① 接口路径：`/custody/validate`、`/api/v1/order`
+ *   ② 请求头集合：`commonHeaders`、`headers`、`请求头`
+ *   ③ 统计说明文字：`接口要素完整度（按要素计数，非接口计数）`、`可用性分区`
+ * 它们都不是可测字段。按「长度等价类/边界值」展开后，
+ * 用例名会变成「等价类-/custody/validate-长度合法」，输入是 `/custody/validate=""`——
+ * 执行者根本不知道该怎么"改这个字段的长度"。实测任务 26a56e33 因此 183 条全不可执行。
+ *
+ * @returns {{spec:Object, removed:string[]}}
+ */
+function filterRealFields(spec) {
+  if (!spec || typeof spec !== 'object') return { spec: {}, removed: [] };
+  const out = {};
+  const removed = [];
+  for (const [key, val] of Object.entries(spec)) {
+    const k = String(key || '').trim();
+    if (!k) { removed.push(key); continue; }
+
+    // ① 接口路径：以 / 开头，或含 /xxx/ 形态
+    if (/^\//.test(k) || /^[a-z]+:\/\//i.test(k)) { removed.push(key); continue; }
+
+    // ② 请求头集合：字段名不含具体字段语义，而是「一堆头」的统称
+    if (/^(?:common)?headers?$|^请求头$|^公共请求头$|^requestHeaders$/i.test(k)) { removed.push(key); continue; }
+    if (/headers?$/i.test(k) && !/^[a-z]*(?:id|code|token|key)$/i.test(k)) { removed.push(key); continue; }
+
+    // ③ 说明文字：含括号/顿号/「按…计数」「说明」「分区」「完整度」等
+    if (/[（(]/u.test(k)) { removed.push(key); continue; }
+    if (/说明|分区|统计|口径|完整度|要素|矩阵|清单|备注/.test(k)) { removed.push(key); continue; }
+
+    // ④ 过长且含空格/标点的，是句子不是字段名
+    if (k.length > 24 && /[\s、，,。；;]/.test(k)) { removed.push(key); continue; }
+
+    out[key] = val;
+  }
+  // 全被剔光时不要返回空 spec，让调用方走 designInput / 提示路径
+  return { spec: out, removed };
+}
+
+/**
  * 从 params.fields 构建结构化 inputSpec
  * @param {Array<{name,type,min,max,minLength,maxLength,values}>} fields
  * @returns {Object} inputSpec
  */
-function buildInputSpecFromFields(fields) {
-  const spec = {};
+function buildInputSpecFromFields(fields) {  const spec = {};
   for (const f of fields || []) {
     const name = f.name || f.field || 'field';
     const type = f.type || 'string';
@@ -125,6 +165,19 @@ async function invoke(params) {
   if (!spec && task) {
     spec = buildInputSpecFromTask(task);
   }
+  // 过滤掉「不是字段」的键（2026-11-26）
+  //
+  // 模型传 inputSpec 时常把接口路径、请求头集合、统计说明当成字段：
+  // 实测任务 26a56e33 的交付物里出现
+  //   「等价类-/custody/validate-长度合法」 输入是 /custody/validate=""
+  //   「等价类-commonHeaders-长度合法」     输入是 commonHeaders="abcdefg..."
+  // 这些不是可测字段，按「长度」展开后 183 条用例全部不可执行，
+  // 审核判 6 个 blocker 一票否决（「把接口路径当作可变字段做等价类与边界值」）。
+  const specFilter = filterRealFields(spec);
+  spec = specFilter.spec;
+  if (specFilter.removed.length) {
+    console.warn(`[9dem] inputSpec 剔除 ${specFilter.removed.length} 个非字段键: ${specFilter.removed.join(', ')}`);
+  }
 
   const hasDesignInput = designInput && typeof designInput === 'object' && Object.keys(designInput).length > 0;
   if (!spec && !hasDesignInput) {
@@ -147,6 +200,11 @@ async function invoke(params) {
     if (includeDesignCases) {
       const merged = { ...designInput };
       if (!merged.inputSpec && !merged.spec && spec) merged.inputSpec = spec;
+      // 字段→接口归属（2026-11-26）：让生成器知道每个字段属于哪个接口，
+      // 用例才能落到正确的接口上，而不是一律调第一个。
+      if (!merged.fieldEndpointMap && requirementContext && requirementContext.fieldEndpointMap) {
+        merged.fieldEndpointMap = requirementContext.fieldEndpointMap;
+      }
 
       // 用需求文本补齐缺失的设计输入（已有的一律不覆盖，只补空）
       try {
@@ -288,5 +346,6 @@ async function invoke(params) {
 module.exports = {
   invoke,
   buildInputSpecFromTask,
-  buildInputSpecFromFields
+  buildInputSpecFromFields,
+  filterRealFields,
 };

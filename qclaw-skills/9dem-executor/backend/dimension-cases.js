@@ -61,10 +61,31 @@ function inferTarget(params = {}) {
   return '被测功能';
 }
 
-/** 输入字段名列表（让数据/安全维的用例落到真实字段上） */
+/**
+ * 输入字段名列表（让数据/安全维的用例落到真实字段上）
+ *
+ * 必须滤掉「不是字段」的键。实测任务 26a56e33：模型把 `/custody/validate`、
+ * `commonHeaders` 当字段传进来，于是生成了
+ * 「等价类-/custody/validate-长度合法」、输入 `/custody/validate=""` 这种用例，
+ * 执行者根本不知道该怎么改一个 URL 路径的"长度"。审核判 blocker。
+ * 判据与 design-methods.js 的 isRealFieldName 保持一致。
+ */
 function inferFields(inputSpec) {
   const spec = inputSpec && typeof inputSpec === 'object' ? inputSpec : {};
-  return Object.keys(spec).filter((k) => k && k !== 'requirement').slice(0, 3);
+  const isRealFieldName = (k) => {
+    const s = String(k || '').trim();
+    if (!s) return false;
+    if (/^\//.test(s) || /^[a-z]+:\/\//i.test(s)) return false;
+    if (/^(?:common)?headers?$|^请求头$|^公共请求头$|^requestHeaders$/i.test(s)) return false;
+    if (/headers?$/i.test(s) && !/^[a-z]*(?:id|code|token|key)$/i.test(s)) return false;
+    if (/[（(]/u.test(s)) return false;
+    if (/说明|分区|统计|口径|完整度|要素|矩阵|清单|备注/.test(s)) return false;
+    if (s.length > 24 && /[\s、，,。；;]/.test(s)) return false;
+    return true;
+  };
+  return Object.keys(spec)
+    .filter((k) => k && k !== 'requirement' && isRealFieldName(k))
+    .slice(0, 3);
 }
 
 /** 按字段规格给一个真实值（避免生成「按探针要求构造」这类占位描述） */
@@ -213,7 +234,6 @@ function adaptSteps(steps, probe, ctx, target) {
   // 挑一个与该探针语义最相关的真实接口
   const ep = endpoints.length ? pickEndpointForProbe(probe, endpoints) : null;
   const call = ep ? `${ep.method ? ep.method + ' ' : ''}${ep.path}` : '';
-
   // 通用兜底句：无论探针原句怎么措辞，都把「观察接口响应」落到真实接口上
   if (/观察接口响应与页面反馈/.test(out)) {
     out = out.replace(
@@ -252,6 +272,47 @@ function pickEndpointForProbe(probe, endpoints) {
     }
   }
   return endpoints[0];
+}
+
+/**
+ * 按「用例名/输入里点名的接口或字段」挑接口（2026-11-26）
+ *
+ * 两层判据，从强到弱：
+ *   ① 用例文本里直接出现的接口路径 —— 最可靠；
+ *   ② 用例文本里的字段名经 fieldEndpointMap 反查所属接口 ——
+ *      用例名说的是字段（「等价类-creditToken-长度合法」），不含接口名，
+ *      但 creditToken 属于 /custody/validate，靠需求里的字段归属能反查出来。
+ *
+ * 为什么必须这么做：九维探针标题都是通用描述，只按探针语义匹配会全部落到
+ * endpoints[0]。实测任务 26a56e33：183 条用例的步骤**一律**写「调用 /custody/preAuth」，
+ * 而用例名说的是 validate/getUserInfo/smsSend/unbinding，
+ * 审核判 blocker「步骤与用例名所述接口不符，断言无法验证被测接口」。
+ */
+function pickEndpointForCase(caseText, endpoints, fallback, fieldEndpointMap) {
+  if (!endpoints.length) return null;
+  const text = String(caseText || '');
+  if (!text) return fallback || endpoints[0];
+
+  // ① 用例文本里直接出现的接口路径
+  for (const ep of endpoints) {
+    if (text.includes(ep.path)) return ep;
+  }
+  // ①' 接口末段名（validate / smsSend）出现在用例文本里
+  for (const ep of endpoints) {
+    const seg = ep.path.split('/').filter(Boolean).pop();
+    if (seg && seg.length >= 3 && new RegExp(`\\b${seg}\\b`, 'i').test(text)) return ep;
+  }
+  // ② 字段名反查所属接口
+  const map = fieldEndpointMap && typeof fieldEndpointMap === 'object' ? fieldEndpointMap : {};
+  for (const [field, ep] of Object.entries(map)) {
+    if (!field || field.length < 3) continue;
+    if (new RegExp(`\\b${field}\\b`, 'i').test(text)) {
+      // 需求里记的接口必须在当前接口清单里（避免拿到别处的陈旧项）
+      const hit = endpoints.find((e) => e.path === ep.path);
+      if (hit) return hit;
+    }
+  }
+  return fallback || endpoints[0];
 }
 
 /**
@@ -380,6 +441,7 @@ module.exports = {
   renderChecklist,
   adaptAssertion,
   adaptSteps,
+  pickEndpointForCase,
   DIMENSION_METHOD,
   DIMENSION_PREFIX,
 };
