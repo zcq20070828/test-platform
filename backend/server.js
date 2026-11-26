@@ -48,6 +48,7 @@ import {
   buildSurgicalRepairPrompt,
   spliceRepairedRows,
   applyLayerColumnRepair as applyCaseLayerRepair,
+  applyDimensionMethodRepair as applyCaseDimensionMethodRepair,
   parseCaseTable as parseCaseTableForCount,
   repairPlaceholderInput,
 } from './lib/case-quality-gate.js';
@@ -13570,9 +13571,47 @@ function buildDesignCasesMarkdown(text, designCases, stats, reqCtx = null) {
   // 而不是「触发对应操作并观察接口响应与页面反馈」这种没法照做的话（2026-11-26）。
   // 实测 7fd39497：196 行都是这句空话，审核原话「步骤不可照做」。
   const endpoints = (reqCtx && reqCtx.endpoints) || [];
-  const pickEp = () => endpoints[0];
-  const callHint = () => {
-    const ep = pickEp();
+  /**
+   * 按用例自身的文本挑接口
+   *
+   * 不能无脑用 endpoints[0]。实测任务 26a56e33：183 条用例的步骤**一律**写
+   * 「调用 /custody/preAuth」，而用例名说的是 validate/getUserInfo/smsSend/unbinding，
+   * 审核判 blocker「步骤与用例名所述接口不符，断言无法验证被测接口」。
+   * 用例名/输入里点名了哪个接口，就用哪个。
+   */
+  const pickEpFor = (caseText, caseEndpoint) => {
+    if (!endpoints.length) return null;
+    // ① 用例自带的接口归属最可靠（由 9dem 按字段归属打标，2026-11-26）
+    //
+    // 下游靠名字猜接口是不够的：实测任务 539f4597 出现「模块标 accessCodeValidate、
+    // 步骤调 smsValidate」「给 getAuthUrlInfo 传 clawUid」这类错配，
+    // 审核判「用例名与步骤接口错配」「入参口径自造」。
+    if (caseEndpoint && caseEndpoint.path) {
+      const hit = endpoints.find((e) => e.path === caseEndpoint.path);
+      if (hit) return hit;
+    }
+    const text = String(caseText || '');
+    for (const ep of endpoints) {
+      if (text.includes(ep.path)) return ep;
+    }
+    for (const ep of endpoints) {
+      const seg = ep.path.split('/').filter(Boolean).pop();
+      if (seg && seg.length >= 3 && new RegExp(`\\b${seg}\\b`, 'i').test(text)) return ep;
+    }
+    // 字段名反查所属接口：用例名说的是字段（「等价类-creditToken-长度合法」），
+    // 不含接口名，但 creditToken 属于 /custody/validate，靠需求里的归属能反查。
+    const map = (reqCtx && reqCtx.fieldEndpointMap) || {};
+    for (const [field, ep] of Object.entries(map)) {
+      if (!field || field.length < 3) continue;
+      if (new RegExp(`\\b${field}\\b`, 'i').test(text)) {
+        const hit = endpoints.find((e) => e.path === ep.path);
+        if (hit) return hit;
+      }
+    }
+    return endpoints[0];
+  };
+  const callHint = (caseText, caseEndpoint) => {
+    const ep = pickEpFor(caseText, caseEndpoint);
     if (!ep) return '执行该操作并记录接口响应体与时序';
     return `调用 ${ep.method ? ep.method + ' ' : ''}${ep.path} 并记录响应体与时序`;
   };
@@ -13608,13 +13647,12 @@ function buildDesignCasesMarkdown(text, designCases, stats, reqCtx = null) {
       if (rep.repaired && rep.input) input = rep.input;
     }
     let steps = String(c.steps || '').trim();
+    // 用例自身的文本（名字 + 输入 + 关联需求）用于定位它测的是哪个接口
+    const caseText = `${c.name || ''} ${input || ''} ${c.trace || ''}`;
     if (!steps) {
-      steps = `1. 准备前置条件：${String(c.precondition || '系统已部署且功能可访问').replace(/\n/g, ' ')}\n2. 按输入数据构造条件：${input || '按用例名称描述的场景构造'}\n3. ${callHint()}\n4. 核对实际结果是否满足下方预期结果`;
-    } else if (!endpoints.length && /触发对应操作/.test(steps)) {
-      // 基线自带的步骤里也可能有空话；没有真实接口时至少把动作说清楚
-      steps = steps.replace(/触发对应操作并观察接口响应与页面反馈/g, '执行该操作并记录接口响应体与时序');
-    } else if (endpoints.length && /触发对应操作/.test(steps)) {
-      steps = steps.replace(/触发对应操作并观察接口响应与页面反馈/g, callHint());
+      steps = `1. 准备前置条件：${String(c.precondition || '系统已部署且功能可访问').replace(/\n/g, ' ')}\n2. 按输入数据构造条件：${input || '按用例名称描述的场景构造'}\n3. ${callHint(caseText, c.endpoint)}\n4. 核对实际结果是否满足下方预期结果`;
+    } else if (/触发对应操作/.test(steps)) {
+      steps = steps.replace(/触发对应操作并观察接口响应与页面反馈/g, callHint(caseText, c.endpoint));
     }
     let expected = String(c.expected || '').trim();
     expected = strengthenAssertion(expected, c, rowCtx, reqCtx);
@@ -14543,6 +14581,19 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
           if (layerFixed.rowsRepaired > 0) {
             text = layerFixed.text;
             console.log(`[CaseGate] ${agentId} 自动补层级列 ${layerFixed.rowsRepaired} 行（${layerFixed.tablesRepaired} 张表）`);
+          }
+
+          // 自动补「维度 / 设计方法」里缺失的方法（2026-11-26）
+          //
+          // 门禁要求维度列写成「② 数据 / 等价类划分法」，只写「② 数据」会被判
+          // missingMethod 并计入不可用。实测任务 539f4597：7 条用例只写了维度，
+          // 审核判 major「7 条用例维度列未同时标注设计方法」。
+          // 方法和层级/用例名一样是机械信息，按行文字确定性推断即可，
+          // 让模型返工这一列既慢又容易改坏别的列。
+          const methodFixed = applyCaseDimensionMethodRepair(text);
+          if (methodFixed.rowsRepaired > 0) {
+            text = methodFixed.text;
+            console.log(`[CaseGate] ${agentId} 自动补设计方法 ${methodFixed.rowsRepaired} 行`);
           }
 
           gateReport = checkCaseQuality(text, {
@@ -17810,6 +17861,13 @@ function extractReportProjectName(content) {
     if (/(待补充|待填写|待确定|待提供|待确认|待定|未提供|未填写|未知|不详|暂无|无项目|没有项目|原文未|输入无)/.test(v)) return false;
     // 标题只是报告类型（如“缺陷分析与分类报告”“安全测试报告”）时，不要当项目名
     if (/(报告|分析|用例|方案|记录|清单|汇总|总结|测试)/.test(v) && !/(项目|系统|平台|应用|活动|产品|业务|中台)/.test(v)) return false;
+    // 章节标题不是项目名（2026-11-26）
+    //
+    // 交付物里系统自动追加的段落标题会被 heading 兜底抓成项目名，
+    // 实测「黑盒设计用例」「九维必测点用例」「假设值声明」都出现过。
+    // 这些词描述的是**文档结构**，不可能是被测系统名。
+    if (/^(?:九维|黑盒|必测点|假设值|豁免|去重|覆盖分析|用例统计|方法适用性|修正口径|维度与方法)/.test(v)) return false;
+    if (/(必测点|假设值声明|修正口径|方法适用性|维度覆盖矩阵|设计方法覆盖矩阵|用例清单|执行步骤|前置条件)/.test(v)) return false;
     // 整句说明/指令不是项目名（2026-11-23）：
     // 无 # 标题时的首行兜底会把「这是一段没有任何项目信息的内容」
     // 这种整句话当成项目名，文件名变成「这是一段没有任何项目信息的内容测试用例」。
@@ -17877,6 +17935,16 @@ function extractReportProjectName(content) {
       .replace(/(需求分析报告|需求文档|需求说明书|需求规格说明书|测试用例集?|测试报告|测试方案|缺陷分析报告|接口测试执行报告|UI_E2E测试执行报告|数据脱敏记录|报告|文档).*$/, '')
       .replace(/^[【\[]|[】\]]$/g, '')
       .trim();
+    // 章节标题里的括号是「这一节是干什么的」的说明，不是项目名的一部分（2026-11-26）
+    //
+    // 实测任务 26a56e33：交付物第一个标题是
+    //   ## 黑盒设计用例（系统按 9dem_executor 基线落地）
+    // looksLikeProjectName 里「含用例但不含项目/系统/平台…」本该把它拒掉，
+    // 结果括号里的「系统」二字让它通过了 —— 文件名成了
+    //   「黑盒设计用例测试用例.md」
+    // 先剥括号再判，「黑盒设计用例」就会因为含「用例」且不含系统类词被正确拒绝。
+    const hNoParen = h.replace(/[（(][^（）()]{1,80}[)）]/g, '').trim();
+    if (hNoParen.length >= 2) h = hNoParen;
     if (looksLikeProjectName(h)) return h;
   }
 
@@ -17887,9 +17955,16 @@ function extractReportProjectName(content) {
     // mammoth 解析 Word 后常见「项目名称\n\n移动云盘…」，若值是占位词（待补充），
     // 上面的 linePair 会校验失败继续往下走，落到这里把**首行的「项目名称」四个字**
     // 当成项目名——文件名变成「项目名称需求分析报告.md」。
-    if (!/^(?:项目名称|系统名称|产品名称|项目|版本号|版本|需求来源|分析范围|文档状态)$/.test(firstLine)) {
+    //
+    // 首行是 Markdown 标题时也不走这里（2026-11-26）：标题分支上面已经判过了，
+    // 判不过说明它不是项目名，兜底再判一次只会绕过括号剥离把章节标题放进来
+    // （实测「## 黑盒设计用例（系统按 9dem_executor 基线落地）」成了项目名）。
+    const isMarkdownHeading = /^#{1,6}\s/.test(firstLine);
+    if (!isMarkdownHeading
+      && !/^(?:项目名称|系统名称|产品名称|项目|版本号|版本|需求来源|分析范围|文档状态)$/.test(firstLine)) {
       const h = clean(firstLine)
         .replace(/(需求分析报告|需求文档|需求说明书|需求规格说明书|测试用例集?|测试报告|测试方案|缺陷分析报告|接口测试执行报告|UI_E2E测试执行报告|数据脱敏记录|报告|文档).*$/, '')
+        .replace(/[（(][^（）()]{1,80}[)）]/g, '')
         .trim();
       if (looksLikeProjectName(h)) return h;
     }
@@ -17917,10 +17992,49 @@ function extractProjectInfo(content) {
   const lineVersion = content.match(/^(?:版本号|版本)\s*\n+\s*([^\n]{1,30})\s*$/m);
   const bulletVersion = content.match(/^[-*+]\s*(?:\*\*)?(?:版本号|版本)(?:\*\*)?\s*[:：]\s*([^\n]{1,30})/m);
   const versionText = String((tableVersion && tableVersion[1]) || (plainVersion && plainVersion[1]) || (lineVersion && lineVersion[1]) || (bulletVersion && bulletVersion[1]) || '').trim();
-  const versionMatch = versionText.match(/V?(\d+\.\d+(?:\.\d+)?)/i);
-  if (versionMatch) {
-    result.versionOrFeature = `V${versionMatch[1]}`;
-  }
+
+  /**
+   * 从版本字段里取一个版本号
+   *
+   * 不能无脑抓第一个 ^V?\d+\.\d+。实测任务 539f4597 的版本字段是
+   *   「V1（接口版本 1.0）／V2（接口版本 2.0）；另有 H5 凭证授权文档标注 20260225（非最新接口）」
+   * 这是**接口版本**的说明，不是项目版本。抓第一个 1.0 得到「V1.0」，
+   * 文件名变成「托管系统技术方案V1.0测试用例.md」—— 凭空多出一个版本号。
+   *
+   * 判据：
+   *   ① 字段本身就是一个干净版本（`1.0.0` / `V3.0` / `v2`）→ 用它；
+   *   ② 字段以版本开头且后面是明确的补充（括号/分隔）→ 用开头那个；
+   *   ③ 出现多个版本号，或夹着「接口版本/非最新/另有」这类说明 → 放弃，
+   *      宁可文件名不带版本，也不要带一个错的。
+   */
+  const extractVersionFrom = (text) => {
+    const t = String(text || '').trim();
+    if (!t) return '';
+    const clean = t.replace(/[*`]/g, '').trim();
+
+    // ① 整段就是一个版本
+    const whole = clean.match(/^[Vv]?(\d+(?:\.\d+){0,2})$/);
+    if (whole) return `V${whole[1]}`;
+
+    // ③ 复合/多版本描述：放弃
+    const versionTokens = clean.match(/[Vv]?\d+(?:\.\d+){1,2}/g) || [];
+    const looksComposite = versionTokens.length >= 2
+      || /接口版本|非最新|另有|分别|及|或|／|\/|；|;/.test(clean)
+      || /版本/.test(clean);
+    if (looksComposite) {
+      // ② 只有「开头就是版本 + 后面是括号补充」这一种复合形态是可取的
+      const lead = clean.match(/^[Vv](\d+(?:\.\d+){1,2})\s*[（(]/);
+      if (lead) return `V${lead[1]}`;
+      return '';
+    }
+
+    // 单版本 + 少量文字描述（如「1.0 初版」）
+    const one = clean.match(/[Vv]?(\d+(?:\.\d+){1,2})/);
+    return one ? `V${one[1]}` : '';
+  };
+
+  const fromVersionText = extractVersionFrom(versionText);
+  if (fromVersionText) result.versionOrFeature = fromVersionText;
 
   const versionPatterns = [
     /版本[号]*[::]*\s*V?(\d+\.\d+\.\d+)/i,      // 版本号:V3.2.1

@@ -163,5 +163,51 @@ t('版本号三种写法都能提取', () => {
   }
 });
 
+// 实测任务 539f4597：版本字段是
+//   「V1（接口版本 1.0）／V2（接口版本 2.0）；另有 H5 凭证授权文档标注 20260225（非最新接口）」
+// 这是接口版本的说明，不是项目版本。抓第一个 1.0 得到「V1.0」，
+// 文件名变成「托管系统技术方案V1.0测试用例.md」，凭空多出一个版本号。
+t('复合版本描述不硬抓单个版本号', () => {
+  const n = loadNamer();
+  const info = n.extractProjectInfo(
+    '# 测试用例集\n\n| 项目名称 | 托管系统技术方案 |\n'
+    + '版本号：V1（接口版本 1.0）／V2（接口版本 2.0）；另有 H5 凭证授权文档标注 20260225（非最新接口）',
+  );
+  assert.strictEqual(info.projectName, '托管系统技术方案', `项目名取错：${info.projectName}`);
+  assert.strictEqual(info.versionOrFeature, '', `不该带版本号，实际「${info.versionOrFeature}」`);
+});
+
+t('开头版本 + 括号补充仍可用', () => {
+  const n = loadNamer();
+  const info = n.extractProjectInfo('# x\n\n| 项目名称 | 某系统 |\n版本号：V2.1（2026-08 发布）');
+  assert.strictEqual(info.versionOrFeature, 'V2.1', `取错：${info.versionOrFeature}`);
+});
+
+// 实测任务 26a56e33：交付物首个标题是
+//   ## 黑盒设计用例（系统按 9dem_executor 基线落地）
+// looksLikeProjectName 里「含用例但不含系统类词」本该拒掉，但括号里的「系统」
+// 让它通过了，文件名成了「黑盒设计用例测试用例.md」。
+t('系统追加的章节标题不能当项目名', () => {
+  const n = loadNamer();
+  const cases = [
+    '## 黑盒设计用例（系统按 9dem_executor 基线落地）\n\n> 说明',
+    '## 九维必测点用例（系统按必测矩阵补齐）\n',
+    '## 假设值声明（类别级，全文适用）\n',
+  ];
+  for (const c of cases) {
+    const info = n.extractProjectInfo(c);
+    assert.strictEqual(info.projectName, '项目', `章节标题被当成项目名：${info.projectName}`);
+  }
+});
+
+t('带括号说明的真实项目名不被误杀（不回归）', () => {
+  const n = loadNamer();
+  const info = n.extractProjectInfo(
+    '## 中国移动云盘"算力大作战"活动（活动ID: National_TokenPK）\n\n'
+    + '| 项目名称 | 中国移动云盘"算力大作战"活动（活动ID: National_TokenPK） |',
+  );
+  assert.ok(/算力大作战/.test(info.projectName), `真实项目名被误杀：${info.projectName}`);
+});
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail > 0) process.exit(1);
