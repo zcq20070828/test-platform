@@ -4491,6 +4491,64 @@ app.get('/api/tasks/:id/output', authenticate, (req, res) => {
   });
 });
 
+// 按文件名下载（2026-11-26）
+//
+// 为什么需要这条路由：历史消息里的 artifacts 是旧代码构造的快照，
+// 只有 path/name、没有 downloadUrl。后端修好之后，那些旧卡片前端仍然
+// 无法下载（按钮会被判定为"没有可下载的内容"而隐藏）。
+// 用户不会因为后端修好就自动拿到新数据，要等重新发一条消息才刷新。
+//
+// 这条路由让前端可以用「taskId + 文件名」定位文件，兼容旧快照。
+// 注意：必须注册在 :artifactId 路由**之前**，否则 by-name 会被当成 artifactId。
+app.get('/api/tasks/:taskId/artifacts/by-name/:fileName/download', authenticate, async (req, res) => {
+  const { taskId } = req.params;
+  const fileName = decodeURIComponent(req.params.fileName || '');
+  const task = await resolveTaskForArtifact(taskId, req);
+  if (!task) return res.status(404).json({ error: '任务不存在' });
+  if (!canAccessTask(task, req)) return res.status(403).json({ error: '无权访问此任务' });
+
+  // 只允许纯文件名，禁止路径穿越
+  if (!fileName || /[\\/]/.test(fileName) || fileName.includes('..')) {
+    return res.status(400).json({ error: '文件名不合法' });
+  }
+
+  let target = null;
+  // 1) 先从 task.artifacts 按名字找
+  const list = Array.isArray(task.artifacts) ? task.artifacts : [];
+  target = list.find((a) => a && path.basename(String(a.name || a.path || '')) === fileName);
+  // 2) 再从注册表找（旧快照可能压根没 artifacts）
+  if (!target) {
+    try {
+      const rows = await taskDAO.getTaskOutputFiles(taskId);
+      const hit = rows.find((f) => path.basename(String(f.filePath || '')) === fileName);
+      if (hit) target = { name: fileName, path: hit.filePath };
+    } catch (_) { /* 查不到就走 404 */ }
+  }
+  if (!target || !target.path) return res.status(404).json({ error: '找不到该文件' });
+  if (!fsSync.existsSync(target.path)) return res.status(404).json({ error: '文件不存在' });
+
+  const ext = String(fileName).split('.').pop().toLowerCase();
+  const ext2mime = {
+    md: 'text/markdown; charset=utf-8', txt: 'text/plain; charset=utf-8',
+    json: 'application/json; charset=utf-8', csv: 'text/csv; charset=utf-8',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    pdf: 'application/pdf', zip: 'application/zip',
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  };
+  res.setHeader('Content-Type', ext2mime[ext] || 'application/octet-stream');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${encodeURIComponent(fileName)}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+  );
+  const stream = fsSync.createReadStream(target.path);
+  stream.pipe(res);
+  stream.on('error', (err) => {
+    console.error(`[DownloadByName] ${target.path}:`, err.message);
+    if (!res.headersSent) res.status(500).json({ error: '文件下载失败' });
+  });
+});
+
 // 下载任务输出物文件
 app.get('/api/tasks/:taskId/artifacts/:artifactId/download', authenticate, async (req, res) => {
   const { taskId, artifactId } = req.params;

@@ -85,10 +85,32 @@ const kindIcon = computed(() => ({
 
 // ---------------- 可用性判据（唯一一份） ----------------
 
-/** 是否有可取的内容：有 content 或 downloadUrl 都算 */
+/**
+ * 有效下载地址（2026-11-26）
+ *
+ * 历史消息里的 artifacts 可能是旧代码构造的快照——只有 path/name，
+ * 没有 downloadUrl。后端修好之后那些旧卡片仍然不可用（按钮被判定为
+ * "没有可下载的内容"而隐藏），因为消息里的 artifacts 是**当时的**快照，
+ * 要等用户重新发一条消息才会刷新。
+ *
+ * 这里兜一层：没有 downloadUrl 但有 path 时，用 taskId + 文件名拼地址，
+ * 走后端新增的 /artifacts/by-name/:fileName/download 路由。
+ * path 形如 .../output/<taskId>/<fileName>。
+ */
+const effectiveDownloadUrl = computed(() => {
+  const a = props.artifact
+  if (a?.downloadUrl) return String(a.downloadUrl)
+  const p = String(a?.path || '')
+  const m = p.match(/output\/([0-9a-fA-F-]{36})\//)
+  const nm = String(a?.name || p.split('/').pop() || '')
+  if (!m || !nm) return ''
+  return `/api/tasks/${m[1]}/artifacts/by-name/${encodeURIComponent(nm)}/download`
+})
+
+/** 是否有可取的内容：content / downloadUrl / 可从 path 推出的下载地址 */
 const hasContent = computed(() => {
   const a = props.artifact
-  return !!(a && (a.content || a.downloadUrl))
+  return !!(a && (a.content || a.downloadUrl || effectiveDownloadUrl.value))
 })
 
 /** 能否预览/复制：必须有内容、且不是二进制 */
@@ -112,9 +134,10 @@ function visible(action: ArtifactAction): boolean {
 async function resolveContent(): Promise<string> {
   const a = props.artifact
   if (a?.content) return String(a.content)
-  if (!a?.downloadUrl) return ''
+  const url = effectiveDownloadUrl.value
+  if (!url) return ''
   const token = localStorage.getItem('token')
-  const res = await fetch(a.downloadUrl, {
+  const res = await fetch(url, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   })
   if (!res.ok) throw new Error(`读取失败（HTTP ${res.status}）`)
@@ -201,9 +224,9 @@ async function onDownload() {
     let blob: Blob
     if (a.content) {
       blob = new Blob([a.content], { type: a.contentType || 'text/plain;charset=utf-8' })
-    } else if (a.downloadUrl) {
+    } else if (effectiveDownloadUrl.value) {
       const token = localStorage.getItem('token')
-      const res = await fetch(a.downloadUrl, {
+      const res = await fetch(effectiveDownloadUrl.value, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
       if (!res.ok) {

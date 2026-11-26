@@ -131,5 +131,49 @@ t('无括号的项目名不受影响', () => {
   assert.strictEqual(base, '托管系统技术方案需求分析报告');
 });
 
+// ---------------- 旧快照兼容（第三次报"少按钮"的根因）----------------
+//
+// 后端修好之后，用户手上的旧消息里仍是旧 artifacts 快照（没有 downloadUrl）。
+// 那些卡片会一直少按钮，直到他重新发一条消息。
+// 所以前端兜一层 + 后端加一条按文件名下载的路由。
+
+t('后端有按文件名下载的路由（兼容旧快照）', () => {
+  assert.ok(/artifacts\/by-name\/:fileName\/download/.test(SERVER),
+    '缺少 by-name 下载路由，旧卡片无法下载');
+});
+
+t('by-name 路由注册在 :artifactId 之前（否则会被当成 artifactId）', () => {
+  const byName = SERVER.indexOf("artifacts/by-name/:fileName/download");
+  const byId = SERVER.indexOf("artifacts/:artifactId/download");
+  assert.ok(byName > 0 && byId > 0, '找不到路由');
+  assert.ok(byName < byId, 'by-name 注册在 :artifactId 之后，Express 会先匹配到后者');
+});
+
+t('by-name 路由防路径穿越', () => {
+  const start = SERVER.indexOf("artifacts/by-name/:fileName/download");
+  const block = SERVER.slice(start, start + 1800);
+  assert.ok(/includes\('\.\.'\)|\\[\\\\\/\\]/.test(block), '未校验文件名，存在路径穿越风险');
+});
+
+t('ArtifactCard 能从 path 推出下载地址（旧快照兜底）', () => {
+  const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
+  assert.ok(/effectiveDownloadUrl/.test(CARD), '缺少旧快照兜底');
+  assert.ok(/output\\\/\(\[0-9a-fA-F-\]\{36\}\)/.test(CARD) || /output\//.test(CARD),
+    '未从 path 提取 taskId');
+  assert.ok(/by-name/.test(CARD), '未使用 by-name 路由');
+});
+
+t('hasContent 与下载都走 effectiveDownloadUrl（否则判据与行为不一致）', () => {
+  const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
+  assert.ok(/a\.content \|\| a\.downloadUrl \|\| effectiveDownloadUrl\.value/.test(CARD),
+    'hasContent 没算上兜底地址');
+  // resolveContent 里赋给局部变量 url 再 fetch，所以两种写法都要认
+  const direct = (CARD.match(/fetch\(effectiveDownloadUrl\.value/g) || []).length;
+  const viaVar = /const url = effectiveDownloadUrl\.value/.test(CARD)
+    && /fetch\(url,/.test(CARD);
+  assert.ok(direct >= 1 && viaVar,
+    `兜底地址覆盖不全：直接 fetch ${direct} 处，经局部变量 ${viaVar}`);
+});
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
 process.exit(failed ? 1 : 0);
