@@ -178,8 +178,10 @@ t('证据与 workflow 用 buildArtifact（保留自定义 id/downloadUrl）', ()
 
 t('前后端的文本/二进制分类一致', () => {
   const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
-  // 后端 ARTIFACT_TEXT_EXT = /\.(md|markdown|txt)$/i
-  assert.ok(/ARTIFACT_TEXT_EXT = \/\\\.\(md\|markdown\|txt\)/.test(SERVER), '后端文本扩展名定义变了');
+  // 2026-11-26：后端 ARTIFACT_TEXT_EXT 扩展为与前端 TEXT_EXTS 同一份清单
+  // （原来只 md/markdown/txt，导致 .json/.csv 被标 file）
+  assert.ok(/ARTIFACT_TEXT_EXT = \/\\\.\(md\|markdown\|txt\|csv\|json/.test(SERVER),
+    '后端文本扩展名定义变了');
   assert.ok(/\\.\(md\|docx\?\|pdf\)/.test(CARD), '前端 kind 判定包含 md');
   // 二进制两边都要排除
   assert.ok(/ARTIFACT_BIN_EXT/.test(SERVER), '后端缺二进制定义');
