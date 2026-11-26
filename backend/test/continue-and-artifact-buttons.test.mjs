@@ -127,8 +127,9 @@ t('取内容统一走 resolveContent（组件内，支持 downloadUrl + 认证�
   const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
   assert.ok(/async function resolveContent/.test(CARD), '缺少统一的取内容函数');
   const idx = CARD.indexOf('async function resolveContent');
-  const block = CARD.slice(idx, idx + 700);
-  assert.ok(/a\.downloadUrl/.test(block), '未支持 downloadUrl');
+  const block = CARD.slice(idx, idx + 900);
+  // 2026-11-26：改为走 effectiveDownloadUrl（含「从 path 推出 by-name 地址」的旧快照兜底）
+  assert.ok(/effectiveDownloadUrl\.value/.test(block), '未使用统一的有效下载地址');
   assert.ok(/Authorization/.test(block), '未带认证头，会 401');
 });
 
