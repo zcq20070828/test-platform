@@ -103,10 +103,9 @@ t('二进制不给「复制」（按文本读是乱码），但「预览」支�
   // 2026-11-26 修正：预览走服务端转换（convertDocxToHtml / convertXlsxToHtml），
   // docx/xlsx 是能在线看的。只有「复制」必须前端读文本，才排除二进制。
   assert.ok(/BIN_EXTS/.test(CARD), '缺二进制扩展名列表');
-  // 预览：显式允许 docx/xlsx
-  const idx = CARD.indexOf('const canPreview = computed');
-  const block = CARD.slice(idx, idx + 400);
-  assert.ok(/docx\|xlsx/.test(block), '预览应支持 docx/xlsx');
+  // 预览：显式允许 docx/xlsx（判据在 SERVER_PREVIEW_EXTS 常量里）
+  assert.ok(/const SERVER_PREVIEW_EXTS = \/[^\n]*docx\|xlsx/.test(CARD),
+    '预览应支持 docx/xlsx');
   // 复制：必须排除二进制
   const copyIdx = CARD.indexOf('const canCopy');
   assert.ok(copyIdx > 0, '找不到 canCopy');
