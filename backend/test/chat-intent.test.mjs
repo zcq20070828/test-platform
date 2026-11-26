@@ -286,9 +286,13 @@ t('执行模式广播给前端（用户要知道这一轮要做什么）', () =>
 t('当前交付物从最新 agent 版本文件读（不能拿 result 猜）', () => {
   assert.ok(/async function loadCurrentDeliverable/.test(SERVER), '缺 loadCurrentDeliverable');
   const start = SERVER.indexOf('async function loadCurrentDeliverable');
-  const body = SERVER.slice(start, start + 800);
+  const body = SERVER.slice(start, start + 2000);
   assert.ok(/versionSource === 'agent'/.test(body), '没优先取 agent 版本');
-  assert.ok(/fs\.readFile\(latest\.filePath/.test(body), '没读文件内容');
+  // 2026-11-26：不能只读「第一个」文件——注册表里有 xlsx/docx/证据 json，
+  // 裸 find 会取到二进制，utf-8 读成乱码（实测任务 363cb35e 就是这样盲改的）。
+  assert.ok(/fs\.readFile\(f\.filePath/.test(body), '没读文件内容');
+  assert.ok(/TEXT_EXT/.test(body), '没过滤二进制扩展名');
+  assert.ok(/sort\(/.test(body), '没按时间取最新一份');
 });
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
