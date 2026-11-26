@@ -3766,6 +3766,57 @@ async function artifactsFromRegistry(taskId) {
 }
 
 /**
+ * 给「有实质 result 但没落盘交付物」的任务补物化（2026-11-26）
+ *
+ * 为什么需要：任务 e8cee999 的 123071 字用例集在审核否决后，因为一个过时的
+ * 「必须有 ``` 代码块」判断被跳过物化，注册表里只有执行证据、没有交付物。
+ * 用户拿不到任何东西，连改的机会都没有。
+ *
+ * 那个判断已经修了，但**历史任务的损失还在**：它们的 result 有内容，
+ * 文件却从来没生成过。这里按需补回来——只在注册表里确实没有交付物
+ * （只有证据文件或空）时才重新物化，避免重复写盘。
+ *
+ * @param {string} taskId
+ * @param {string} result   任务的 result 文本
+ * @param {string} agentId
+ * @returns {Promise<string[]>} 新落盘的文件路径
+ */
+async function rematerializeDeliverables(taskId, result, agentId) {
+  const raw = String(result || '');
+  // 与失败分支同一判据：太短或明确是失败占位就不做
+  if (raw.trim().length < 500) return [];
+  if (/^\s*❌\s*任务执行失败/.test(raw) || /^\[本轮失败\]/.test(raw)) return [];
+
+  // 注册表里已有非证据类文件 → 说明交付物在，不重复物化
+  try {
+    const rows = await taskDAO.getTaskOutputFiles(taskId);
+    const hasDeliverable = (rows || []).some((f) => {
+      const nm = path.basename(String(f.filePath || ''));
+      return nm && !ARTIFACT_AUDIT_RE.test(nm);
+    });
+    if (hasDeliverable) return [];
+  } catch (_) { /* 查不到就尝试物化，写盘失败会自己 catch */ }
+
+  try {
+    const { deliverables } = extractDeliverables(raw);
+    if (!deliverables.length) return [];
+    const saved = deliverables.length > 1
+      ? await saveDeliverablesToFiles(taskId, 0, agentId || 'unknown', deliverables)
+      : await (async () => {
+        const f = await saveDeliverableToFile(taskId, 0, agentId || 'unknown', deliverables[0].content, deliverables[0].format);
+        return Array.isArray(f) ? f : (f ? [f] : []);
+      })();
+    if (saved.length) {
+      console.log(`[Rematerialize] 任务 ${taskId.slice(0, 8)} 补落盘 ${saved.length} 个交付物（result ${raw.length} 字）`);
+    }
+    return saved;
+  } catch (e) {
+    console.warn(`[Rematerialize] 任务 ${taskId.slice(0, 8)} 补物化失败: ${e.message}`);
+    return [];
+  }
+}
+
+/**
  * 查找 artifact：先精确匹配 id；若当前 artifacts 来自注册表重建（id 形如 artifact-N），
  * 允许用请求 id 的数字后缀（如 ss2-0 → 0）定位，兼容重启后旧消息里的 id。
  * 只在重建集合上启用，避免多阶段任务的 sec2-1/sec3-1 串位。
@@ -4040,6 +4091,18 @@ app.get('/api/tasks/:id', authenticate, async (req, res) => {
         if (rebuilt.length) {
           task.artifacts = rebuilt;
           console.log(`[Tasks] 详情从注册表补回 ${rebuilt.length} 个交付物（任务 ${id.slice(0, 8)}）`);
+        } else {
+          // 注册表里也没有交付物（只有证据文件或空），但 result 有实质内容
+          // → 说明它被「必须有代码块」那个过时判断跳过物化了（2026-11-26）。
+          // 实测任务 e8cee999：123071 字用例集因一票否决、注册表只有证据，
+          // 用户拿不到任何文件。这里按需补物化，让历史损失可恢复。
+          const remade = await rematerializeDeliverables(id, task.result || r.result, task.agent || task.agentId);
+          if (remade.length) {
+            task.artifacts = buildArtifacts(id, remade.map((fp) => ({ filePath: fp })), {
+              newestFirst: false, dedupeByName: true,
+            });
+            console.log(`[Tasks] 详情补物化 ${task.artifacts.length} 个交付物（任务 ${id.slice(0, 8)}）`);
+          }
         }
       } else {
         // 内存 Map 里的 artifacts 可能是旧代码写进去的（同一文件重复多条），
@@ -17077,13 +17140,23 @@ async function executeTaskWithReview(task, userId = null) {
       const reason = lastError || '达到最大重试次数,审核仍未通过';
       console.log(`[TaskWithReview] Task ${task.id} failed after ${MAX_RETRIES} retries: ${reason}`);
 
-      // 【修复】审核未通过也保留脚本交付件,让用户能查看/下载 AI 生成的脚本
-      // 但若执行结果无代码块(纯状态/错误占位,如网关不可用时 agent 未产出内容),
-      // 则不物化占位交付物,避免把失败占位 JSON 当成交付物生成 md/docx/xlsx(见任务 4c0a9ae8)
+      // 【修复】审核未通过也保留交付件,让用户能查看/下载并继续修改
+      //
+      // 2026-11-26 修：原来这里有个前置判断 `if (!/```/.test(rawResult)) 跳过物化`，
+      // 本意是「不要物化纯状态/错误占位」（如网关不可用时 agent 没产出内容）。
+      // 但它用「有没有代码块」当判据，而**用例交付物是 Markdown 表格，没有 ``` 代码块**
+      // —— 实测任务 e8cee999：123071 字的完整用例集（222 条）因一票否决重试耗尽，
+      // 被这个判断当成"占位结果"跳过，一个文件都没落盘，用户连改的机会都没有。
+      //
+      // 现在改用「内容是否有实质产出」判断：
+      //   太短（<500 字）或明确是失败占位 → 才跳过。
       const rawResult = task.result || '';
+      const looksLikeFailurePlaceholder = /^\s*❌\s*任务执行失败/.test(rawResult)
+        || /^\[本轮失败\]/.test(rawResult);
+      const hasSubstance = String(rawResult).trim().length >= 500 && !looksLikeFailurePlaceholder;
       let failFiles = [];
-      if (!/```/.test(rawResult)) {
-        console.log(`[TaskWithReview] 跳过占位结果物化(无实质脚本内容) for task ${task.id}`);
+      if (!hasSubstance) {
+        console.log(`[TaskWithReview] 跳过占位结果物化(无实质内容, ${String(rawResult).length} 字) for task ${task.id}`);
       } else {
         const { deliverables: failDeliverables } = extractDeliverables(rawResult);
         if (failDeliverables.length > 1) {
