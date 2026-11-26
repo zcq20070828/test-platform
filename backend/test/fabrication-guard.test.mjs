@@ -195,7 +195,9 @@ t('事实性问题走全文重写修复（不是外科式）', () => {
 t('全文重写只在结果更好时才采纳（不修坏）', () => {
   const start = SERVER.indexOf('const hasFabricationIssue');
   assert.ok(start > 0, '找不到分支');
-  const block = SERVER.slice(start, start + 3600);
+  // 窗口要给足：这个分支里除了判定还夹着「全文重写」的提示词与调用，
+  // 每加一项检查（数量/编造/约束）都会把回退保护往后推。
+  const block = SERVER.slice(start, start + 6000);
   assert.ok(/usabilityRate >= gateReport\.usabilityRate - 0\.02/.test(block),
     '未校验重写后可用率，可能把好文档改坏');
   assert.ok(/better/.test(block) && /保留原输出/.test(block), '缺少回退保护');

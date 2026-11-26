@@ -155,5 +155,54 @@ t('提示词禁止套用行业默认值', async () => {
   assert.ok(/长度 255/.test(src), '提示词未举出 255 这个真实案例');
 });
 
+// 只拦不修等于把交付物判死。这类问题不在单条用例行里，
+// 外科式修复动不到根（模型会给每行补一句「原文未定义」，门禁认的是类别级说明），
+// 必须和数量矛盾/编造标识符一样走全文重写。
+t('约束不通过走全文重写，不是外科式修复', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(here, '..', 'server.js'), 'utf8');
+  const start = src.indexOf('const hasFabricationIssue');
+  assert.ok(start > 0, '找不到全文重写分支');
+  const block = src.slice(start, start + 900);
+  assert.ok(/constraintPass === false/.test(block), '全文重写分支未纳入约束项');
+  assert.ok(/约束值无依据/.test(block), '修复进度消息未说明是约束问题');
+});
+
+t('全文重写采纳条件包含约束项（否则修了等于没修）', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(here, '..', 'server.js'), 'utf8');
+  const start = src.indexOf('const better = recheck.applicable');
+  assert.ok(start > 0, '找不到采纳条件');
+  const block = src.slice(start, start + 800);
+  assert.ok(/fabAfter\.constraintPass !== false/.test(block),
+    '重写后约束仍无依据也会被采纳，下一轮还得再判一遍');
+});
+
+t('门禁广播带出 constraintPass（否则界面说不清未过项）', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(here, '..', 'server.js'), 'utf8');
+  const hits = src.match(/constraintPass: (gateReport|afterGate)\.constraintPass/g) || [];
+  assert.ok(hits.length >= 2, `两处 case_quality_gate 广播都要带，实际 ${hits.length} 处`);
+});
+
+t('前端能显示「约束值无需求依据」这个未过项', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(here, '..', '..', 'frontend', 'src', 'stores', 'main.ts'), 'utf8');
+  assert.ok(/data\.constraintPass === false/.test(src), '前端未处理 constraintPass');
+  assert.ok(/约束值无需求依据/.test(src), '未给出可读的未过项名称');
+});
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
 process.exit(failed ? 1 : 0);
