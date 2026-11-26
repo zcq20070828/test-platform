@@ -100,5 +100,40 @@ t('Markdown 仍走完整渲染（表格/代码高亮）', () => {
   assert.ok(/renderMarkdownSafe\(content, previewMarked\)/.test(block), 'Markdown 未走渲染器');
 });
 
+// ---------------- 前后端判据必须一致 ----------------
+
+t('后端 ARTIFACT_TEXT_EXT 与前端 TEXT_EXTS 逐项一致', () => {
+  const SERVER = fs.readFileSync(path.join(ROOT, 'backend', 'server.js'), 'utf8');
+  const srvM = SERVER.match(/const ARTIFACT_TEXT_EXT = (\/[^\n]+\/[a-z]*)/);
+  const cardM = CARD.match(/const TEXT_EXTS = (\/[^\n]+\/)/);
+  assert.ok(srvM && cardM, '缺常量');
+
+  const srvRe = new RegExp(srvM[1].slice(1, -2));
+  const cardRe = new RegExp(cardM[1].slice(1, -1));
+
+  const all = ['md', 'txt', 'csv', 'json', 'yaml', 'yml', 'xml', 'py', 'js', 'ts',
+    'java', 'sh', 'sql', 'html', 'htm', 'css', 'log', 'ini', 'conf',
+    'docx', 'xlsx', 'pdf', 'png', 'zip'];
+  const mismatch = [];
+  for (const e of all) {
+    const s = srvRe.test(`x.${e}`);
+    const c = cardRe.test(`x.${e}`);
+    if (s !== c) mismatch.push(`.${e} 后端=${s} 前端=${c}`);
+  }
+  assert.strictEqual(mismatch.length, 0,
+    `前后端文本类判据不一致：\n${mismatch.join('\n')}`);
+});
+
+t('后端不再把 .json/.csv 标成 file（与前端图标一致）', () => {
+  const SERVER = fs.readFileSync(path.join(ROOT, 'backend', 'server.js'), 'utf8');
+  const m = SERVER.match(/const ARTIFACT_TEXT_EXT = (\/[^\n]+\/[a-z]*)/);
+  const re = new RegExp(m[1].slice(1, -2));
+  assert.ok(re.test('x.json'), '.json 应是文本类');
+  assert.ok(re.test('x.csv'), '.csv 应是文本类');
+  assert.ok(re.test('x.py'), '.py 应是文本类');
+  // 二进制仍不能算文本
+  assert.ok(!re.test('x.docx'), '.docx 不应是文本类');
+});
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
 process.exit(failed ? 1 : 0);

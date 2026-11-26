@@ -3800,7 +3800,16 @@ function findArtifactCompat(task, artifactId) {
 // 任何新增出口都必须用这里的函数，否则又会出现字段不一致。
 
 /** 文本类扩展名：这类作为「报告」呈现，可预览可复制 */
-const ARTIFACT_TEXT_EXT = /\.(md|markdown|txt)$/i;
+/**
+ * 文本类扩展名（2026-11-26 与前端对齐）
+ *
+ * 原来只认 md/markdown/txt，导致 .json/.csv/.py 被标成 type:'file'，
+ * 前端按文件夹图标显示 —— 而前端自己判断这类是可预览的纯文本，
+ * 于是出现「图标说文件、按钮说能预览」的不一致。
+ *
+ * 与前端 ArtifactCard 的 TEXT_EXTS 必须保持一致（有测试比对）。
+ */
+const ARTIFACT_TEXT_EXT = /\.(md|markdown|txt|csv|json|ya?ml|xml|py|js|ts|java|sh|sql|html?|css|log|ini|conf)$/i;
 /** 二进制扩展名：不可预览不可复制，只给下载 */
 const ARTIFACT_BIN_EXT = /\.(docx|xlsx|pptx|pdf|zip|doc|xls|ppt)$/i;
 /** 图片扩展名 */
