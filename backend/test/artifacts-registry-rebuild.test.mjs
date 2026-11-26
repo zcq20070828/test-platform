@@ -62,10 +62,13 @@ t('注册表重建按文件名去重（去重逻辑在构造器里）', () => {
   assert.ok(/const seen = new Set\(\)/.test(body), '构造器缺少去重逻辑');
 });
 
-t('去重键是文件名而不是完整路径', () => {
-  const fn = registryFn();
-  assert.ok(/split\('\/'\)\.pop\(\)/.test(fn),
-    '未按文件名去重——同一文件写到不同目录时会被当成两个交付物');
+t('去重键是文件名而不是完整路径（在构造器里）', () => {
+  // 2026-11-26 重构：注册表重建改为调 buildArtifacts，去重实现在构造器内
+  const bStart = SERVER.indexOf('function buildArtifacts(');
+  const bEnd = SERVER.indexOf('function normalizeArtifactsField');
+  const body = SERVER.slice(bStart, bEnd);
+  assert.ok(/path\.basename\(String\(f\.filePath\)\)/.test(body),
+    '构造器未按文件名去重——同一文件写到不同目录时会被当成两个交付物');
 });
 
 t('去重后仍带 downloadUrl 与 size（构造器保证）', () => {
