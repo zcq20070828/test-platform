@@ -466,5 +466,54 @@ t('服务端在门禁前调用方法补齐', () => {
   assert.ok(/applyCaseDimensionMethodRepair\(text\)/.test(server), '未在门禁前补方法');
 });
 
+// ★★ 端到端执行工具本身（2026-11-26 血泪教训）
+//
+// 上面所有测试都是「读源码 + 匹配字符串」，所以漏掉了一个必崩的 bug：
+// 9dem-invoker 里 requirementContext 声明在设计方法之后，被之前的代码引用，
+// 每次调用都抛 `Cannot access 'requirementContext' before initialization`。
+// 工具返回 error → 模型反复重试 → 600s 超时，连续 4 个任务全失败，
+// 而「全量回归通过」给了完全错误的信心。
+//
+// 判据：任何对 invoker 的改动，都必须真的跑一次 invoke()，断言 success !== false。
+t('★★ invoke() 真的能跑通（TDZ / 依赖缺失都会在这里炸）', async () => {
+  const invoker = require(path.join(SKILL, '9dem-invoker.js'));
+  const ctx = ctxMod.deriveRequirementContext(REQ);
+  const out = await invoker.invoke({
+    task: REQ,
+    module: '托管系统',
+    includeDimensionCases: true,
+    includeDesignCases: true,
+    requirementContext: ctx,
+  });
+  assert.notStrictEqual(out.success, false, `invoke 返回失败：${out.error || out.hint || '(无错误信息)'}`);
+  assert.ok(out.error === undefined, `invoke 抛了错误：${out.error}`);
+  assert.ok(Array.isArray(out.dimensionCases) && out.dimensionCases.length > 0,
+    `dimensionCases 为空（${out.dimensionCases?.length}）`);
+});
+
+t('★★ 带 requirementContext 与不带都能跑通', async () => {
+  const invoker = require(path.join(SKILL, '9dem-invoker.js'));
+  for (const label of ['不带上下文', '带上下文']) {
+    const params = { task: REQ_BY_ENDPOINT, module: '托管系统', includeDimensionCases: true, includeDesignCases: true };
+    if (label === '带上下文') params.requirementContext = ctxMod.deriveRequirementContext(REQ_BY_ENDPOINT);
+    const out = await invoker.invoke(params);
+    assert.strictEqual(out.success !== false, true, `${label} 时 invoke 失败：${out.error}`);
+  }
+});
+
+t('★★ 工具输出里没有 code=0 / 255 / undefined', async () => {
+  const invoker = require(path.join(SKILL, '9dem-invoker.js'));
+  const ctx = ctxMod.deriveRequirementContext(REQ);
+  const out = await invoker.invoke({
+    task: REQ, module: '托管系统', includeDimensionCases: true, includeDesignCases: true, requirementContext: ctx,
+  });
+  const all = [...(out.design?.cases || []), ...(out.dimensionCases || [])];
+  assert.ok(all.length > 0, '没有生成任何用例');
+  const blob = JSON.stringify(all);
+  const code0 = all.filter((c) => /code\s*=\s*0/.test(String(c.expected))).length;
+  assert.strictEqual(code0, 0, `${code0} 条断言仍含 code=0`);
+  assert.ok(!/\bundefined\b/.test(blob), '输出里仍有 undefined');
+});
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
 process.exit(failed ? 1 : 0);

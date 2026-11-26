@@ -193,6 +193,17 @@ async function invoke(params) {
   try {
     const result = spec ? execute9DEM({ inputSpec: spec, dimensions }) : {};
 
+    // 需求上下文必须**先声明再使用**（2026-11-26 踩过：TDZ 直接抛错）
+    //
+    // 下面 includeDesignCases 块要用它注入 fieldEndpointMap，
+    // 而原来它声明在 generateDimensionCases 之前 —— 位置在设计方法之后，
+    // 于是每次调用都抛 `Cannot access 'requirementContext' before initialization`。
+    // 后果不是报错给用户看，而是工具返回 error → 模型反复重试 → 600s 超时，
+    // 整条用例生成链路连续失败 4 次，而静态检查的测试全都通过。
+    const requirementContext = params.requirementContext && typeof params.requirementContext === 'object'
+      ? params.requirementContext
+      : null;
+
     // 黑盒 9 种设计方法：与九维维度正交，输出可直接落表的用例
     let design = null;
     // 声明在 if 之外：下面的 return 要用它，放在 if 里会 ReferenceError（实测踩到）
@@ -234,9 +245,7 @@ async function invoke(params) {
     // 不看需求实际定义了什么。实测任务 7fd39497：229 行交付物 200 行来自这套模板，
     // 101 行断言 code=0 而需求唯一成功码是 103000，审核判 36 分 + 一票否决。
     // 所以把需求原文一并传进去，让生成器把断言/步骤换成需求里的真值。
-    const requirementContext = params.requirementContext && typeof params.requirementContext === 'object'
-      ? params.requirementContext
-      : null;
+    // （requirementContext 在本函数开头已声明——这里只使用，不要再声明）
     const dimensionGen = includeDimensionCases
       ? generateDimensionCases({
         task,
