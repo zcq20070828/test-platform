@@ -125,10 +125,9 @@ t('任务列表不再自己实现按钮判据（已收进 ArtifactCard）', () =
 t('预览判定在 ArtifactCard 里，认 downloadUrl（docx/xlsx 也能预览）', () => {
   const CARD = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'components', 'ArtifactCard.vue'), 'utf8');
   assert.ok(/const canPreview = computed/.test(CARD), '组件缺 canPreview');
-  // 2026-11-26：预览走服务端转换，docx/xlsx 支持；不是「排除二进制」
-  const idx = CARD.indexOf('const canPreview');
-  const block = CARD.slice(idx, idx + 400);
-  assert.ok(/docx\|xlsx/.test(block), '预览应支持 docx/xlsx（后端有转换能力）');
+  // 2026-11-26：预览走服务端转换，docx/xlsx 支持（判据在常量里）
+  assert.ok(/const SERVER_PREVIEW_EXTS = \/[^\n]*docx\|xlsx/.test(CARD),
+    '预览应支持 docx/xlsx（后端有转换能力）');
   const contentIdx = CARD.indexOf('const hasContent');
   assert.ok(/a\.downloadUrl/.test(CARD.slice(contentIdx, contentIdx + 300)), '没把 downloadUrl 当可用依据');
 });

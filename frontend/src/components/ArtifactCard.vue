@@ -59,6 +59,17 @@ const emit = defineEmits<{
 
 const BIN_EXTS = ['.docx', '.xlsx', '.pdf', '.zip', '.doc', '.xls', '.ppt', '.pptx']
 
+/**
+ * 纯文本类扩展名（前端可读可渲染）
+ *
+ * 这份清单给两处共用：canPreview（能不能预览）与 onPreview（怎么渲染）。
+ * **必须是同一份**——分开写就会出现「能复制却不能预览」这种自相矛盾。
+ */
+const TEXT_EXTS = /\.(md|markdown|txt|csv|json|ya?ml|xml|py|js|ts|java|sh|sql|html?|css|log|ini|conf)$/
+
+/** 服务端能转 HTML 的格式（走 /preview 端点） */
+const SERVER_PREVIEW_EXTS = /\.(docx|xlsx|png|jpe?g|webp|gif)$/
+
 const fname = computed(() => String(props.artifact?.name || '').toLowerCase())
 const isBinary = computed(() => BIN_EXTS.some((ext) => fname.value.endsWith(ext)))
 
@@ -132,12 +143,17 @@ const previewUrl = computed(() => {
 /**
  * 预览是否可用
  *
- * 后端支持：docx / xlsx / png|jpg|jpeg|webp|gif（其余返回 415）。
- * 文本类（md/txt）前端自己渲染，不需要服务端转换。
+ * 两类：
+ *   1. 服务端支持转换的（docx/xlsx/图片）→ 走 /preview
+ *   2. 纯文本类（md/csv/json/py/…）→ 前端自己渲染
+ *
+ * 判据必须与 canCopy 对齐：**能读成文本的就能预览**，
+ * 否则会出现「能复制却不能预览」这种自相矛盾的状态。
  */
 const canPreview = computed(() => {
   if (!hasContent.value) return false
-  return /\.(docx|xlsx|png|jpe?g|webp|gif|md|markdown|txt)$/.test(fname.value)
+  const n = fname.value
+  return SERVER_PREVIEW_EXTS.test(n) || TEXT_EXTS.test(n)
 })
 
 /**
@@ -223,13 +239,31 @@ previewMarked.use({
 async function onPreview() {
   try {
     const n = fname.value
-    const isTextDoc = /\.(md|markdown|txt)$/.test(n)
+    // 文本类：前端自己渲染（Markdown 走渲染器，其余按纯文本展示）
+    //
+    // 2026-11-26 扩展：原来只认 md/markdown/txt，导致 .py/.csv/.json/.js
+    // 这类**纯文本**文件「能复制却不能预览」——它们能复制说明是可读文本，
+    // 却因为不在白名单里被送去服务端 /preview，而服务端对它们返回 415。
+    // 判据应该与 canCopy 一致：能读成文本的就能预览。
+    const isTextDoc = TEXT_EXTS.test(n)
 
     if (isTextDoc) {
       const content = await resolveContent()
-      previewHtml.value = content
-        ? renderMarkdownSafe(content, previewMarked)
-        : '<p style="color:#999;text-align:center;">无预览内容</p>'
+      if (!content) {
+        previewHtml.value = '<p style="color:#999;text-align:center;">无预览内容</p>'
+        previewVisible.value = true
+        return
+      }
+      // 按扩展名选渲染方式：
+      //   md/markdown → Markdown 渲染（表格、代码高亮）
+      //   其余纯文本（csv/py/json/js…）→ 等宽预排版
+      //     用 Markdown 渲染会把 CSV 挤成一段、把 Python 代码当普通段落，很难看
+      const isMarkdown = /\.(md|markdown)$/.test(n)
+      if (isMarkdown) {
+        previewHtml.value = renderMarkdownSafe(content, previewMarked)
+      } else {
+        previewHtml.value = `<pre style="white-space:pre-wrap;word-break:break-word;background:#f6f8fa;padding:12px;border-radius:6px;font-size:13px;line-height:1.6;">${escapeHtml(content)}</pre>`
+      }
       previewVisible.value = true
       return
     }

@@ -61,13 +61,19 @@ t('后端确实支持 docx/xlsx 预览（服务端转 HTML）', () => {
 });
 
 t('canPreview 包含 docx/xlsx（不再一律排除二进制）', () => {
-  const block = predicateBlock();
-  assert.ok(/docx\|xlsx/.test(block), 'canPreview 仍排除 docx/xlsx');
+  // 2026-11-26：判据改为引用常量 SERVER_PREVIEW_EXTS，定义在文件顶部
+  assert.ok(/SERVER_PREVIEW_EXTS/.test(CARD), '缺少服务端可预览格式清单');
+  const m = CARD.match(/const SERVER_PREVIEW_EXTS = (\/[^\n]+\/)/);
+  assert.ok(m, '找不到 SERVER_PREVIEW_EXTS 定义');
+  assert.ok(m[1].includes('docx') && m[1].includes('xlsx'),
+    'SERVER_PREVIEW_EXTS 应包含 docx/xlsx，实际: ' + m[1]);
+  assert.ok(/SERVER_PREVIEW_EXTS\.test\(n\)/.test(predicateBlock()),
+    'canPreview 未使用该清单');
 });
 
 t('canPreview 包含图片格式', () => {
-  const block = predicateBlock();
-  assert.ok(/png\|jpe\?g\|webp\|gif/.test(block), 'canPreview 不支持图片');
+  const m2 = CARD.match(/const SERVER_PREVIEW_EXTS = (\/[^\n]+\/)/);
+  assert.ok(m2 && /png|jpe/.test(m2[1]), 'SERVER_PREVIEW_EXTS 应包含图片格式');
 });
 
 t('canCopy 排除二进制（复制必须前端读文本）', () => {
@@ -112,7 +118,7 @@ t('previewUrl 由 downloadUrl 换出（只差最后一段）', () => {
 
 t('图片预览转 data URL 展示', () => {
   const start = CARD.indexOf('async function onPreview');
-  const block = CARD.slice(start, start + 1800);
+  const block = CARD.slice(start, start + 2600);
   assert.ok(block.includes("startsWith('image/')"), '没有处理 image 响应');
   assert.ok(/createObjectURL/.test(block), '图片未转成可展示地址');
 });
