@@ -5330,13 +5330,43 @@ function buildChatContinuationInput(task, message, userFileContents, chatHistory
  * 定点修改/追加/问答都要基于「用户此刻看到的那一份」。
  * 优先取最新 agent 版本的文件；读不到再退回任务 result。
  */
+/**
+ * 读取任务当前的交付物文本（对话改稿的基准）
+ *
+ * 这里踩过一个严重 bug（2026-11-26）：
+ *
+ *   原来是 `find(o => o.versionSource === 'agent' && o.filePath)`，
+ *   但注册表里有多种文件：md/docx/xlsx/执行证据.json，而且**同一文件会写多遍**。
+ *   find 取到的是顺序上的第一条 —— 实测任务 363cb35e 取到了
+ *   「…需求分析报告.xlsx」，用 utf-8 读成 24KB 乱码。
+ *
+ *   后果很隐蔽：
+ *   1. 变更计划报「交付物里没有可点名的编号条目」（其实是乱码抽不出编号）；
+ *   2. 更严重的是改稿时模型拿到的是乱码，等于在盲改 ——
+ *      它既看不到原交付物，也不知道要保留什么。
+ *
+ * 修法：
+ *   - 只认**文本类**交付物（md/txt/json/markdown），二进制一律跳过；
+ *   - 多份时取**最新**的一份（按 createdAt 倒序），而不是顺序第一条；
+ *   - 全都读不到才退回 task.result。
+ */
 async function loadCurrentDeliverable(task) {
+  const TEXT_EXT = /\.(md|markdown|txt)$/i;
   try {
     const outs = await taskDAO.getTaskOutputFiles(task.id);
-    const latest = (outs || []).find((o) => o.versionSource === 'agent' && o.filePath);
-    if (latest && latest.filePath) {
-      const txt = await fs.readFile(latest.filePath, 'utf-8').catch(() => '');
-      if (txt && txt.trim()) return txt;
+    // 只保留文本类、且排除审计用的证据文件
+    const textFiles = (outs || [])
+      .filter((o) => o.versionSource === 'agent' && o.filePath)
+      .filter((o) => TEXT_EXT.test(o.filePath))
+      .filter((o) => !/执行证据|evidence/i.test(path.basename(o.filePath)))
+      // 最新的优先：同一份交付物会被写多遍，最早那版可能是残缺的
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    for (const f of textFiles) {
+      const txt = await fs.readFile(f.filePath, 'utf-8').catch(() => '');
+      // 基本完整性校验：至少要有几百字且像 markdown
+      // （防止读到半截文件或编码异常的内容）
+      if (txt && txt.trim().length > 50) return txt;
     }
   } catch (_) { /* 读文件失败退回 result */ }
   const raw = task.result || task.resultText || '';
@@ -14605,6 +14635,10 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
       if (RULE_GATE_AGENTS.has(agentId) && getAgentQualityRules(agentId)) {
         let ruleReport = null;
         try {
+          // 诊断日志（2026-11-26）：实测任务每轮都判 63.2%、4 项规则全挂，
+          // 但把落盘的报告单独跑规则是 100% 通过。说明**检查的文本与落盘的不是同一份**。
+          // 这里打长度和开头，用于确认 text 到底是什么。
+          console.log(`[RuleGate] ${agentId} 待检文本 ${String(text || '').length} 字，开头: ${JSON.stringify(String(text || '').slice(0, 120))}`);
           ruleReport = checkByAgentRules(agentId, text, { minPassRate: RULE_GATE_MIN_RATE });
         } catch (ruleErr) {
           console.warn(`[RuleGate] ${agentId} 规则检查异常: ${ruleErr.message}`);
