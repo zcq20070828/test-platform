@@ -113,13 +113,58 @@ const hasContent = computed(() => {
   return !!(a && (a.content || a.downloadUrl || effectiveDownloadUrl.value))
 })
 
-/** 能否预览/复制：必须有内容、且不是二进制 */
-const canPreview = computed(() => hasContent.value && !isBinary.value)
+/**
+ * 预览地址（2026-11-26）
+ *
+ * 后端 /artifacts/:id/preview 支持 docx→HTML、xlsx→HTML、图片直出，
+ * **服务端做转换**，不依赖前端读文本。所以 docx/xlsx 是能在线预览的。
+ *
+ * 之前把 docx/xlsx 一律排除是判断过头了：
+ * 「二进制按 utf-8 读是乱码」只适用于**前端直接 fetch 文本**（复制、用作输入），
+ * 不适用于走服务端转换的预览。
+ */
+const previewUrl = computed(() => {
+  const dl = effectiveDownloadUrl.value
+  if (!dl) return ''
+  return dl.replace(/\/download(\?.*)?$/, '/preview')
+})
+
+/**
+ * 预览是否可用
+ *
+ * 后端支持：docx / xlsx / png|jpg|jpeg|webp|gif（其余返回 415）。
+ * 文本类（md/txt）前端自己渲染，不需要服务端转换。
+ */
+const canPreview = computed(() => {
+  if (!hasContent.value) return false
+  return /\.(docx|xlsx|png|jpe?g|webp|gif|md|markdown|txt)$/.test(fname.value)
+})
+
+/**
+ * 复制是否可用
+ *
+ * 复制要把内容写进剪贴板，必须由前端读到**文本**。
+ * docx/xlsx/pdf 是二进制，按 utf-8 读会得到乱码，所以不提供复制。
+ * 与「预览」判据分开——预览走服务端转换，两者本来就不该用同一个条件。
+ */
+const canCopy = computed(() => hasContent.value && !isBinary.value)
+
+/**
+ * 用作输入是否可用（2026-11-26 收紧）
+ *
+ * 这个操作要把交付物内容填进提交框，必须由前端读到**文本**。
+ * docx/xlsx/pdf 是二进制，按 utf-8 读是乱码 —— 之前用 hasContent 判断，
+ * 结果二进制文件也显示「用作输入」，点下去把乱码塞进输入框。
+ *
+ * 这里与「复制」用同一判据（都要文本），与「预览」区分开（预览走服务端转换）。
+ */
+const canUseAsInput = computed(() => hasContent.value && !isBinary.value)
 
 function visible(action: ArtifactAction): boolean {
   if (!props.show.includes(action)) return false
-  if (action === 'preview' || action === 'copy') return canPreview.value
-  if (action === 'useAsInput') return hasContent.value
+  if (action === 'preview') return canPreview.value
+  if (action === 'copy') return canCopy.value
+  if (action === 'useAsInput') return canUseAsInput.value
   // edit / download 始终可用：即使 content 缺失，下载仍可走 downloadUrl
   return true
 }
@@ -167,12 +212,52 @@ previewMarked.use({
   },
 })
 
+/**
+ * 预览（2026-11-26 分流）
+ *
+ * 文本类（md/txt）：前端自己渲染 Markdown，体验最好（有表格样式、代码高亮）。
+ * docx/xlsx/图片：走后端 /preview 端点，服务端把 docx/xlsx 转成 HTML
+ *   （convertDocxToHtml / convertXlsxToHtml），图片直出。
+ *   这类不能前端读文本——按 utf-8 读是乱码。
+ */
 async function onPreview() {
   try {
-    const content = await resolveContent()
-    previewHtml.value = content
-      ? renderMarkdownSafe(content, previewMarked)
-      : '<p style="color:#999;text-align:center;">无预览内容</p>'
+    const n = fname.value
+    const isTextDoc = /\.(md|markdown|txt)$/.test(n)
+
+    if (isTextDoc) {
+      const content = await resolveContent()
+      previewHtml.value = content
+        ? renderMarkdownSafe(content, previewMarked)
+        : '<p style="color:#999;text-align:center;">无预览内容</p>'
+      previewVisible.value = true
+      return
+    }
+
+    // docx/xlsx/图片：走服务端转换
+    const url = previewUrl.value
+    if (!url) {
+      ElMessage.warning('该输出物没有可用的预览地址')
+      return
+    }
+    const token = localStorage.getItem('token')
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (!res.ok) {
+      const msg = await res.text().catch(() => '')
+      ElMessage.error(`预览失败：${res.status === 415 ? '该格式不支持在线预览' : (msg || `HTTP ${res.status}`)}`)
+      return
+    }
+    const ct = String(res.headers.get('content-type') || '')
+    if (ct.startsWith('image/')) {
+      // 图片：转成 data URL 直接展示
+      const blob = await res.blob()
+      previewHtml.value = `<p style="text-align:center"><img src="${URL.createObjectURL(blob)}" style="max-width:100%" /></p>`
+    } else {
+      // 服务端已转成 HTML（CSP sandbox 保护过），直接展示
+      previewHtml.value = await res.text()
+    }
     previewVisible.value = true
   } catch (e: any) {
     ElMessage.error(`预览失败：${e?.message || e}`)
