@@ -5806,16 +5806,50 @@ async function executeChatRound(task, message, userFiles, options = {}) {
       let chatArtifacts = [];
       if (producedDeliverable) {
         try {
+          // 与 ArtifactCard 的 hasContent 判据对齐（2026-11-26）：
+          //
+          // 这里原来只给 { id, name, type, path, version, source }，**没有 downloadUrl**。
+          // 前端 ArtifactCard 的 hasContent 是 `content || downloadUrl`，
+          // 两者都没有 → 预览/复制/用作输入全部隐藏，只剩「下载」一个按钮，
+          // 而且点了会提示「该输出物没有可下载的内容」。
+          //
+          // 另外原来直接 slice(0, 4)，会把同名的 docx/xlsx 重复条目也算进来
+          // （实测同一交付物被写两遍，4 条里 2 条是重复的）。
+          // 现在按文件名去重后取最新 3 个。
           const outs = await taskDAO.getTaskOutputFiles(task.id);
-          const recent = (outs || []).slice(0, 4);   // 新→旧，本轮刚写的在最前
-          chatArtifacts = recent.map((f) => ({
+          const TEXT_EXT = /\.(md|markdown|txt)$/i;
+          const seenNames = new Set();
+          const picked = [];
+          // outs 按 created_at 升序，倒序取最新
+          for (const f of [...(outs || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))) {
+            const nm = String(f.filePath || '').split('/').pop();
+            if (!nm || seenNames.has(nm)) continue;
+            if (/执行证据|evidence/i.test(nm)) continue;   // 审计文件不给用户看
+            seenNames.add(nm);
+            picked.push(f);
+            if (picked.length >= 3) break;   // 通常就是 md/docx/xlsx 三份
+          }
+          chatArtifacts = picked.map((f, i) => ({
             id: f.id,
             name: String(f.filePath || '').split('/').pop(),
-            type: String(f.filePath || '').endsWith('.md') ? 'report' : 'file',
+            type: TEXT_EXT.test(String(f.filePath || '')) ? 'report' : 'file',
             path: f.filePath,
+            // downloadUrl 必须给：它是 ArtifactCard 判断「能不能预览/复制/下载」的依据。
+            //
+            // 索引有个坑：下载接口 findArtifactCompat 是按 **task.artifacts 数组下标**
+            // 解析 artifact-N 的。如果这里用去重后的下标，而 task.artifacts 是
+            // 生成时那 4 条（含重复），就会取错文件。
+            //
+            // 所以这里直接把 task.artifacts 同步成「去重后的注册表内容」，
+            // 让两者索引严格对应。这样既修了按钮缺失，也保证点下载拿到的是正确文件。
+            downloadUrl: `/api/tasks/${task.id}/artifacts/artifact-${i}/download`,
             version: f.displayVersion,
             source: f.versionSource,
+            createdAt: f.createdAt,
           }));
+          // 同步 task.artifacts 使下标与上面一致（内存对象 + 落库）
+          task.artifacts = chatArtifacts.map((a) => ({ ...a, type: 'file' }));
+          try { await persistTask(task.id); } catch (_) { /* 落库失败不影响本轮 */ }
         } catch (_) { /* 取文件失败不影响消息发送 */ }
       }
 
@@ -17871,6 +17905,20 @@ function buildDeliverableBaseName(content, deliverableName) {
       .trim();
     // 剥离后不能太短，否则宁可保留原文（避免把整个名字删空）
     if (stripped.length >= 4) project = stripped;
+    // 清理未配对的括号（2026-11-26）
+    //
+    // 实测文件名成了「托管系统技术方案（需求分析报告.md」——开括号留下了。
+    // 原因是模型在项目名里写了「（**来源**：…；说明：…见 CL-005）」，
+    // 上面那条 replace 只匹配**成对**的括号，遇到被说明尾巴截断的半个括号就漏了，
+    // 于是文件名里挂着一个孤零零的「（」。
+    //
+    // 判据：剥完之后如果「（」和「）」数量不等，就把所有孤立括号去掉。
+    // 不做配对删除——数量已不等，说明括号不构成有意义的补充说明。
+    const open = (project.match(/[（(]/g) || []).length;
+    const close = (project.match(/[）)]/g) || []).length;
+    if (open !== close) {
+      project = project.replace(/[（()）]/g, '').replace(/\s{2,}/g, ' ').trim();
+    }
   }
   const version = info.versionOrFeature || '';
   if (!project) {
