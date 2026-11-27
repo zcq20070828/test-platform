@@ -529,9 +529,14 @@ function causeLabelMap(causes) {
 
 function renderRuleConditions(rule, labelMap, withYesNo) {
   return rule.conditions.map((c) => {
-    const label = labelMap.get(String(c.id)) || String(c.id);
+    const id = String(c.id);
+    const label = labelMap.get(id) || id;
     const val = withYesNo ? (c.value ? '是' : '否') : String(c.value);
-    return `${label}（${c.id}）=${val}`;
+    // 模型经常把 cause.name 直接写成编号（name='C1'），
+    // 这时 `C1（C1）` 仍是占位标签，没有任何业务信息。
+    // 实测审核判「条件为『C1（C1）=true 且 C3=true』占位标签，无业务可映射」29 条。
+    // 标签与编号相同时只保留编号，避免产生 "X（X）" 这种空转表述。
+    return label && label !== id ? `${label}（${id}）=${val}` : `${id}=${val}`;
   }).join(' 且 ');
 }
 

@@ -741,5 +741,34 @@ t('声明条目数与实际条数不符能被判出', () => {
   assert.strictEqual(rule.check(rows.join('\n')), false, '声明 53 / 实际 10 未判出');
 });
 
+
+// 模型常把 cause.name 直接写成编号（name='C1'），渲染出 `C1（C1）=true` ——
+// 仍是占位标签。审核在任务 069e7a7d 里判了 29 条这类问题。
+t('原因名称等于编号时不再产出「C1（C1）」', () => {
+  const dm = require(path.join(SKILL, 'design-methods.js'));
+  const out = dm.executeDesignMethods({
+    input: {
+      inputSpec: { a: { type: 'string' } },
+      causes: [{ id: 'C1', name: 'C1' }, { id: 'C3', name: 'C3' }],
+      effects: [{ id: 'E1', name: '成功' }],
+      rules: [{ id: 'R1', conditions: { C1: true, C3: true }, actions: { 成功: true } }],
+      successCode: { code: '103000', field: 'resultcode' },
+    },
+  });
+  const ce = out.cases.filter((c) => c.method === 'causeEffect')[0];
+  assert.ok(ce, '没生成因果图用例');
+  assert.ok(!/C1（C1）/.test(ce.input), `仍是占位标签：${ce.input}`);
+  assert.ok(/C1=true/.test(ce.input), `丢了条件：${ce.input}`);
+});
+
+// 预期已写明成功码时不能再追加失败判据 —— 即使层级被标成「异常」。
+// 实测任务 069e7a7d：约 30 条「同一格既写返回 103000 又写 resultcode≠103000」。
+t('预期断言成功码时不再追加失败判据（防层级误标）', () => {
+  const src = fs.readFileSync(path.join(BACKEND, 'server.js'), 'utf8');
+  assert.ok(/assertsSuccessCode/.test(src), '未识别「预期已断言成功码」');
+  assert.ok(/const isReject = assertsSuccessCode\s*\n?\s*\? false/.test(src),
+    'isReject 未优先看「是否断言了成功码」');
+});
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
 process.exit(failed ? 1 : 0);

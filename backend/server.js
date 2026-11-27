@@ -13524,10 +13524,25 @@ function strengthenAssertion(expected, c, rowCtx, reqCtx = null) {
     || /(?:产生结果|动作|返回|错误码|失败码)\s*[:：]?\s*\d{4,8}/.test(e)
     || /不能为空|不允许|不合法|非法|越权|超限|超长|已存在|冲突/i.test(e);
 
-  // 层级标「正常」但预期写的是失败结论 → 以预期为准，按拒绝处理
-  const isReject = /拒绝|拦截|失败|不允许|禁止|报错|提示|不通过|非法/.test(e)
-    || statesFailure
-    || layer === '异常';
+  /**
+   * 预期里已经写明成功码时，绝不能再追加失败判据（2026-11-27）
+   *
+   * 实测任务 069e7a7d：约 30 条用例的预期先写「返回 103000 / 落库成功」，
+   * 因为层级被标成「异常」就走进 isReject 分支，又被追加
+   * 「可判定返回 HTTP 4xx 或 resultcode≠103000」——
+   * 同一格既断言成功又断言失败，审核判「无法据以判定」。
+   * 判据顺序必须是：先看这句到底断言了成功还是失败，再看层级。
+   */
+  // success 已在函数上方声明，这里直接用（不要重复 const，会 SyntaxError）
+  const assertsSuccessCode = !!(success && success.code && new RegExp(`\\b${success.code}\\b`).test(e));
+
+  // 层级标「正常」但预期写的是失败结论 → 以预期为准，按拒绝处理；
+  // 反之，预期已写明成功码 → 即使层级标「异常」也按成功处理（不追加失败判据）
+  const isReject = assertsSuccessCode
+    ? false
+    : (/拒绝|拦截|失败|不允许|禁止|报错|提示|不通过|非法/.test(e)
+      || statesFailure
+      || layer === '异常');
   const isBoundary = layer === '边界' || /边界|min|max|超长|过短/.test(ctx);
 
   // 拒绝类：断言「明确失败 + 不产生副作用」
