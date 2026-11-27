@@ -16460,6 +16460,15 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
         let buffer = '';
         const streamMsgId = `stream-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         let currentToolCalls = [];
+        // 流结束时的诊断计数（2026-11-26）
+        //
+        // 只记 fullContent.length 会误导：实测多个任务日志显示
+        // 「stream end: fullContent.length=0」但期间流了 1900 个 chunk ——
+        // 说明模型在思考（reasoning_content）或发 tool_calls，正文确实是空的。
+        // 没有这两个计数，就无法区分「模型没响应」与「模型在思考但超时」，
+        // 排查会一路走到怀疑网络/Key。
+        let reasoningChars = 0;
+        let contentChunks = 0;
         // 如果 streamCallback 为 null(如预热调用),使用空回调,仅收集内容不广播
         const cb = streamCallback || (() => {});
 
@@ -16502,6 +16511,7 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
 
                 const thinkingText = delta.reasoning || delta.reasoning_content || null;
                 if (thinkingText) {
+                  reasoningChars += String(thinkingText).length;
                   cb({ type: 'agent_stream_chunk', agentId, agentName: agentInfo.name || agentId, streamMsgId, chunkType: 'thinking', chunkText: thinkingText, content: thinkingText, timestamp: new Date().toISOString() });
                 }
 
@@ -16528,6 +16538,7 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
                 }
 
                 if (delta.content) {
+                  contentChunks += 1;
                   fullContent += delta.content;
                   // ⚠️ 每条 chunk 只发 delta，绝不能带 fullContent。
                   // 实测任务 1ddfd0f6：35411 条 chunk、正文 64KB，若每条都附带累积全文，
@@ -16558,7 +16569,7 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
         if (lastUsage) {
           result.usage = lastUsage;
         }
-        console.log(`[Agent] ${agentId} stream end: fullContent.length=${fullContent.length}, startsWith: ${JSON.stringify(fullContent.slice(0, 100))}, endsWith: ${JSON.stringify(fullContent.slice(-200))}`);
+        console.log(`[Agent] ${agentId} stream end: fullContent.length=${fullContent.length}, reasoning=${reasoningChars}字, contentChunks=${contentChunks}, toolCalls=${currentToolCalls.length}, startsWith: ${JSON.stringify(fullContent.slice(0, 100))}`);
         // 不再吞掉 tool_calls:连同 content 一起回传,交由上层多轮循环真正执行
         return result;
       }
