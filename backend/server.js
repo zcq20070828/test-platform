@@ -19271,7 +19271,27 @@ async function executeTaskAsync(task) {
       // 安全整改:不再生成 mock 测试数据（mock 的 passed/failed 数字会被误当成真实结果）
       task.status = 'failed';
       task.error = result?.error || 'Agent execution failed';
-      task.result = `❌ 任务执行失败：${task.error}\n\n未生成任何测试结果或报告。请检查输入、工具可用性与智能体配置后重试。`;
+      /**
+       * 不能无条件覆盖已有交付物（2026-11-27）
+       *
+       * 重试路径会先把 task.input 改成「原需求 + 修改指南」再重新生成；
+       * 如果这一轮模型调用失败（超时/网关错误），旧代码直接
+       *   task.result = `❌ 任务执行失败…`
+       * 把**上一轮已经生成好的交付物整个删掉**。
+       * 实测任务 069e7a7d：第一轮生成了 119672 字 / 354 条用例，
+       * 审核未过后进入重试，重试调用 600s 超时 → 任务的 result 变成一句失败文案，
+       * 用户拿不到那份已经存在的交付物，只能重来一遍。
+       *
+       * 判据：已有实质内容（≥500 字且不是失败占位）时保留原文，
+       * 失败原因只写进 error 字段，由上层提示「本轮修复失败，已保留上一版」。
+       */
+      const prevResult = String(task.result || '').trim();
+      const prevUsable = prevResult.length >= 500 && !/^❌\s*任务执行失败/.test(prevResult);
+      if (prevUsable) {
+        console.warn(`[Task] Task ${task.id} 本轮执行失败，但保留上一版交付物（${prevResult.length} 字）: ${task.error}`);
+      } else {
+        task.result = `❌ 任务执行失败：${task.error}\n\n未生成任何测试结果或报告。请检查输入、工具可用性与智能体配置后重试。`;
+      }
       task.fallback = false;
       console.log(`[Task] Task ${task.id} failed: ${task.error}`);
     }

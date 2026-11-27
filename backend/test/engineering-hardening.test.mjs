@@ -52,5 +52,14 @@ t('任务 API 暴露 retriable，并剥离内部标记', () => {
   assert.ok(/replace\(\/\^\\\[可重试\\\]\\s\*\/, ''\)/.test(DAO), '未剥离 [可重试] 标记');
 });
 
+
+// 实测任务 069e7a7d：第一轮生成 119672 字 / 354 条用例，审核未过进入重试，
+// 重试调用 600s 超时 → result 被替换成一句失败文案，用户拿不到已生成的交付物。
+t('重试失败不得覆盖已有交付物', () => {
+  assert.ok(/prevUsable/.test(SERVER), '没有「上一版可用」判断');
+  assert.ok(/保留上一版交付物/.test(SERVER), '未显式保留上一版');
+  assert.ok(/prevResult\.length >= 500/.test(SERVER), '未按内容长度判断是否可保留');
+});
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
