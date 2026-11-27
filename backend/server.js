@@ -13466,7 +13466,20 @@ function strengthenAssertion(expected, c, rowCtx, reqCtx = null) {
     : '业务成功码';
   // 需求里有业务错误码时用它表达失败，否则用通用的「业务失败码」
   const errorCodes = (reqCtx && reqCtx.errorCodes) || [];
-  const failHint = errorCodes.length ? `业务失败码（如 ${errorCodes[0]}）` : '业务失败码';
+  /**
+   * 失败断言要**可唯一判定**（2026-11-27）
+   *
+   * 原来写「返回 HTTP 4xx 或业务失败码（如 103101）」——
+   * 「4xx 或 某码」是多选，具体码只用「如 X」举例，审核判
+   * 「多选结论，无法唯一判定」，一份 210 条交付物里 80 条被这么判。
+   * 我们手上已有需求的成功码，可以给出可判定的判据：
+   *   「resultcode 不等于成功码 103000，且响应体含错误描述」
+   * —— 通过/失败唯一可判，也不必去猜具体是哪个错误码。
+   */
+  const failField = success && success.field && success.field !== '业务成功码' ? success.field : 'resultcode';
+  const failHint = success && success.code
+    ? `${failField} 不等于成功码 ${success.code}，响应体含错误描述`
+    : '返回业务失败码，响应体含错误描述';
 
   /**
    * 预期里是否已经写明了失败结论

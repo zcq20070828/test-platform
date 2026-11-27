@@ -1088,6 +1088,243 @@ export function checkInventedIdentifiers(delivered, original, opts = {}) {
  *   与确定性系统的用例判定互不干扰。
  * @returns {Object}
  */
+/**
+ * 交付物声明的用例总数必须等于实际解析出的用例行数（2026-11-27）
+ *
+ * 实测 6 份交付物**全部不符**，而且 fabrication.quantityPass 全是 true：
+ *   26a56e33 声明 183 / 实际 210
+ *   7fd39497 声明 200 / 实际 227
+ *   1203c22e 声明 218 / 实际 408
+ *   ad2fa5b2 声明 169 / 实际 394
+ * 原有 checkQuantityConsistency 比的是「声明数 vs 文中列举项数」，
+ * 从不与真实行数比，所以这一类「统计口径失真」一直漏判。
+ * 审核把它归到 fact/format，是 21 天里最稳定的一类 major。
+ *
+ * @param {string} text 交付物
+ * @param {number} actualTotal 实际解析出的用例行数
+ * @param {Object} [opts]
+ * @param {number} [opts.tolerance=0.02] 允许的偏差比例（合并/去重说明可能造成小差异）
+ * @returns {{declared:number[], actual:number, offBy:number, overLimit:boolean, sample:string}}
+ */
+export function checkDeclaredTotal(text, actualTotal, opts = {}) {
+  const t = String(text || '');
+  const actual = Number(actualTotal) || 0;
+  const tol = Number(opts.tolerance ?? 0.02);
+  if (!actual) return { declared: [], actual, offBy: 0, overLimit: false, sample: '' };
+
+  // 只说「总计/合计/共 N 条（个）用例」这类明确的用例总数，
+  // 不管「14 个返回码」「3 张表」这种其它计数。
+  const declared = [];
+  for (const line of t.split(/\r?\n/)) {
+    if (line.length > 400) continue;
+    for (const m of line.matchAll(/(?:总计|合计|共)\s*[:：]?\s*(\d{2,5})\s*(?:条|个)\s*(?:用例|测试用例)?/g)) {
+      const n = Number(m[1]);
+      // 只在提到「用例」或紧邻「总计/合计」时计入，避免把业务计数当用例总数
+      if (/用例/.test(m[0]) || /总计|合计/.test(m[0])) declared.push(n);
+    }
+  }
+  if (!declared.length) return { declared: [], actual, offBy: 0, overLimit: false, sample: '' };
+
+  // 取最接近实际值的那个声明：一份文档可能多处声明（分章节统计），
+  // 只要有一处对得上就不算失真；全都不对才算。
+  const minOff = Math.min(...declared.map((n) => Math.abs(n - actual)));
+  const allowed = Math.max(3, Math.round(actual * tol));
+  const overLimit = minOff > allowed;
+  const worst = declared.reduce((a, b) => (Math.abs(a - actual) >= Math.abs(b - actual) ? a : b));
+  return {
+    declared,
+    actual,
+    offBy: minOff,
+    overLimit,
+    sample: overLimit ? `交付物声明 ${worst} 条，实际解析出 ${actual} 条（差 ${minOff}）` : '',
+  };
+}
+
+/**
+ * 「关联需求」列必须承接输入里的真实需求编号（2026-11-27）
+ *
+ * 实测 7fd39497 / 7028b200：关联需求列填的是
+ *   「九维必测点 U1」「有效等价类 0<=len(a)<=255」「经验规则 空值」「正交覆盖 full」
+ * —— 一条都没指向 FR-/NFR-/API- 编号。审核判 traceability major：
+ * 「无一条指向 FR/NFR/API 编号，上游 44 条需求未承接」。
+ *
+ * 现有 orphanRequirement 只能抓「格式对但编号不存在」（如 FR-999），
+ * 抓不到「整列都不是编号」。这条补的就是这个缺口。
+ *
+ * @param {Array} cases parseCaseTable 解析出的用例
+ * @param {Object} ctx { originalInput, minRatio }
+ * @returns {{total:number, traced:number, ratio:number, overLimit:boolean, sample:string, skipped?:string}}
+ */
+export function checkTraceability(cases, ctx = {}) {
+  const original = String(ctx.originalInput || '');
+  const list = Array.isArray(cases) ? cases : [];
+  const empty = { total: 0, traced: 0, ratio: 1, overLimit: false, sample: '' };
+
+  // 输入本身没有编号体系时不做判定：没有基准
+  const srcIds = new Set();
+  for (const m of original.matchAll(/\b((?:FR|NFR|API|REQ|UC)-\d{1,4})\b/gi)) srcIds.add(m[1].toUpperCase());
+  if (srcIds.size < 2) return { ...empty, skipped: 'source-has-no-requirement-ids' };
+  if (!list.length) return { ...empty, skipped: 'no-cases' };
+
+  const realIds = new Set([...srcIds]);
+  let traced = 0;
+  const bad = [];
+  for (const c of list) {
+    const trace = String(c.trace || c.requirement || '').trim();
+    const ids = [...trace.matchAll(/\b((?:FR|NFR|API|REQ|UC)-\d{1,4})\b/gi)].map((m) => m[1].toUpperCase());
+    const hit = ids.some((id) => realIds.has(id));
+    if (hit) traced += 1;
+    else if (bad.length < 6) bad.push(`${c.id || '?'}: ${trace.slice(0, 30) || '(空)'}`);
+  }
+  const ratio = Math.round((traced / list.length) * 1000) / 1000;
+  const minRatio = Number(ctx.minRatio ?? 0.5);
+  return {
+    total: list.length,
+    traced,
+    ratio,
+    overLimit: ratio < minRatio,
+    sample: ratio < minRatio
+      ? `仅 ${traced}/${list.length} 条关联到真实需求编号；样例 ${bad.slice(0, 3).join(' | ')}`
+      : '',
+  };
+}
+
+/**
+ * 检测「无法唯一判定」的断言写法（2026-11-27）
+ *
+ * 实测被审核判 major 的三类：
+ *   ① 否定式：「resultcode 不等于 103000」——只排除一个值，不验证正确值
+ *   ② 多选式：「返回 HTTP 4xx 或业务失败码」「返回 200 或 400」——无法唯一判定
+ *   ③ 自相矛盾：同一句里既断言成功码又断言失败码
+ * 现有 inspectAssertion 把 ①②③ 全判成「可判定」，审核因此反复指出
+ * 「系统门禁 99.4% 仅反映断言可解析，不代表内容可信」。
+ *
+ * @param {string} expected 预期结果文本
+ * @param {Object} [ctx] { successCode, errorCodes }
+ * @returns {{issues:string[]}}
+ */
+export function inspectAssertionAmbiguity(expected, ctx = {}) {
+  const e = String(expected || '');
+  const issues = [];
+  if (!e.trim()) return { issues };
+
+  const successCode = String(ctx.successCode || '');
+  const errorCodes = Array.isArray(ctx.errorCodes) ? ctx.errorCodes : [];
+
+  // 先把「否定提及」剔掉再判「是否断言成功」。
+  // 「返回 130032（traceId不能为空），不得返回 103000」是一条**正确且唯一**的断言，
+  // 但里面有成功码字样；不剔除就会把大量正常用例判成自相矛盾
+  // （实测第一版 210 条里误判 80 条，占 38%）。
+  const positive = e.replace(/(?:不得|不应|不能|不|未|非|≠|不等于|不为|排除|而不是)[^0-9\n]{0,6}(\d{3,8})/g, '');
+
+  const assertsSuccess = !!successCode && new RegExp(`\\b${successCode}\\b`).test(positive);
+  const assertsFail = errorCodes.some((c) => new RegExp(`\\b${c}\\b`).test(positive))
+    || /失败码|错误码/.test(positive);
+
+  // ③ 自相矛盾：同一句里既要求成功码又要求失败码
+  if (assertsSuccess && assertsFail) {
+    issues.push(`同句既断言成功码 ${successCode} 又断言失败码，无法判定通过与否`);
+  }
+
+  // ① 否定式：只排除一个码值、且全句没给出期望的正确码值
+  //
+  // 但「拒绝类」用例的否定式是**正确写法**：「返回 130032，不得返回成功码 103000」
+  // 通过/失败唯一可判。只有把它当正常路径结论（如「返回结果不等于 103000」）
+  // 才是无法判定的。第一版没区分，210 条里误判 80 条。
+  const isRejectCase = /拒绝|失败|不允许|非法|不能为空|越权|不通过|错误提示|参数错误/.test(e);
+  if (!isRejectCase && /(?:≠|不等于|不为)\s*["“]?(\d{3,8})/.test(e)) {
+    const named = (e.match(/\b\d{4,8}\b/g) || []).filter((n) => n !== successCode);
+    if (!named.length) {
+      issues.push('否定式断言只排除单一码值，未给出期望的正确码值');
+    }
+  }
+
+  // ② 多选式 / 集合式：无法唯一判定
+  // 注意不再匹配「或业务失败码」——自动补强的文案已改成可判定写法，
+  // 留着这条会把合法表述误判（见 strengthenAssertion 的 failHint 注释）。
+  if (/\b4\d{2}\s*或\s*\d|返回\s*\d{3}\s*或\s*\d{3}|成功或错误状态/.test(e)) {
+    issues.push('多选式断言（A 或 B），无法唯一判定');
+  }
+  if (/码值全集|∈\s*\{|属于码值/.test(e)) {
+    issues.push('集合式断言（∈ 码值全集），无法唯一判定');
+  }
+
+  return { issues };
+}
+
+/**
+ * 编造的「表.列」标识符（2026-11-27）
+ *
+ * 实测 fact 类 major 的最大来源（21 天 126 条）：
+ *   auth_token.expire_time（原文建表是 expires_time）
+ *   uid_binding.uuid（原文无此列）
+ *   sms_send_log（原文无此表）
+ * 这类最好核验——原文有 DDL/字段表，逐个比对即可。
+ * checkInventedIdentifiers 只覆盖接口路径与字段名，没覆盖「表.列」。
+ *
+ * @param {string} delivered
+ * @param {string} original
+ * @param {Object} [opts] { maxRatio=0.34, minIdentifiers=5 }
+ * @returns {{invented:string[], total:number, ratio:number, overLimit:boolean, skipped?:string}}
+ */
+export function checkInventedDbObjects(delivered, original, opts = {}) {
+  const src = String(original || '');
+  const text = String(delivered || '');
+  const empty = { invented: [], total: 0, ratio: 0, overLimit: false };
+  if (src.trim().length < 100) return { ...empty, skipped: 'no-source' };
+
+  // 抽取「表.列」形态（蛇形/驼峰 + 点 + 蛇形/驼峰）
+  //
+  // 必须限定在**数据库语境**里。第一版不看语境，把工具内部字段名
+  // （design.methods / design.cases / summary.gapmessage）也当成表列，
+  // 一份交付物误报 4 个。真正的表列一定出现在「表/字段/列/DDL/SQL/数据库」附近。
+  const DB_CONTEXT = /表|字段|列|DDL|SQL|数据库|schema|落库|入库/i;
+  // 代码命名空间 / JS 全局对象：它们出现在「字段」语境里也不是数据库表
+  const CODE_NAMESPACES = /^(?:window|document|console|process|globalthis|module|exports|require|design|summary|result|response|request|args|opts|ctx|req|res|this|self|object|array|json)$/i;
+  // 常见 TLD / 方法名：`evil.example`、`window.alert` 这类不是列
+  const NOT_A_COLUMN = /^(?:alert|log|warn|error|info|debug|then|catch|map|filter|reduce|example|local|com|cn|net|org|io|dev|test)$/i;
+  const found = new Map();
+  for (const line of text.split(/\r?\n/)) {
+    if (!DB_CONTEXT.test(line)) continue;
+    for (const m of line.matchAll(/\b([a-z][a-z0-9_]{2,30})\.([a-z][a-z0-9_]{2,30})\b/gi)) {
+      const table = m[1].toLowerCase();
+      const col = m[2].toLowerCase();
+      if (/^(?:www|http|https|api|data|res|req|err|obj|this|self)$/.test(table)) continue;
+      if (/^(?:com|cn|net|org|js|ts|md|json|html|txt|csv|xlsx|docx)$/.test(col)) continue;
+      if (CODE_NAMESPACES.test(table)) continue;
+      if (NOT_A_COLUMN.test(col)) continue;
+      if (!found.has(`${table}.${col}`)) found.set(`${table}.${col}`, { table, col });
+    }
+  }
+  if (!found.size) return { ...empty };
+
+  const invented = [];
+  for (const [key, { table, col }] of found) {
+    // 表名或列名任一个在原文出现即认为有依据（原文可能只给字段名不给表名）
+    if (src.toLowerCase().includes(table) || src.toLowerCase().includes(col)) continue;
+    invented.push(key);
+  }
+  const total = found.size;
+  const ratio = Math.round((invented.length / total) * 1000) / 1000;
+  const maxRatio = Number(opts.maxRatio ?? 0.34);
+  const minIdentifiers = Number(opts.minIdentifiers ?? 5);
+  const smallSampleBad = total < minIdentifiers && invented.length >= 3;
+  return {
+    invented,
+    total,
+    ratio,
+    overLimit: total >= minIdentifiers ? ratio > maxRatio : smallSampleBad,
+  };
+}
+
+/**
+ * 交付物声明的用例总数必须等于实际解析出的用例行数（见上）
+ *
+ * @param {string} text
+ * @param {number} actualTotal
+ * @param {Object} [opts]
+ * @returns {Object}
+ */
 export function checkDeliverable(text, options = {}) {
   const minRate = Number(options.minUsabilityRate ?? 0.85);
   const original = String(options.originalInput || '');
@@ -1196,6 +1433,37 @@ export function checkDeliverable(text, options = {}) {
   // 大面积出现才说明确实在凭空造接口/字段/状态机。
   const inventionPass = !invention.overLimit;
 
+  // ── 以下四项是 2026-11-27 补的（都是审核反复指出的确定性缺陷）──
+
+  // ① 声明总数 vs 实际行数：6/6 真实交付物全部不符，原来完全没判
+  const declaredTotal = checkDeclaredTotal(text, results.length);
+  const declaredTotalPass = !declaredTotal.overLimit;
+
+  // ② 关联需求列要承接真实编号：整列填规则名/探针号时判缺陷
+  const traceability = checkTraceability(cases, { originalInput: original });
+  const traceabilityPass = !traceability.overLimit;
+
+  // ③ 断言多选/否定/自相矛盾
+  const ambiguous = [];
+  for (const r of results) {
+    const raw = (r.caseRef && (r.caseRef.expected || r.caseRef.expect)) || '';
+    const a = inspectAssertionAmbiguity(raw, {
+      successCode: options.reqContext && options.reqContext.successCode
+        ? options.reqContext.successCode.code
+        : '',
+      errorCodes: (options.reqContext && options.reqContext.errorCodes) || [],
+    });
+    if (a.issues.length) {
+      ambiguous.push({ id: (r.caseRef && r.caseRef.id) || '', issues: a.issues });
+    }
+  }
+  const ambiguousRate = results.length ? ambiguous.length / results.length : 0;
+  const assertionPass = ambiguousRate <= Number(options.maxAmbiguousRate ?? 0.05);
+
+  // ④ 编造「表.列」
+  const dbObjects = checkInventedDbObjects(text, original);
+  const dbObjectPass = !dbObjects.overLimit;
+
   const fabrication = {
     quantityIssues,
     quantityPass,
@@ -1211,9 +1479,27 @@ export function checkDeliverable(text, options = {}) {
     constraintSamples: constraints.samples,
     constraintDisclosed: constraints.disclosed,
     constraintPass,
+    // 统计口径 / 追溯 / 断言歧义 / 编造表列（2026-11-27）
+    declaredTotal: declaredTotal.declared,
+    declaredActual: declaredTotal.actual,
+    declaredTotalOffBy: declaredTotal.offBy,
+    declaredTotalSample: declaredTotal.sample,
+    declaredTotalPass,
+    traceTotal: traceability.total,
+    traceTraced: traceability.traced,
+    traceRatio: traceability.ratio,
+    traceSample: traceability.sample,
+    traceabilityPass,
+    ambiguousCount: ambiguous.length,
+    ambiguousSamples: ambiguous.slice(0, 5),
+    assertionPass,
+    inventedDbObjects: dbObjects.invented,
+    DbObjectRatio: dbObjects.ratio,
+    dbObjectPass,
   };
 
-  const pass = usabilityPass && dimensionPass && quantityPass && inventionPass && constraintPass;
+  const pass = usabilityPass && dimensionPass && quantityPass && inventionPass && constraintPass
+    && declaredTotalPass && traceabilityPass && assertionPass && dbObjectPass;
 
   return {
     applicable: true,
