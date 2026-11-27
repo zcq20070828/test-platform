@@ -87,6 +87,9 @@ function makeCase(methodKey, data) {
   // 实测任务 539f4597：下游猜出「模块标 accessCodeValidate，步骤调 smsValidate」，
   // 审核判「用例名与步骤接口错配」。
   if (data.endpoint) c.endpoint = data.endpoint;
+  // 规则指纹要透传：makeCase 是白名单拷贝，不带这一项
+  // 交叉去重就会失效（因果图与判定表各展开一遍，重复约 22 条）
+  if (data.ruleSig) c.ruleSig = data.ruleSig;
   return c;
 }
 
@@ -501,6 +504,59 @@ function genBoundary(input) {
   return { cases: clip(cases, MAX_CASES_PER_METHOD), skipped: false };
 }
 
+/**
+ * 因果/判定表用例要落到真实字段与真实码值（2026-11-27）
+ *
+ * 实测交付物里这两类方法的用例长这样：
+ *   input  = C1=true & C2=true
+ *   expect = 产生结果:成功
+ * C1/C2 是原因编号，「成功」是效果名 —— 执行的人不知道要改哪个字段、
+ * 也不知道该断言哪个码。审核判「用 C1=true 等抽象符号，未落到任何真实请求字段，
+ * 且未承接原文 14 个返回码的实际触发条件」，这是 logic 77 条里的大头。
+ *
+ * 改法（全部确定性）：
+ *   ① 输入列换成原因**名称**（模型给的 causes[].name，通常就含字段名）
+ *   ② 预期列按效果语义绑定需求里的成功码/失败判据
+ */
+function causeLabelMap(causes) {
+  const m = new Map();
+  for (const c of toArray(causes)) {
+    if (!c || c.id == null) continue;
+    m.set(String(c.id), String(c.name || c.desc || c.id));
+  }
+  return m;
+}
+
+function renderRuleConditions(rule, labelMap, withYesNo) {
+  return rule.conditions.map((c) => {
+    const label = labelMap.get(String(c.id)) || String(c.id);
+    const val = withYesNo ? (c.value ? '是' : '否') : String(c.value);
+    return `${label}（${c.id}）=${val}`;
+  }).join(' 且 ');
+}
+
+function renderRuleExpectation(actions, input) {
+  const names = actions.join('、');
+  if (!names) return '不产生任何结果';
+  const okCode = input && input.successCode && input.successCode.code;
+  const isSuccess = /成功|通过|正常|允许|接受|有效/.test(names);
+  const isFail = /失败|拒绝|错误|异常|不允许|拦截|非法/.test(names);
+  if (isSuccess && okCode) return `产生结果：${names}（resultcode=${okCode}）`;
+  if (isFail) {
+    return okCode
+      ? `产生结果：${names}（返回失败码，且 resultcode 不等于成功码 ${okCode}）`
+      : `产生结果：${names}（返回失败码，响应体含错误描述）`;
+  }
+  return `产生结果：${names}`;
+}
+
+/** 规则指纹：条件集合 + 动作集合（用于因果图/判定表交叉去重） */
+function ruleSignature(rule) {
+  const conds = rule.conditions.map((c) => `${c.id}:${c.value ? 1 : 0}`).sort().join(',');
+  const acts = rule.actions.slice().sort().join(',');
+  return `${conds}|${acts}`;
+}
+
 // ---------------------------------------------------------------- M3 因果图法
 
 function genCauseEffect(input) {
@@ -509,28 +565,37 @@ function genCauseEffect(input) {
     return { cases: [], skipped: true, reason: '缺少 causes / effects / rules' };
   }
   const cases = [];
+  const labelMap = causeLabelMap(causes);
   for (const rule of rules) {
-    const condText = rule.conditions.map((c) => `${c.id}=${c.value}`).join(' & ') || '(无条件)';
+    const condText = renderRuleConditions(rule, labelMap, false) || '(无条件)';
     cases.push(makeCase('causeEffect', {
       name: `因果图-规则${rule.id}(${condText})`,
       dimension: /状态|流程|流转|审批/i.test(String(rule.actions.join(''))) ? '③ 流程' : '② 数据',
       layer: '正常',
       input: condText,
-      expected: rule.actions.length ? `产生结果:${rule.actions.join('、')}` : '按规则不产生结果',
+      expected: renderRuleExpectation(rule.actions, input),
       priority: '高',
       trace: `因果规则 ${rule.id}`,
+      ruleSig: ruleSignature(rule),
     }));
     // 反例：该规则的首个原因取反
     const first = rule.conditions[0];
     if (first) {
-      const flipped = rule.conditions.map((c, i) => (i === 0 ? `${c.id}=${!c.value}` : `${c.id}=${c.value}`)).join(' & ');
+      const flippedRule = {
+        conditions: rule.conditions.map((c, i) => (i === 0 ? { id: c.id, value: !c.value } : c)),
+        actions: rule.actions,
+      };
+      const flipped = renderRuleConditions(flippedRule, labelMap, false);
       cases.push(makeCase('causeEffect', {
         name: `因果图-规则${rule.id}反例(${first.id}取反)`,
         layer: '异常',
         input: flipped,
-        expected: '该规则不成立，走其他规则或默认分支，不产生本条结果',
+        expected: renderRuleExpectation([], input) === '不产生任何结果'
+          ? '该规则不成立，走其他规则或默认分支，不产生本条结果'
+          : '该规则不成立，不产生本条结果；若命中其他规则则按其结论返回',
         priority: '中',
         trace: `因果规则 ${rule.id} 取反`,
+        ruleSig: '',
       }));
     }
   }
@@ -545,16 +610,18 @@ function genDecisionTable(input) {
     return { cases: [], skipped: true, reason: '缺少 rules（含 conditions/actions）' };
   }
   const cases = [];
+  const labelMap = causeLabelMap(input && input.causes);
   for (const rule of rules) {
-    const condText = rule.conditions.map((c) => `${c.id}=${c.value ? 'Y' : 'N'}`).join(',') || '(默认)';
+    const condText = renderRuleConditions(rule, labelMap, true) || '(默认)';
     cases.push(makeCase('decisionTable', {
       name: `判定表-规则${rule.id}(${condText})`,
       dimension: /状态|流程|流转|审批/i.test(String(rule.actions.join(''))) ? '③ 流程' : '② 数据',
       layer: '正常',
-      input: `条件:${condText}`,
-      expected: rule.actions.length ? `动作:${rule.actions.join('、')}` : '无动作',
+      input: `条件：${condText}`,
+      expected: renderRuleExpectation(rule.actions, input),
       priority: '高',
       trace: `判定表规则列 ${rule.id}`,
+      ruleSig: ruleSignature(rule),
     }));
   }
   const allOff = rules[0].conditions.map((c) => `${c.id}=N`).join(',');
@@ -963,6 +1030,19 @@ function executeDesignMethods(options) {
   const results = [];
   const allCases = [];
   const byMethod = {};
+  /**
+   * 因果图 / 判定表 交叉去重（2026-11-27）
+   *
+   * 两者吃的是同一份 rules：因果图按「原因真假」展开，判定表按「条件 Y/N」展开，
+   * 渲染措辞不同但**规则完全相同**。按键（输入+预期）去重抓不到，
+   * 实测一份交付物里「因果图 R1~R11（DC-059~080）」与
+   * 「判定表 R1~R11（DC-081~092）」条件动作完全等同，重复约 22 条，
+   * 审核判 duplicate major。
+   *
+   * 判据用规则指纹（条件集合 + 动作集合），与渲染文本无关。
+   */
+  const seenRuleSig = new Map(); // sig -> 首次出现的用例编号（方法名）
+  const ruleDeduped = [];
 
   for (const key of requested) {
     const meta = METHODS[key];
@@ -986,13 +1066,29 @@ function executeDesignMethods(options) {
         }
       }
     }
-    byMethod[meta.key] = cases.length;
-    allCases.push(...cases);
+    // 同一份规则被因果图与判定表各展开一遍时，只保留先出现的那一套
+    const kept = [];
+    for (const c of cases) {
+      const sig = c && c.ruleSig;
+      if (sig) {
+        if (seenRuleSig.has(sig)) {
+          ruleDeduped.push({ method: meta.label, ruleSig: sig, keptBy: seenRuleSig.get(sig) });
+          continue; // 规则重复，丢弃
+        }
+        seenRuleSig.set(sig, meta.label);
+      }
+      kept.push(c);
+    }
+    if (kept.length !== cases.length) {
+      console.log(`[DesignMethods] ${meta.label} 因与因果图/判定表规则重复，丢弃 ${cases.length - kept.length} 条`);
+    }
+    byMethod[meta.key] = kept.length;
+    allCases.push(...kept);
     results.push({
       method: key,
       methodKey: meta.key,
       methodLabel: meta.label,
-      caseCount: cases.length,
+      caseCount: kept.length,
       skipped: !!out.skipped,
       reason: out.reason || (out.skipped ? '' : undefined),
       guidance: out.skipped ? METHOD_GUIDANCE[key] : undefined,
@@ -1015,9 +1111,13 @@ function executeDesignMethods(options) {
       requestedMethods: requested.length,
       methodsWithCases: coveredMethods.length,
       skippedMethods,
-      totalCasesBeforeDedupe: allCases.length,
+      // 口径必须自洽：规则级去重（因果图/判定表）丢弃的条数也要算进总量，
+      // 否则「去重前 N → 去重后 M，移除 K」三处数字对不上，
+      // 而这正是审核反复判「统计口径自相矛盾」的地方。
+      totalCasesBeforeDedupe: allCases.length + ruleDeduped.length,
       uniqueCases: deduped.cases.length,
-      duplicatesRemoved: deduped.duplicates.length,
+      duplicatesRemoved: deduped.duplicates.length + ruleDeduped.length,
+      ruleDuplicatesRemoved: ruleDeduped.length,
       byMethod,
       methodCoverage: requested.length ? Math.round((coveredMethods.length / requested.length) * 100) : 0,
       dimensionsCovered,

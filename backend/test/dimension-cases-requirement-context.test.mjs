@@ -621,5 +621,66 @@ t('工具循环用 parseToolArguments 而不是裸 JSON.parse', () => {
     '未改用 parseToolArguments');
 });
 
+
+// ── 第十五/十六条：因果图与判定表 ──
+//
+// 实测交付物里这两类用例长这样：
+//   input  = C1=true & C2=true
+//   expect = 产生结果:成功
+// C1/C2 是原因编号，「成功」是效果名 —— 执行的人不知道改哪个字段、断言哪个码。
+// 审核判「用抽象符号，未落到真实请求字段，未承接原文返回码」。
+t('因果图/判定表断言落到真实字段与真实码值', () => {
+  const dm = require(path.join(SKILL, 'design-methods.js'));
+  const out = dm.executeDesignMethods({
+    input: {
+      inputSpec: { a: { type: 'string' }, b: { type: 'string' } },
+      causes: [{ id: 'C1', name: 'a 非空' }, { id: 'C2', name: 'b 非空' }],
+      effects: [{ id: 'E1', name: '成功' }],
+      rules: [
+        { id: 'R1', conditions: { C1: true, C2: true }, actions: { 成功: true } },
+        { id: 'R2', conditions: { C1: true, C2: false }, actions: { 拒绝: true } },
+      ],
+      successCode: { code: '103000', field: 'resultcode' },
+    },
+  });
+  const ce = out.cases.filter((c) => c.method === 'causeEffect');
+  assert.ok(ce.length > 0, '没生成因果图用例');
+  // 输入必须含原因名称（真实字段），不能只有 C1
+  assert.ok(ce.every((c) => /a 非空|b 非空/.test(c.input)), '输入仍是纯 C1/C2 符号');
+  // 成功分支要绑定真实成功码
+  const ok = ce.find((c) => /成功/.test(c.expected));
+  assert.ok(ok && /103000/.test(ok.expected), `成功断言没绑码值：${ok && ok.expected}`);
+  // 失败分支要给出可判定判据
+  const bad = ce.find((c) => /拒绝/.test(c.expected));
+  assert.ok(bad && /不等于成功码\s*103000/.test(bad.expected), `失败断言不可判定：${bad && bad.expected}`);
+});
+
+t('因果图与判定表同规则只保留一套', () => {
+  const dm = require(path.join(SKILL, 'design-methods.js'));
+  const out = dm.executeDesignMethods({
+    input: {
+      inputSpec: { a: { type: 'string' }, b: { type: 'string' } },
+      causes: [{ id: 'C1', name: 'a 非空' }, { id: 'C2', name: 'b 非空' }],
+      effects: [{ id: 'E1', name: '成功' }],
+      rules: [
+        { id: 'R1', conditions: { C1: true, C2: true }, actions: { 成功: true } },
+        { id: 'R2', conditions: { C1: true, C2: false }, actions: { 拒绝: true } },
+      ],
+      successCode: { code: '103000', field: 'resultcode' },
+    },
+  });
+  const ce = out.cases.filter((c) => c.method === 'causeEffect');
+  const dt = out.cases.filter((c) => c.method === 'decisionTable');
+  // 判定表只应剩「所有条件均不满足」这类无规则指纹的兜底用例
+  const dtRules = dt.filter((c) => c.ruleSig);
+  assert.strictEqual(dtRules.length, 0, `判定表仍保留 ${dtRules.length} 条与因果图重复的规则`);
+  assert.ok(ce.length > 0, '因果图被误删');
+  // 统计口径必须自洽
+  const st = out.stats;
+  assert.ok(st.ruleDuplicatesRemoved >= 2, `规则级去重计数不对：${st.ruleDuplicatesRemoved}`);
+  assert.ok(st.totalCasesBeforeDedupe - st.duplicatesRemoved >= st.uniqueCases,
+    '去重前后数字不自洽');
+});
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
 process.exit(failed ? 1 : 0);

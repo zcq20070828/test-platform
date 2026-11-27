@@ -226,6 +226,14 @@ async function invoke(params) {
       }
       // 需求原文：让生成器能自己判断场景形态（2026-11-26）
       if (!merged.requirementText) merged.requirementText = String(task || '');
+      // 成功码/错误码：因果图与判定表的预期要绑定真实码值，
+      // 否则会写成「产生结果:成功」这种没有判据的结论（2026-11-27）
+      if (!merged.successCode && requirementContext && requirementContext.successCode) {
+        merged.successCode = requirementContext.successCode;
+      }
+      if (!merged.errorCodes && requirementContext && Array.isArray(requirementContext.errorCodes)) {
+        merged.errorCodes = requirementContext.errorCodes;
+      }
 
       // 用需求文本补齐缺失的设计输入（已有的一律不覆盖，只补空）
       try {
