@@ -682,5 +682,64 @@ t('因果图与判定表同规则只保留一套', () => {
     '去重前后数字不自洽');
 });
 
+
+// ── 第十七条：需求分析侧四条自洽性规则 ──
+//
+// 近 21 天需求分析交付物 42 条 major 里，requirement 11 / logic 10 / fact 7
+// 集中在四类问题。四个规则都必须挂在 test-requirement-analyzer 上，
+// 且不能因为只用 extractTableRows 拿到残缺行而恒真/恒假（第一版 8/8 全误判）。
+t('需求分析四条自洽规则已挂载且不污染其他智能体', () => {
+  const qr = require(path.join(BACKEND, 'lib', 'quality-rules.js'));
+  const ids = qr.getRulesFor('test-requirement-analyzer').map((r) => r.id);
+  for (const id of ['testabilityNoOpenCl', 'noSelfEndorsement', 'noPlaceholderRows', 'requirementCountMatches']) {
+    assert.ok(ids.includes(id), `需求分析规则集缺 ${id}`);
+  }
+  const scheme = (qr.getRulesFor('test-scheme-generator') || []).map((r) => r.id);
+  assert.ok(!scheme.includes('testabilityNoOpenCl'), '规则错挂到 test-scheme-generator');
+});
+
+t('可测性口径矛盾能被判出（判「是」却挂未闭合 CL）', () => {
+  const qr = require(path.join(BACKEND, 'lib', 'quality-rules.js'));
+  const rule = qr.getRulesFor('test-requirement-analyzer').find((r) => r.id === 'testabilityNoOpenCl');
+  const bad = [
+    '| 需求编号 | 需求名称 | 验收标准 | 可测试性 |',
+    '|---|---|---|---|',
+    '| FR-008 | 校验 | 并入 CL-012 跟踪修复（未闭合） | 是 |',
+  ].join('\n');
+  const good = [
+    '| 需求编号 | 需求名称 | 验收标准 | 可测试性 |',
+    '|---|---|---|---|',
+    '| FR-001 | 校验 | 返回 resultcode=103000 | 是 |',
+  ].join('\n');
+  assert.strictEqual(rule.check(bad), false, '「是」+未闭合 CL 未判出');
+  assert.strictEqual(rule.check(good), true, '正常行被误判');
+});
+
+t('自我背书能被判出', () => {
+  const qr = require(path.join(BACKEND, 'lib', 'quality-rules.js'));
+  const rule = qr.getRulesFor('test-requirement-analyzer').find((r) => r.id === 'noSelfEndorsement');
+  assert.strictEqual(rule.check('本阶段准入条件已满足，矛盾消除，零依据条目：0 条'), false, '自我背书未判出');
+  assert.strictEqual(rule.check('本报告列出 19 条功能需求与 14 个返回码。'), true, '正常报告被误判');
+});
+
+t('整行占位能被判出（且不误杀正常行）', () => {
+  const qr = require(path.join(BACKEND, 'lib', 'quality-rules.js'));
+  const rule = qr.getRulesFor('test-requirement-analyzer').find((r) => r.id === 'noPlaceholderRows');
+  const rows = ['| 需求编号 | 需求名称 | 需求描述 |', '|---|---|---|'];
+  for (let i = 1; i <= 10; i += 1) rows.push(`| FR-00${i} | 未知 | 未知 |`);
+  assert.strictEqual(rule.check(rows.join('\n')), false, '大面积占位未判出');
+  const ok = ['| 需求编号 | 需求名称 | 需求描述 |', '|---|---|---|'];
+  for (let i = 1; i <= 10; i += 1) ok.push(`| FR-00${i} | 需求${i} | 应返回 resultcode=103000 |`);
+  assert.strictEqual(rule.check(ok.join('\n')), true, '正常表被误判为占位');
+});
+
+t('声明条目数与实际条数不符能被判出', () => {
+  const qr = require(path.join(BACKEND, 'lib', 'quality-rules.js'));
+  const rule = qr.getRulesFor('test-requirement-analyzer').find((r) => r.id === 'requirementCountMatches');
+  const rows = ['共 53 条需求', '', '| 需求编号 | 需求名称 |', '|---|---|'];
+  for (let i = 1; i <= 10; i += 1) rows.push(`| FR-00${i} | 需求${i} |`);
+  assert.strictEqual(rule.check(rows.join('\n')), false, '声明 53 / 实际 10 未判出');
+});
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
 process.exit(failed ? 1 : 0);

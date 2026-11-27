@@ -798,12 +798,150 @@ const COMMON_RULES = [
  * 但通用规则（如「项目名称不许带说明」）对它同样适用，
  * 所以这里不能因为 RULES 没这个 key 就返回 null。
  */
+
+/**
+ * 需求分析专属的「交付物自洽性」规则（2026-11-27）
+ *
+ * 近 21 天需求分析交付物 42 条 major 里，requirement 11 / logic 10 / fact 7
+ * 全部集中在四类问题上，且都是规则可判定的（不调 LLM）。
+ * 单独放一个数组再在 getRulesFor 里追加，避免改动上面那份大规则字面量。
+ */
+/**
+ * 取出「含指定表头列」的表格的全部行（含所有列原文）
+ *
+ * 为什么不用 extractTableRows：它只映射传入的目标列，
+ * 拿到的行对象里只有「需求编号」一个键（或只有「可测试性」）
+ * —— 判「整行是否全是占位」「这一行有没有待澄清项」时看不到其它列，
+ * 于是前者恒真（vals 为空 → meaningful 为空 → 全判占位），后者恒假。
+ * 实测这两个规则第一版 8/8 全是误判。
+ *
+ * @param {string} text
+ * @param {string} requiredCol 表头必须包含的列名（如「需求编号」）
+ * @returns {{header:string[], rows:string[][]}}
+ */
+function tableRowsWithAllCells(text, requiredCol) {
+  const lines = String(text || '').split(/\r?\n/);
+  let headerIdx = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    const l = lines[i];
+    if (!/^\s*\|.*\|\s*$/.test(l)) continue;
+    const cells = l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+    if (cells.some((c) => c.includes(requiredCol))) { headerIdx = i; break; }
+  }
+  if (headerIdx < 0) return { header: [], rows: [] };
+  const header = lines[headerIdx].trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+  const rows = [];
+  for (let i = headerIdx + 1; i < lines.length; i += 1) {
+    const l = lines[i];
+    if (!/^\s*\|.*\|\s*$/.test(l)) break;
+    const cells = l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+    if (/^[-:\s|]+$/.test(cells.join(''))) continue;   // 分隔行
+    rows.push(cells);
+  }
+  return { header, rows };
+}
+
+const REQUIREMENT_ANALYSIS_EXTRA_RULES = [
+  {
+    id: 'testabilityNoOpenCl',
+    category: 'logic',
+    severity: 'major',
+    weight: 15,
+    desc: '判定「可测」的需求同时挂着未闭合待澄清项（违反自身口径）',
+    // 实测样本：「FR-008 记『是』，但验收标准③写明『并入 CL-012 跟踪修复』，
+    // 而 CL-012 未闭合，违反本报告自定『零待澄清项方可记是』口径」。
+    // 判据：同一行里既标「是/可测」又出现「待澄清/CL-xxx 未闭合/待 CL」。
+    check: (t) => {
+      const { header, rows } = tableRowsWithAllCells(t, '可测试性');
+      if (!header.length || !rows.length) return true;   // 没有可测试性列，不判（避免误杀）
+      const idx = header.findIndex((c) => c.includes('可测试性'));
+      if (idx < 0) return true;
+      for (const cells of rows) {
+        const v = String(cells[idx] || '');
+        const markedYes = /^\s*[☑✓√]?\s*是/.test(v) || /^\s*是\s*$/.test(v);
+        if (!markedYes) continue;
+        // 看**整行**有没有未闭合待澄清项（不只这一格）
+        const rowText = cells.join(' ');
+        if (/待澄清|未闭合|待\s*CL|CL-\d+\s*未/.test(rowText)) return false;
+      }
+      return true;
+    },
+  },
+  {
+    id: 'noSelfEndorsement',
+    category: 'substance',
+    severity: 'major',
+    weight: 10,
+    desc: '交付物含自我背书式结论（准入条件已满足/零依据条目 0 条等）',
+    // 实测样本：「需求分析阶段准入条件已满足」「矛盾消除」
+    // 「零依据条目：0 条」「已全面覆盖」。这是过程话术，不是交付内容。
+    check: (t) => {
+      const body = String(t || '')
+        .split(/\r?\n/)
+        .filter((l) => !/质量提示|确定性检查/.test(l))
+        .join('\n');
+      return !/(?:准入条件已满足|准入已满足|矛盾已?消除|零依据条目|已全面覆盖|全部可定位|已逐条核验|经核验全部存在)/.test(body);
+    },
+  },
+  {
+    id: 'noPlaceholderRows',
+    category: 'placeholder',
+    severity: 'major',
+    weight: 10,
+    desc: '需求表存在整行占位（所有内容列都是「未知/待补充」）',
+    // 实测样本：44 行里 10 行整行「未知」（23%），矩阵虚胖。
+    check: (t) => {
+      const { header, rows } = tableRowsWithAllCells(t, '需求编号');
+      if (!header.length || !rows.length) return true;
+      const idIdx = header.findIndex((c) => /需求编号|编号|序号/.test(c));
+      const PLACEHOLDER = /^(?:未知|待补充|待确认|待定|未提供|无|N\/?A|-|—|\/)$/i;
+      let bad = 0;
+      for (const cells of rows) {
+        // 跳过「需求编号」这一列，看其余列有没有任何实质内容
+        const others = cells.filter((v, i) => i !== idIdx && v)
+          .map((v) => v.trim());
+        const meaningful = others.filter((v) => v && !PLACEHOLDER.test(v));
+        if (!meaningful.length) bad += 1;
+      }
+      return bad / rows.length <= 0.1;
+    },
+  },
+  {
+    id: 'requirementCountMatches',
+    category: 'fact',
+    severity: 'major',
+    weight: 15,
+    desc: '声明的需求条目数与实际条数不符',
+    // 实测样本：原文 FR22+NFR12=34，报告改成 30+14+9=53 并称「旧口径废止」；
+    // 另有「称 V1 接口条数＝8，但括号内只列举了 7 个」。
+    check: (t) => {
+      const { rows } = tableRowsWithAllCells(t, '需求编号');
+      if (!rows.length) return true;
+      const actual = rows.length;
+      const declared = [];
+      for (const line of String(t || '').split(/\r?\n/)) {
+        if (line.length > 400) continue;
+        for (const m of line.matchAll(/(?:需求|条目|功能需求)\s*(?:总计|合计|共)\s*[:：]?\s*(\d{2,4})\s*(?:条|个|项)?/g)) {
+          declared.push(Number(m[1]));
+        }
+        for (const m of line.matchAll(/(?:总计|合计|共)\s*[:：]?\s*(\d{2,4})\s*(?:条|个|项)\s*(?:需求|功能需求)/g)) {
+          declared.push(Number(m[1]));
+        }
+      }
+      if (!declared.length) return true;
+      const allowed = Math.max(2, Math.round(actual * 0.05));
+      return declared.every((n) => Math.abs(n - actual) <= allowed);
+    },
+  },
+];
+
 export function getRulesFor(agentId) {
   const own = RULES[agentId] || null;
   // 只给「有确定性检查的智能体」配通用规则。
   // 完全陌生的 agentId 仍返回 null，保持「未配置规则」的语义。
   if (!own && !COMMON_RULE_AGENTS.has(agentId)) return null;
-  return [...(own || []), ...COMMON_RULES];
+  const extra = agentId === 'test-requirement-analyzer' ? REQUIREMENT_ANALYSIS_EXTRA_RULES : [];
+  return [...(own || []), ...extra, ...COMMON_RULES];
 }
 
 /**
