@@ -19,6 +19,7 @@ const { executeDesignMethods, METHODS: DESIGN_METHODS, METHOD_KEYS: DESIGN_METHO
 // 但需求文档里本来就有「若…则…」「A→B→C」「变为」这些结构，可确定性解析。
 const { deriveDesignInput } = require('./design-input-derive.js');
 const { generateDimensionCases, renderChecklist } = require('./dimension-cases');
+const { detectHasUI } = require('./requirement-context');
 
 /**
  * 从 task 文本构建 inputSpec（宽松推断）
@@ -216,6 +217,15 @@ async function invoke(params) {
       if (!merged.fieldEndpointMap && requirementContext && requirementContext.fieldEndpointMap) {
         merged.fieldEndpointMap = requirementContext.fieldEndpointMap;
       }
+      // 被测对象有没有 UI：决定正交/端侧用例能不能断言「页面/按钮可见」。
+      // 接口型需求的交付物里出现「页面元素可见」会被审核判「与接口无关」。
+      if (merged.hasUI === undefined) {
+        merged.hasUI = requirementContext && typeof requirementContext.hasUI === 'boolean'
+          ? requirementContext.hasUI
+          : detectHasUI(String(task || ''));
+      }
+      // 需求原文：让生成器能自己判断场景形态（2026-11-26）
+      if (!merged.requirementText) merged.requirementText = String(task || '');
 
       // 用需求文本补齐缺失的设计输入（已有的一律不覆盖，只补空）
       try {

@@ -292,6 +292,9 @@ function normalizeFunctions(input) {
   });
 }
 
+// 需求形态判定（与 dimension-cases / requirement-context 共用同一判据）
+const { detectHasUI } = require('./requirement-context');
+
 // ---------------------------------------------------------------- M1 等价类划分法
 
 function genEquivalence(input) {
@@ -661,6 +664,17 @@ function expectedForLevel(factorName, value, ctx = {}) {
   }
   // 端 / 平台 / 浏览器
   if (/平台|端|系统|浏览器|设备|机型|分辨率|platform|browser|device|os/i.test(f)) {
+    // 被测对象是接口时，「页面加载/按钮可见」这种断言与它无关（2026-11-26）
+    //
+    // 实测任务 7028b200：16 条正交用例的预期全是「页面加载返回 200 且关键元素可见」，
+    // 而被测对象是 /custody/preAuth 这类后端接口，根本没有页面——
+    // 审核判「与 preAuth 接口无关，16 条预期文字完全相同，无法区分」。
+    if (!ctx.hasUI) {
+      if (ctx.loggedOut) {
+        return `在「${v}」下接口返回未认证错误码，响应体不含任何业务数据`;
+      }
+      return `在「${v}」下接口返回业务成功码，响应体含该操作对应的业务字段且值符合预期，无 5xx`;
+    }
     if (ctx.loggedOut) {
       // 未登录时页面本来就该跳登录页，不能要求「目标页加载成功」——那会拼出自相矛盾的结论
       return `${v} 端跳转登录页后页面加载返回 HTTP 200，登录页元素可见可点击，控制台无 JS 报错`;
@@ -701,12 +715,16 @@ function genOrthogonal(input) {
   const levels = names.map((n) => toArray(factors[n]));
   const { rows, mode } = buildCoveringArray(levels, Math.min(MAX_COMBINATIONS, MAX_CASES_PER_METHOD));
   const compatFactor = names.some((n) => /平台|系统|浏览器|设备|终端|版本|分辨率|机型|platform|browser|device|os/i.test(n));
+  // 被测对象有没有 UI：没有就不能断言「页面/按钮可见」（2026-11-26）
+  const hasUI = input && typeof input.hasUI === 'boolean'
+    ? input.hasUI
+    : detectHasUI(String(input?.requirementText || input?.task || ''));
   const cases = rows.map((row, idx) => {
     const combo = names.map((n, i) => `${n}=${levels[i][row[i]]}`);
     // 同一组合内是否有「未登录」，决定端侧判据要不要换成登录页
     const loggedOut = names.some((n, i) => /登录态|登录状态|认证|login|auth/i.test(n)
       && /^(?:false|否|未登录)$/i.test(String(levels[i][row[i]])));
-    const expectations = names.map((n, i) => expectedForLevel(n, levels[i][row[i]], { loggedOut }));
+    const expectations = names.map((n, i) => expectedForLevel(n, levels[i][row[i]], { loggedOut, hasUI }));
     return makeCase('orthogonal', {
       dimension: compatFactor ? '⑨ 兼容性' : '② 数据',
       name: `正交组合-${String(idx + 1).padStart(2, '0')}(${mode})`,

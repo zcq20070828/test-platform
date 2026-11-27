@@ -266,6 +266,35 @@ function extractFieldEndpointMap(text) {
 }
 
 /**
+ * 判断需求描述的被测对象有没有「可测的 UI」
+ *
+ * 不能只看有没有「页面」二字。实测托管系统需求里有 14 处页面/H5/浏览器，
+ * 但全是「H5 页面仅做流程状态与页面跳转结果验证，不做 UI 视觉与适配性验证」——
+ * 据此判 hasUI=true，就会生成「页面加载返回 200、按钮可见可点击、控制台无 JS 报错」
+ * 这类与接口无关的断言（审核判「与 preAuth 接口无关」）。
+ *
+ * 判据：必须出现**UI 动作词**（按钮/点击/输入框/表单/弹窗/下拉/勾选），
+ * 或者在明确否定 UI 之外、UI 名词出现得足够多（≥3 次且没有「不做 UI」声明）。
+ */
+function detectHasUI(text) {
+  const t = String(text || '');
+  if (!t) return false;
+  // 需求明说不做 UI，直接判无 UI
+  if (/不做\s*(?:UI|视觉|适配|前端)|无前端|不含前端|仅以\s*URL|仅做流程状态/.test(t)) return false;
+  // 有真实 UI 动作 → 一定是 UI 系统
+  if (/按钮|点击|输入框|表单|弹窗|下拉|勾选|菜单项|悬浮|拖拽/.test(t)) return true;
+
+  // 只有 UI 名词、没有动作词的，看有没有接口定义：
+  // 接口文档里「页面」「H5」会大量出现（授权页/H5 页面/页面跳转），
+  // 但它们不是被测 UI —— 实测托管系统需求 14 处页面/H5，0 处按钮/点击，
+  // 却有 10 个接口，判成有 UI 就会生成「页面元素可见」这种无关断言。
+  const uiNouns = (t.match(/页面|浏览器|前端|H5|控制台|图标|菜单|布局/g) || []).length;
+  if (uiNouns < 3) return false;
+  const hasEndpoints = /\b(?:GET|POST|PUT|PATCH|DELETE)\s+\/|\/[\w-]+\/[\w/-]+/.test(t);
+  return !hasEndpoints;
+}
+
+/**
  * 一次性提取完整需求上下文
  *
  * @param {string} requirementText - 原始需求文本
@@ -281,6 +310,7 @@ function deriveRequirementContext(requirementText) {
     httpCodes: extractHttpCodes(text),
     endpoints,
     fieldEndpointMap: extractFieldEndpointMap(text),
+    hasUI: detectHasUI(text),
     stateValues: extractStateValues(text),
     fieldConstraints: extractFieldConstraints(text),
     // 有没有真正拿到可用的需求上下文（决定模板要不要降级）
@@ -290,6 +320,7 @@ function deriveRequirementContext(requirementText) {
 
 module.exports = {
   deriveRequirementContext,
+  detectHasUI,
   extractSuccessCode,
   extractErrorCodes,
   extractHttpCodes,

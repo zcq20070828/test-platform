@@ -515,5 +515,76 @@ t('★★ 工具输出里没有 code=0 / 255 / undefined', async () => {
   assert.ok(!/\bundefined\b/.test(blob), '输出里仍有 undefined');
 });
 
+
+// ── 第十~十二条：探针自带的「电商/通用 Web」场景假设 ──
+//
+// 实测任务 7028b200（被测对象是托管系统 / IDaaS 后端接口）：
+// 交付物里 27 条九维用例讲的是库存超卖、SSE 长连接、身份证脱敏、租户越权，
+// 需求里一个字都没有 —— 42 个探针是按通用 Web 电商写的。
+// 审核判「需求外内容」并要求删除或改写。
+const API_REQ = `
+托管系统接口需求。POST /custody/preAuth 必填 clawUid、sign，成功 resultcode="103000"。
+POST /custody/validate 必填 creditToken。POST /custody/smsSend 必填 loginName。
+手机号需脱敏展示。
+`;
+
+t('接口型需求不产出电商/长连接/租户等异域场景', () => {
+  const casesMod = require(path.join(SKILL, 'dimension-cases.js'));
+  const gen = casesMod.generateDimensionCases({ task: API_REQ, module: '托管系统' });
+  const blob = gen.cases.map((c) => `${c.name} ${c.steps} ${c.expected} ${c.precondition}`).join('\n');
+  const foreign = {
+    '库存/超卖': /库存|超卖/g,
+    'SSE/EventSource': /SSE|EventSource/g,
+    '租户': /租户/g,
+    '支付/订单状态': /待支付|已支付|已取消|订单号/g,
+  };
+  for (const [label, re] of Object.entries(foreign)) {
+    const hits = blob.match(re) || [];
+    assert.strictEqual(hits.length, 0, `仍含异域场景「${label}」${hits.length} 处：${hits.slice(0, 3).join(',')}`);
+  }
+});
+
+t('需求没有的敏感字段不被写进断言（身份证）', () => {
+  const casesMod = require(path.join(SKILL, 'dimension-cases.js'));
+  const gen = casesMod.generateDimensionCases({ task: API_REQ, module: '托管系统' });
+  const blob = gen.cases.map((c) => `${c.steps} ${c.expected}`).join('\n');
+  assert.ok(!/身份证/.test(blob), '需求只有手机号，却出现身份证');
+  assert.ok(/手机号/.test(blob), '需求里的手机号反而没了');
+});
+
+t('接口型需求不产出「页面/按钮/控制台」断言', () => {
+  const ctxLocal = require(path.join(SKILL, 'requirement-context.js'));
+  assert.strictEqual(ctxLocal.detectHasUI(API_REQ), false, '接口需求被判成有 UI');
+  assert.strictEqual(ctxLocal.detectHasUI('用户点击登录按钮，在表单输入手机号后提交'), true,
+    '含点击/按钮的需求被判成无 UI');
+});
+
+t('正交用例对接口系统不断言页面元素可见', () => {
+  const dm = require(path.join(SKILL, 'design-methods.js'));
+  const out = dm.executeDesignMethods({
+    input: {
+      inputSpec: { a: { type: 'enum', values: ['x', 'y'] }, b: { type: 'enum', values: ['p', 'q'] } },
+      factors: { 平台: ['Android', 'iOS'], 网络: ['WiFi', '4G'] },
+      hasUI: false,
+    },
+  });
+  const orth = out.cases.filter((c) => c.method === 'orthogonal');
+  assert.ok(orth.length > 0, '没有生成正交用例');
+  const uiAssert = orth.filter((c) => /页面|按钮|控制台/.test(String(c.expected)));
+  assert.strictEqual(uiAssert.length, 0, `${uiAssert.length} 条正交断言仍在讲页面/按钮`);
+});
+
+// ── 第十三条：同一句预期里既有失败码又有成功码 ──
+//
+// 实测任务 7028b200：预期写「动作:130032 traceId不能为空」，
+// 层级标「正常」，isReject 关键词一个都没命中，于是被追加
+// 「返回 HTTP 200 或业务成功码 103000」——审核判「自相矛盾，无法判定」。
+t('预期已写明失败码时不再追加成功码（防回归）', () => {
+  const src = fs.readFileSync(path.join(BACKEND, 'server.js'), 'utf8');
+  assert.ok(/statesFailure/.test(src), '未识别「已写明失败结论」');
+  assert.ok(/statedFailureCodes/.test(src), '未按需求错误码识别失败结论');
+  assert.ok(/const isReject = [\s\S]{0,200}statesFailure/.test(src), 'isReject 未纳入 statesFailure');
+});
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
 process.exit(failed ? 1 : 0);

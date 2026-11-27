@@ -13468,7 +13468,24 @@ function strengthenAssertion(expected, c, rowCtx, reqCtx = null) {
   const errorCodes = (reqCtx && reqCtx.errorCodes) || [];
   const failHint = errorCodes.length ? `业务失败码（如 ${errorCodes[0]}）` : '业务失败码';
 
-  const isReject = /拒绝|拦截|失败|不允许|禁止|报错|提示|不通过|非法/.test(e) || layer === '异常';
+  /**
+   * 预期里是否已经写明了失败结论
+   *
+   * 先看需求错误码，再看「产生结果:/动作:」这类模板前缀。
+   * 实测任务 7028b200：预期写着「动作:130032 traceId不能为空」，
+   * 层级标「正常」，isReject 的关键词一个都没命中，于是被追加
+   * 「返回 HTTP 200 或业务成功码 103000」——同一句里既有失败码又有成功码，
+   * 审核判「预期自相矛盾，无法判定通过与否」，一批 10 条。
+   */
+  const statedFailureCodes = errorCodes.filter((c) => new RegExp(`\\b${c}\\b`).test(e));
+  const statesFailure = statedFailureCodes.length > 0
+    || /(?:产生结果|动作|返回|错误码|失败码)\s*[:：]?\s*\d{4,8}/.test(e)
+    || /不能为空|不允许|不合法|非法|越权|超限|超长|已存在|冲突/i.test(e);
+
+  // 层级标「正常」但预期写的是失败结论 → 以预期为准，按拒绝处理
+  const isReject = /拒绝|拦截|失败|不允许|禁止|报错|提示|不通过|非法/.test(e)
+    || statesFailure
+    || layer === '异常';
   const isBoundary = layer === '边界' || /边界|min|max|超长|过短/.test(ctx);
 
   // 拒绝类：断言「明确失败 + 不产生副作用」

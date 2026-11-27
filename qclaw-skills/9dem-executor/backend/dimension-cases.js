@@ -15,7 +15,7 @@
  */
 
 const { DIMENSION_MATRIX } = require('./dimension-probes');
-const { deriveRequirementContext } = require('./requirement-context');
+const { deriveRequirementContext, detectHasUI } = require('./requirement-context');
 
 /** 维度的默认设计方法（与矩阵里的 method 一致，缺省时兜底） */
 const DIMENSION_METHOD = {
@@ -108,6 +108,135 @@ const FIELD_DRIVEN_DIMENSIONS = new Set(['data', 'security']);
 function normalizeLayer(layer, requiredLayers) {
   if (layer) return layer;
   return requiredLayers[requiredLayers.length - 1] || '异常';
+}
+
+/**
+ * 判断需求的「形态」——决定九维探针里哪些场景假设成立（2026-11-26）
+ *
+ * 42 个九维探针是按「通用 Web 电商应用」写的，带着一整套场景假设：
+ *   库存超卖(F2)、支付状态机(P4/P5)、多租户越权(S2)、身份证脱敏(S3)、
+ *   SSE 长连接(N4)、浏览器切后台(T1)、点击按钮/列表页(O1~O4/S5/N1)…
+ * 实测任务 7028b200（被测对象是托管系统 / IDaaS 后端接口）：
+ * 交付物里 27 条九维用例讲的是库存超卖、SSE、身份证、租户——
+ * 需求里一个字都没有，审核判「需求外内容」并要求删除或改写。
+ *
+ * 这些假设不能靠模型自己发现（它只是照抄工具给的用例），
+ * 必须在生成侧按需求形态判定并改写。
+ */
+function detectShape(text) {
+  const t = String(text || '');
+  return {
+    // UI 判定统一走 detectHasUI（2026-11-26）：只看「有没有页面」会把
+    // 「H5 页面仅做流程状态验证，不做 UI 视觉」的接口需求误判成有 UI。
+    hasUI: detectHasUI(t),
+    hasCommerce: /库存|超卖|下单|订单|支付|退款|商品|优惠券|结算|购物车/.test(t),
+    hasStateMachine: /状态(?:机|流转|迁移|变化)|待处理|已解决|待支付|已支付|已完成|审核中/.test(t),
+    hasStreaming: /SSE|EventSource|WebSocket|长连接|推送|订阅/.test(t),
+    hasMultiTenant: /租户|tenant|多租户|业务方隔离/.test(t),
+    hasSensitivePII: /脱敏|掩码|身份证|银行卡|隐私/.test(t),
+    // 需求里实际存在哪些敏感字段：探针提到需求没有的字段要改写掉
+    hasPhone: /手机号|mobile|phone/i.test(t),
+    hasIdCard: /身份证/.test(t),
+    hasEmail: /邮箱|email|mail/i.test(t),
+    hasAudit: /审计|操作日志|留痕|变更记录/.test(t),
+  };
+}
+
+/**
+ * 把探针文本里「需求中不存在的场景假设」改成中性表述
+ *
+ * 只替换名词与动作，不改变探测意图（用户/数据/流程/…九维）与层级。
+ * 这样九维覆盖率不会掉，但不会再出现「库存超卖」这种与系统无关的内容。
+ */
+function deforeignize(text, shape) {
+  let out = String(text || '');
+  if (!out) return out;
+
+  // 交易域
+  if (!shape.hasCommerce) {
+    out = out
+      .replace(/同一库存商品的下单请求/g, '同一资源的并发提交请求')
+      .replace(/不超卖、不串号/g, '不产生数据错乱或重复写入')
+      .replace(/库存/g, '资源')
+      .replace(/超卖/g, '超量写入')
+      .replace(/下单/g, '提交')
+      .replace(/商品/g, '业务对象')
+      .replace(/优惠券|购物车|结算/g, '业务资源');
+  }
+  // 支付/订单域
+  if (!shape.hasCommerce) {
+    out = out
+      .replace(/待支付→已支付、待支付→已取消/g, '初始状态→中间状态、初始状态→终止状态')
+      .replace(/已取消→已支付/g, '终止状态→中间状态')
+      .replace(/待支付|已支付|已取消/g, '业务状态')
+      .replace(/订单号/g, '业务单号')
+      .replace(/订单/g, '业务单据');
+  }
+  // UI 域：被测对象是接口时，页面/按钮类表述改到接口层
+  if (!shape.hasUI) {
+    out = out
+      // 先处理「响应体与页面中」这种叠词，避免被通用替换弄成「响应体与响应中」
+      .replace(/响应体与页面中/g, '响应体中')
+      .replace(/响应体与页面/g, '响应体')
+      .replace(/访问该功能主页面/g, '调用该功能的主接口')
+      .replace(/访问该功能页面/g, '调用该功能接口')
+      .replace(/在列表中查看回显/g, '在响应体中查看回显')
+      .replace(/列表页与详情页/g, '列表接口与详情接口')
+      .replace(/列表页/g, '列表接口')
+      .replace(/详情页/g, '详情接口')
+      .replace(/主页面/g, '主接口')
+      .replace(/页面反馈/g, '接口响应')
+      .replace(/页面/gu, '响应')
+      .replace(/按钮/g, '操作')
+      .replace(/弹窗/g, '错误提示')
+      .replace(/控制台/g, '调用方日志')
+      .replace(/浏览器/gu, '客户端')
+      .replace(/填写合法数据后点击提交/g, '按字段规格构造合法请求后提交')
+      .replace(/Chrome DevTools 限速为 Slow 3G（下载 400kbps、往返延迟 400ms）/g, '注入 400ms 往返延迟与 400kbps 带宽限制');
+  }
+  // 多租户
+  if (!shape.hasMultiTenant) {
+    out = out
+      .replace(/用租户A的 token 读取租户B的资源ID/g, '用业务方A的凭证读取业务方B的资源ID')
+      .replace(/租户/g, '业务方');
+  }
+  // 敏感字段
+  //
+  // 探针 S3 写的是「手机号、身份证、邮箱」三个字段的脱敏。
+  // 需求若只有手机号（实测托管系统 25 处手机号、0 处身份证），
+  // 照抄就会生成「身份证显示前3位后4位」这种需求外断言。
+  // 判据：只保留需求里真实存在的敏感字段。
+  if (!shape.hasSensitivePII) {
+    out = out
+      .replace(/手机号、身份证、邮箱的展示/g, '需求列明的敏感字段在响应中的呈现')
+      .replace(/身份证|银行卡/g, '敏感字段');
+  } else {
+    if (!shape.hasIdCard) {
+      out = out
+        .replace(/手机号、身份证、邮箱/g, shape.hasPhone ? '手机号' : '敏感字段')
+        .replace(/，身份证显示前3位后4位/g, '')
+        .replace(/身份证显示前3位后4位/g, '')
+        .replace(/身份证/g, shape.hasPhone ? '手机号' : '敏感字段');
+    }
+    if (!shape.hasEmail) {
+      out = out.replace(/、邮箱/g, '').replace(/邮箱的展示/g, '的展示');
+    }
+  }
+  // 长连接
+  if (!shape.hasStreaming) {
+    out = out
+      .replace(/在 SSE\/长连接页面停留/g, '保持一次长请求连接')
+      .replace(/SSE\/长连接/g, '长请求连接')
+      .replace(/SSE|EventSource|WebSocket/g, '长请求')
+      .replace(/断流重连/g, '中断后重试');
+  }
+  // 审计日志
+  if (!shape.hasAudit) {
+    out = out
+      .replace(/操作日志列表/g, '变更记录')
+      .replace(/操作日志/g, '变更记录');
+  }
+  return out;
 }
 
 /**
@@ -342,6 +471,21 @@ function generateDimensionCases(params = {}) {
     ? params.requirementContext
     : deriveRequirementContext(params.task || '');
 
+  // 需求形态：决定探针里的场景假设是否成立（2026-11-26）
+  //
+  // 只在「需求上下文确实可用」时才做改写。信息量极少的输入（如一句
+  // 「统一消息中心」）判不出被测对象形态，这时乱删场景反而会把
+  // 「浏览器兼容」「长连接」这类本来有可能适用的必测点也砍掉 ——
+  // 实测这会让九维必测点覆盖率从 100% 掉到 98%，且原因不可解释。
+  // 与「查不到真值就降级」同一原则：判不了就保持原样。
+  const shape = reqCtx && reqCtx.hasAny
+    ? detectShape(params.task || '')
+    : {
+      hasUI: true, hasCommerce: true, hasStateMachine: true, hasStreaming: true,
+      hasMultiTenant: true, hasSensitivePII: true, hasPhone: true, hasIdCard: true,
+      hasEmail: true, hasAudit: true,
+    };
+
   // 数据/安全维把输入落到真实字段上；其余维度不给「输入数据」，
   // 由执行步骤描述构造条件——否则会出现「输入=按探针要求构造」这种占位描述被门禁判为不合格。
   const fieldInput = fields.length
@@ -363,25 +507,41 @@ function generateDimensionCases(params = {}) {
       const layer = normalizeLayer(p.layer, dim.requiredLayers);
       const seq = String(idx + 1).padStart(3, '0');
 
+      // 探针自带的场景假设先按需求形态去异域化（2026-11-26）：
+      // 「库存超卖/SSE 长连接/身份证脱敏/多租户/点击按钮」这类内容
+      // 在接口型需求里根本不存在，直接落进交付物会被审核判「需求外内容」。
+      const pTitle = deforeignize(p.title, shape);
+      const pAction = deforeignize(p.action, shape);
+      const pAssertion = deforeignize(p.assertion, shape);
+
       // 把泛化的「该功能」替换成真实被测对象
-      const action = p.action.split('该功能').join(target || '被测功能');
+      const action = pAction.split('该功能').join(target || '被测功能');
 
       const rawSteps = `1. ${action}\n2. 观察接口响应与页面反馈\n3. 核对数据库/日志中的落库结果`;
+
+      // 前置条件不能再是「系统已部署，X 可访问」这种放到任何系统都成立的空话：
+      // 实测审核判「未构造绑定记录、白名单 IP、redis 失效数据，无法照做」。
+      // 有接口就点名接口，有字段就点名字段。
+      const preEp = reqCtx.endpoints && reqCtx.endpoints.length ? reqCtx.endpoints[0] : null;
+      const precondition = [
+        preEp ? `${target || '被测功能'} 已部署，${preEp.method ? preEp.method + ' ' : ''}${preEp.path} 可访问` : `系统已部署，${target || '被测功能'} 可访问`,
+        '测试账号与需求要求的依赖数据（如绑定关系、白名单、缓存）已就绪',
+      ].join('；');
 
       cases.push({
         id: `${prefix}-${seq}`,
         method: 'dimensionProbe',
         methodKey: `D-${p.id}`,
         methodLabel: method,
-        name: `${dim.label.replace(/^[①②③④⑤⑥⑦⑧⑨]\s*/, '')}-${p.title}`,
+        name: `${dim.label.replace(/^[①②③④⑤⑥⑦⑧⑨]\s*/, '')}-${pTitle}`,
         dimension: `${dim.label} / ${method}`,
         layer,
-        precondition: `系统已部署，${target || '被测功能'} 可访问；已准备测试账号与基础业务数据`,
+        precondition,
         input: useFields ? fieldInput : '无特定输入（按执行步骤构造条件）',
         // 断言与步骤都要过需求上下文（2026-11-26）：
         // 断言里的 code=0/200/6-32 位换成需求真值，步骤里的「触发对应操作」落到真实接口
         steps: adaptSteps(rawSteps, p, reqCtx, target),
-        expected: adaptAssertion(p.assertion, reqCtx),
+        expected: adaptAssertion(pAssertion, reqCtx),
         priority: dim.weight >= 2 ? '高' : '中',
         trace: `九维必测点 ${p.id}`,
         probeId: p.id,
