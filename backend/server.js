@@ -16461,9 +16461,12 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
     // 实测长需求（3.4 万字符）+ 思考模式时，模型可能连续思考 10 分钟以上，
     // 600s 硬超时会把正常进度掐断（日志 fullContent=0 但 reasoning 已 5000 字）。
     // 重试又要从头再来，一轮 4 次 × 600s，用户等到 40 分钟才看到失败。
+    // 默认 15 分钟：实测 350+ 条用例的生成调用会超过 10 分钟（规划器→执行器→
+    // 正文三段，最后一段最重）。600s 会在正常进度上掐断，随后重试又从零开始，
+    // 一轮 4 次 × 600s，用户等 40 分钟才看到失败。可用 AGENT_CALL_TIMEOUT_MS 覆盖。
     const perAttemptTimeout = Number(process.env.AGENT_CALL_TIMEOUT_MS) > 0
       ? Number(process.env.AGENT_CALL_TIMEOUT_MS)
-      : 600000;
+      : 900000;
     const timeout = setTimeout(() => controller.abort(), perAttemptTimeout);
 
     try {
