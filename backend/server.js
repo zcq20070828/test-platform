@@ -13798,8 +13798,66 @@ function appendToPrimaryDeliverable(text, extra) {
   return `${text || ''}\n${extra}`;
 }
 
-async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, skipReview = false, previousArtifacts = [], userId = null, forceToolCall = false, options = {}) {
-  // 全局暴露，供 owasp-knowledge-generator.js 通过 globalThis.spawnAgentSession 调用
+/**
+ * 解析工具调用参数，容忍流式截断（2026-11-27）
+ *
+ * 实测事故：模型在流式输出 tool_calls 时，arguments 可能在中途结束
+ * （max_tokens 截断、连接抖动、思考模式提前收敛），得到半截 JSON：
+ *   {"task":"… 需求分析报告 …","inputSpec":{"clawUid":
+ * 直接 JSON.parse 抛错 → 工具执行失败 → 模型重试 → 反复 600s 超时
+ * （日志里的 `[ToolLoop] 9dem_executor 执行失败: Expected ',' or '}' …`）。
+ *
+ * 这里做两层容错：
+ *   ① 原文能解析就直接用；
+ *   ② 不能解析时补齐未闭合的字符串/括号，再试一次。
+ * 修不回来就返回 ok=false，由调用方把「参数不合法」作为工具结果回给模型，
+ * 让它重发一次，而不是把整个任务判死。
+ *
+ * @returns {{ok:boolean, value:Object, repaired:boolean, reason:string}}
+ */
+function parseToolArguments(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return { ok: true, value: {}, repaired: false, reason: '' };
+  try {
+    return { ok: true, value: JSON.parse(s), repaired: false, reason: '' };
+  } catch (e) {
+    /** 补齐未闭合的引号与括号 */
+    const closeUp = (input) => {
+      let fixed = input.replace(/,\s*$/, '');
+      if ((fixed.match(/"/g) || []).length % 2 === 1) fixed += '"';
+      const stack = [];
+      for (const ch of fixed) {
+        if (ch === '{' || ch === '[') stack.push(ch);
+        else if (ch === '}' || ch === ']') stack.pop();
+      }
+      while (stack.length) fixed += stack.pop() === '{' ? '}' : ']';
+      return fixed;
+    };
+
+    // ① 优先「只补引号/括号」——这样能保住已流出的内容
+    //    实测 `{"task":"abc` 若走「丢掉尾段」会得到 {}，task 直接丢了，
+    //    工具只能返回「请提供 task」，白跑一轮。
+    try {
+      const a = closeUp(s);
+      if (a !== s) {
+        const v = JSON.parse(a);
+        return { ok: true, value: v, repaired: true, reason: `流式截断，补引号/括号后可用（原 ${s.length} 字）` };
+      }
+    } catch (_) { /* 继续下一策略 */ }
+
+    // ② 再试「丢掉最后一个不完整的键值对」
+    const lastComma = Math.max(s.lastIndexOf(','), s.lastIndexOf('{'), s.lastIndexOf('['));
+    try {
+      const b = closeUp(s.slice(0, lastComma + 1));
+      const v = JSON.parse(b);
+      return { ok: true, value: v, repaired: true, reason: `流式截断，丢弃末尾不完整片段后可用（原 ${s.length} 字）` };
+    } catch (_) { /* 修不回来 */ }
+
+    return { ok: false, value: {}, repaired: false, reason: `参数不是合法 JSON：${e.message}` };
+  }
+}
+
+async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, skipReview = false, previousArtifacts = [], userId = null, forceToolCall = false, options = {}) {  // 全局暴露，供 owasp-knowledge-generator.js 通过 globalThis.spawnAgentSession 调用
   globalThis.spawnAgentSession = spawnAgentSession;
   // 提取工作流ID用于会话跟踪(taskId格式: workflowId[-stage[-suffix]])
   const workflowIdForTracking = taskId ? taskId.split('-').slice(0, 2).join('-') : null;
@@ -14284,9 +14342,21 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
           for (const { tc, callId } of toolCallsWithIds) {
             const fnName = tc.function && tc.function.name;
             let toolResult;
+            // 参数先解析（带流式截断修复，2026-11-27）。
+            // 解析不出来就不要往下执行：把「参数不是合法 JSON」当作工具结果回给模型，
+            // 让它重发一次。原来直接 JSON.parse 抛错 → 工具失败 → 模型重试 → 600s 超时。
+            const parsedArgs = parseToolArguments(tc.function && tc.function.arguments);
+            if (!parsedArgs.ok) {
+              console.warn(`[ToolArgs] ${fnName} 参数解析失败: ${parsedArgs.reason} | 原文前 200 字: ${String((tc.function && tc.function.arguments) || '').slice(0, 200)}`);
+              messages.push({ role: 'tool', tool_call_id: callId, content: `${fnName} 调用参数不是合法 JSON（${parsedArgs.reason}）。请重新调用该工具，并确保参数完整。` });
+              continue;
+            }
+            if (parsedArgs.repaired) {
+              console.warn(`[ToolArgs] ${fnName} 参数被补齐后可用（${parsedArgs.reason}）`);
+            }
             try {
               if (fnName === 'sessions_spawn') {
-                const args = JSON.parse((tc.function && tc.function.arguments) || '{}');
+                const args = parsedArgs.value;
                 const targetAgentId = args.agentId || args['agent-id'] || args.agent;
                 const targetTask = args.task || args.message || args['task-message'];
                 if (targetAgentId && targetTask) {
@@ -14318,7 +14388,8 @@ async function spawnAgentSession(agentId, taskInput, taskId, streamCallback, ski
                   } catch (cfgErr) {
                     console.warn(`[Skill] 注入 intent-engine 配置失败: ${cfgErr.message}`);
                   }
-                  const a = JSON.parse((tc.function && tc.function.arguments) || '{}');
+                  // 参数已在上方用 parseToolArguments 解析（含流式截断修复）
+                  const a = parsedArgs.value;
                   // 九维必测点用例要把断言/步骤落到需求真值上（2026-11-26）
                   //
                   // 模型的 task 参数只是它自己概括的需求，返回码表、接口清单、

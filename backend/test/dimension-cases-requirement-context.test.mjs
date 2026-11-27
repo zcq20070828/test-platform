@@ -586,5 +586,40 @@ t('预期已写明失败码时不再追加成功码（防回归）', () => {
   assert.ok(/const isReject = [\s\S]{0,200}statesFailure/.test(src), 'isReject 未纳入 statesFailure');
 });
 
+
+// ── 第十四条：工具调用参数被流式截断 ──
+//
+// 实测事故（任务 fd5379cc）：日志 `[ToolLoop] 9dem_executor 执行失败:
+// Expected ',' or '}' after property value in JSON at position 381`。
+// 模型流式输出的 arguments 半截，直接 JSON.parse 抛错 → 工具失败 →
+// 模型重试 → 反复 600s 超时。现在补 parseToolArguments（补引号/括号 + 丢尾段两策略）。
+t('工具参数流式截断可修复，保住已流出内容', () => {
+  const src = fs.readFileSync(path.join(BACKEND, 'server.js'), 'utf8');
+  const s0 = src.indexOf('function parseToolArguments(');
+  const e0 = src.indexOf('async function spawnAgentSession(', s0);
+  assert.ok(s0 > 0 && e0 > s0, '找不到 parseToolArguments');
+  const fn = new Function(`${src.slice(s0, e0)}\nreturn parseToolArguments;`)();
+  const ok = (raw) => {
+    const r = fn(raw);
+    assert.ok(r.ok, `无法修复：${raw}（${r.reason}）`);
+    return r.value;
+  };
+  assert.deepStrictEqual(ok('{"task":"abc"}'), { task: 'abc' });
+  assert.deepStrictEqual(ok('{"task":"abc'), { task: 'abc' }, '截断的字符串应补引号，不能丢掉 task');
+  assert.deepStrictEqual(ok('{"task":"abc","inputSpec":{"clawUid":"x"'),
+    { task: 'abc', inputSpec: { clawUid: 'x' } }, '嵌套对象截断未修复');
+  assert.deepStrictEqual(ok('{"task":"abc",'), { task: 'abc' }, '尾部逗号未处理');
+  const bad = fn('not json at all');
+  assert.strictEqual(bad.ok, false, '完全非 JSON 应判失败，不能硬猜');
+});
+
+t('工具循环用 parseToolArguments 而不是裸 JSON.parse', () => {
+  const src = fs.readFileSync(path.join(BACKEND, 'server.js'), 'utf8');
+  assert.ok(!/JSON\.parse\(\(tc\.function && tc\.function\.arguments\)/.test(src),
+    '仍有裸 JSON.parse 解析工具参数');
+  assert.ok(/parseToolArguments\(tc\.function && tc\.function\.arguments\)/.test(src),
+    '未改用 parseToolArguments');
+});
+
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
 process.exit(failed ? 1 : 0);
