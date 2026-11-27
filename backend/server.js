@@ -890,7 +890,12 @@ async function cleanupOrphanTasksOnStartup() {
       "SELECT id FROM tasks WHERE status IN ('running','pending','reviewing')"
     );
     if (!rows.length) return;
-    const note = '服务重启,正在执行的任务已中断,请重新提交任务';
+    // 标记成「可重试」而不是普通失败（2026-11-27）
+    //
+    // 实测 21 天里 5 个任务因为服务重启被判 failed，用户看到的是普通失败，
+    // 不知道该不该重提。加 [可重试] 前缀后，前端与失败诊断能识别这一类，
+    // 直接引导重新提交（这类失败与内容质量无关，重提即可）。
+    const note = '[可重试] 服务重启，正在执行的任务已中断；这不是内容问题，请直接重新提交任务';
     await pool.execute(
       "UPDATE tasks SET status='failed', error=?, completed_at=NOW(), updated_at=NOW() WHERE status IN ('running','pending','reviewing')",
       [note]
@@ -3115,6 +3120,30 @@ app.post('/api/tasks', authenticate, async (req, res) => {
 
   // ========== 注入上传文档内容 ==========
   const enrichedInput = await injectFilesToInput(input || '', files);
+
+  // ========== 余额预检（2026-11-27）==========
+  //
+  // 实测 21 天里 5 个任务跑到一半因「余额不足」失败，用户白等十几分钟。
+  // 余额是已知信息（checkDeepSeekBalance 有 60s 缓存），提交时就该拦下。
+  // 只在**确定不可用**时拒绝；查不到（网络/未配置）一律放行，
+  // 不能让余额查询本身成为新的失败原因。
+  const preUserId = req.user.id;
+  try {
+    const bal = await checkDeepSeekBalance(preUserId);
+    if (bal && bal.available === false) {
+      console.warn(`[BalancePrecheck] 用户 ${preUserId} 余额不足，拒绝提交任务（balance=${bal.balance} ${bal.currency || ''}）`);
+      return res.status(402).json({
+        error: 'API Key 余额不足，无法执行任务',
+        code: 'INSUFFICIENT_BALANCE',
+        message: `当前可用余额 ${bal.balance} ${bal.currency || ''}，请充值或改用其他 Key 后重试`,
+        balance: bal.balance,
+        currency: bal.currency || '',
+      });
+    }
+  } catch (balErr) {
+    // 预检失败不影响主流程
+    console.warn(`[BalancePrecheck] 余额预检跳过: ${balErr.message}`);
+  }
 
   // ========== 用户级别串行锁检查 ==========
   const userId = req.user.id;
@@ -16092,18 +16121,29 @@ function enforceContextBudget(messages, budgetChars) {
     console.warn(`[CtxBudget] 工具历史裁剪后总字符 ${totalChars()}`);
   }
 
-  // 4) 极端:需求本身超预算(system + user 已 > 预算),才截断需求 user 消息(带标记)
+  // 4) 极端:需求本身超预算时才考虑截断需求 user 消息
+  //
+  // 2026-11-27 收紧：默认**不截断需求**。
+  // 实测把需求截到一半（日志「极端:截断需求 user 消息至 N 字符」）后，
+  // 模型看不到后面的返回码表/字段定义，只能凭印象编 —— 交付物里的
+  // 「编造接口/编造码值」很大一部分来自这里，而且截断标记还会被当成正文。
+  // 现在只有需求本身超过预算 3 倍（真的装不下）才截，并在日志里明确告警。
   if (totalChars() > MAX_CONTEXT_CHARS) {
+    const HARD_LIMIT = MAX_CONTEXT_CHARS * 3;
     for (let i = 0; i < out.length; i++) {
-      if (isUserReqMsg(out[i])) {
-        const overBy = totalChars() - MAX_CONTEXT_CHARS;
-        const allowed = Math.max(2000, msgContentChars(out[i]) - overBy);
-        if (allowed < 2000) break;
-        const originalLen = msgContentChars(out[i]);
-        out[i] = { ...out[i], content: String(out[i].content).slice(0, allowed) + `${CTX_TRUNCATE_MARK}${originalLen} 字符]` };
-        console.warn(`[CtxBudget] 极端:截断需求 user 消息至 ${allowed} 字符 (原 ${originalLen})`);
-        break;
+      if (!isUserReqMsg(out[i])) continue;
+      const originalLen = msgContentChars(out[i]);
+      if (originalLen <= HARD_LIMIT) {
+        // 装得下（只是历史挤占）→ 保留完整需求，宁可请求偏大
+        console.warn(`[CtxBudget] 上下文仍超预算 ${totalChars()} > ${MAX_CONTEXT_CHARS}，但需求 ${originalLen} 字符未超硬上限，保持完整不截断`);
+      } else {
+        out[i] = {
+          ...out[i],
+          content: String(out[i].content).slice(0, Math.max(2000, HARD_LIMIT)) + `${CTX_TRUNCATE_MARK}${originalLen} 字符]`,
+        };
+        console.warn(`[CtxBudget] ⚠ 需求超过硬上限（原 ${originalLen} 字符），已截断至 ${Math.max(2000, HARD_LIMIT)}；后续生成可能缺依据，交付物需人工复核`);
       }
+      break;
     }
   }
 
@@ -16401,7 +16441,14 @@ async function callOpenClawAPI(agentId, taskInput, streamCallback, messagesOverr
     // 修复:使用固定超时时间120秒,避免后续尝试超时时间过长
     // 原代码:180000 + attempt * 60000(第1次180s,第2次240s,第3次300s)
     // 修复:增加到300秒,允许复杂Agent(test-case-generator等)完成
-    const perAttemptTimeout = 600000; // 固定600秒超时(10分钟),支持复杂Agent长时间执行
+    // 单次模型调用超时：默认 10 分钟，可用环境变量调整（2026-11-27）
+    //
+    // 实测长需求（3.4 万字符）+ 思考模式时，模型可能连续思考 10 分钟以上，
+    // 600s 硬超时会把正常进度掐断（日志 fullContent=0 但 reasoning 已 5000 字）。
+    // 重试又要从头再来，一轮 4 次 × 600s，用户等到 40 分钟才看到失败。
+    const perAttemptTimeout = Number(process.env.AGENT_CALL_TIMEOUT_MS) > 0
+      ? Number(process.env.AGENT_CALL_TIMEOUT_MS)
+      : 600000;
     const timeout = setTimeout(() => controller.abort(), perAttemptTimeout);
 
     try {

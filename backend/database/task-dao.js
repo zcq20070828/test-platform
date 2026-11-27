@@ -343,7 +343,17 @@ function formatTask(row) {
     userId: row.user_id,
     username: row.username || null,
     result: row.result,
-    error: row.error,
+    // 失败原因分两类（2026-11-27）：
+    //   retriable=true —— 与服务重启/余额/限流有关，重提即可，与内容质量无关
+    //   retriable=false —— 内容质量或配置问题，需要按提示整改
+    // 前端与失败诊断据此给不同引导，不再把「重启中断」当普通失败吓用户。
+    error: (() => {
+      const raw = row.error || null;
+      if (!raw) return null;
+      return String(raw).replace(/^\[可重试\]\s*/, '');
+    })(),
+    retriable: /^\[可重试\]/.test(String(row.error || ''))
+      || /余额不足|INSUFFICIENT_BALANCE|续费/.test(String(row.error || '')),
     requireReview: row.require_review === 1,
     // 一致性兜底：review_verdict 已判定为通过时，review_passed 必须为 true。
     // 两者不一致会出现在「只回填了 verdict 的历史数据」或「手工修数据」场景，
